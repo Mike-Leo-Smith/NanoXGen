@@ -53,7 +53,7 @@ influence represented by sweep angles and radii. For a generated primitive:
 | Noise modifier | 3D gradient field, transported frame, correlation and length preservation | scalar/length model oracle-verified |
 | XGen expressions/PTEX | compiled expression IR and texture sampling | planned |
 | Geodesic guide neighborhoods | surface graph / UV-space acceleration | planned |
-| Clump/collision/coil/wind | ordered GPU modifier graph | planned |
+| Clump/collision/coil/wind | hierarchical clump CPU path; remaining GPU/modifiers | partial |
 | Interactive Groom BLOB import/export | independent v1 parser/writer plus canonical `.nxc` cache | bit-exact oracle-validated with Maya 2027.1 |
 
 The guide stencil deliberately moves expensive guide selection to asset
@@ -117,7 +117,8 @@ intermediate evaluation before float output. Near zero, ULP counts can be large
 despite sub-micro-unit absolute error, so the regression requires either the
 absolute or ULP bound while still reporting both. Width evaluation is bitwise
 identical. Noise arithmetic is verified separately against official per-curve
-fields, as described below; clump parity remains future work.
+fields, as described below. The later Rabbit calibration additionally covers
+XPD/PTEX-bound hierarchical clumping on CPU.
 
 ## Classic RandomGenerator sample sequence
 
@@ -202,9 +203,11 @@ and `$cLength` uses a fixed `2*N+4`-interval `SgCurve::length` approximation
 rather than the control polygon. With both reproduced, all four effects run
 without fallback and the full CPU output reaches about `4.13e-6` position RMS
 error against Maya. A subdivision-boundary strand still reaches `3.16e-3`, so
-the strict maximum-error oracle continues to reject the case. Clump experiments
-will be constructed from the captured public schema rather than hard-coded
-guesses.
+the strict maximum-error oracle continues to reject the case. Rabbit `mm`
+subsequently validated XPD3 guide records, PTEX guide-ID maps, two ordered
+clump levels, guide-space noise, NoiseFX, and CutFX. Its zero-fallback CPU
+result matches Maya topology with `1.23e-4` position RMS error and a `2.62e-3`
+maximum.
 
 ## CPU and renderer-payload performance snapshot
 
@@ -360,9 +363,10 @@ actual renderer-buffer copy.
 4. Extend the implemented float runtime plan and Luisa lowering with PTEX
    sampling through a texture indirection table.
 5. Implement remaining modifier passes in authored dependency order. Primitive
-   length/width/taper/ramp and reparameterized Cut are now represented; add
-   clump, coil, collision, authored noise, and wind. Fuse passes where locality permits and use
-   explicit intermediate curve buffers where modifiers need neighborhoods.
+   length/width/taper/ramp, reparameterized Cut, NoiseFX, and hierarchical CPU
+   clumping are represented; add the Luisa clump path, coil, collision, and
+   wind. Fuse passes where locality permits and use explicit intermediate curve
+   buffers where modifiers need neighborhoods.
 6. Expand Luisa HIP/Vulkan device coverage beyond the tested RX 9070 XT and
    compare throughput, memory, determinism, and strict/float-mode error
    against the XGen CPU baseline.

@@ -15,7 +15,8 @@ namespace nanoxgen {
     const ClassicAlembicAssetInput &surface,
     const std::filesystem::path &description_directory,
     const ClassicRootPlan &strand_roots,
-    const ClassicFloatClumpModule &module,
+    const ClassicFloatRuntimePlan &runtime_plan,
+    std::size_t module_index,
     std::uint32_t cvs_per_guide);
 
 } // namespace nanoxgen

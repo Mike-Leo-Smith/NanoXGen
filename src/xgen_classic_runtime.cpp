@@ -544,6 +544,133 @@ void apply_noise(
     }
 }
 
+void build_clump_noise_axis(
+    std::span<const Vec3> axis,
+    const ClassicFloatClumpModule &clump,
+    ClassicFloatRuntimeContext context,
+    Vec3 surface_normal,
+    Vec3 surface_tangent,
+    std::uint32_t guide_random_prefix,
+    float mask,
+    std::span<float> scratch,
+    std::vector<Vec3> &output) {
+    output.assign(axis.begin(), axis.end());
+    context.random_prefix = guide_random_prefix;
+    context.has_random_prefix = true;
+    const auto evaluate = [&](const ClassicFloatRuntimeExpression &expression) {
+        return evaluate_runtime_expression(expression, context, scratch);
+    };
+    const float raw_noise = evaluate(clump.noise);
+    if (!std::isfinite(raw_noise)) {
+        throw std::runtime_error(
+            "Classic ClumpingFX noise parameter is non-finite");
+    }
+    const float noise = std::max(raw_noise, 0.0f);
+    if (!(noise > 1.0e-5f) || !(mask > 1.0e-4f)) {
+        return;
+    }
+    const float raw_frequency = evaluate(clump.noise_frequency);
+    const float raw_correlation = evaluate(clump.noise_correlation);
+    if (!std::isfinite(raw_frequency) ||
+        !std::isfinite(raw_correlation)) {
+        throw std::runtime_error(
+            "Classic ClumpingFX noise parameter is non-finite");
+    }
+    const float frequency = std::max(raw_frequency, 0.0f);
+    const float correlation = std::clamp(
+        raw_correlation * 0.01f, 0.0f, 1.0f);
+    float polyline_length = 0.0f;
+    for (std::size_t cv = 1u; cv < axis.size(); ++cv) {
+        polyline_length +=
+            std::sqrt(length_squared(axis[cv] - axis[cv - 1u]));
+    }
+    const float effective_frequency = polyline_length > 0.0f
+        ? std::max(0.5f / polyline_length, frequency)
+        : frequency;
+    const float decorrelation = 1.0f - correlation;
+    const float domain_scale = 100.0f * decorrelation * decorrelation;
+    const Vec3 domain =
+        (axis.front() * 0.1f +
+         Vec3{0.419276f, 0.184247f, 0.805721f}) * domain_scale;
+    if (!(length_squared(surface_normal) > 1.0e-20f)) {
+        surface_normal = Vec3{0.0f, 1.0f, 0.0f};
+    } else {
+        surface_normal = normalize(surface_normal);
+    }
+    if (!(length_squared(surface_tangent) > 1.0e-20f)) {
+        surface_tangent = fallback_surface_u(surface_normal);
+    } else {
+        surface_tangent = normalize(surface_tangent);
+    }
+    Vec3 transported_u = surface_tangent;
+    Vec3 current_tangent = surface_normal;
+    const Vec3 first_segment = axis[1u] - axis[0u];
+    if (length_squared(first_segment) > 1.0e-20f) {
+        current_tangent = normalize(first_segment);
+    }
+    Vec3 rotation_axis = cross(surface_normal, current_tangent);
+    if (length_squared(rotation_axis) > 1.0e-20f) {
+        const float angle = std::acos(std::clamp(
+            dot(surface_normal, current_tangent), -1.0f, 1.0f));
+        transported_u = normalize(rotate_by(
+            transported_u, normalize(rotation_axis), angle));
+    }
+    float travelled = 0.0f;
+    for (std::uint32_t cv = 1u; cv < axis.size(); ++cv) {
+        travelled += std::sqrt(length_squared(axis[cv] - axis[cv - 1u]));
+        Vec3 sample_tangent = current_tangent;
+        Vec3 sample_u = transported_u;
+        bool advance_frame = false;
+        Vec3 next_tangent = current_tangent;
+        float turn_angle = 0.0f;
+        if (cv + 1u < axis.size()) {
+            const Vec3 segment = axis[cv + 1u] - axis[cv];
+            if (length_squared(segment) > 1.0e-20f) {
+                next_tangent = normalize(segment);
+                rotation_axis = cross(current_tangent, next_tangent);
+                if (length_squared(rotation_axis) > 1.0e-20f) {
+                    rotation_axis = normalize(rotation_axis);
+                    turn_angle = std::acos(std::clamp(
+                        dot(current_tangent, next_tangent), -1.0f, 1.0f));
+                    sample_tangent = normalize(rotate_by(
+                        current_tangent, rotation_axis, 0.5f * turn_angle));
+                    sample_u = normalize(rotate_by(
+                        transported_u, rotation_axis, 0.5f * turn_angle));
+                    advance_frame = true;
+                } else {
+                    current_tangent = next_tangent;
+                }
+            }
+        }
+        const Vec3 transported_v = cross(sample_tangent, sample_u);
+        context.t = static_cast<float>(cv) /
+                    static_cast<float>(axis.size() - 1u);
+        const float raw_scale = evaluate(clump.noise_scale);
+        if (!std::isfinite(raw_scale)) {
+            throw std::runtime_error(
+                "Classic ClumpingFX noise scale is non-finite");
+        }
+        const float scale = std::max(raw_scale, 0.0f);
+        const float magnitude = mask * noise * scale;
+        if (!std::isfinite(magnitude)) {
+            throw std::runtime_error(
+                "Classic ClumpingFX noise magnitude is non-finite");
+        }
+        const float distance = travelled * effective_frequency;
+        const float first = xgen_classic_noise_float(
+            {domain.x + distance, domain.y, domain.z}) - 0.5f;
+        const float second = xgen_classic_noise_float(
+            {domain.x, domain.y, domain.z + distance}) - 0.5f;
+        output[cv] = output[cv] +
+            (sample_u * first + transported_v * second) * magnitude;
+        if (advance_frame) {
+            transported_u = normalize(rotate_by(
+                transported_u, rotation_axis, turn_angle));
+            current_tangent = next_tangent;
+        }
+    }
+}
+
 } // namespace
 
 ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
@@ -639,7 +766,7 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
             const std::string name = object_name(object);
             const std::string_view unsupported_zero_attributes[]{
                 "clumpVariance", "cut", "copy", "copyVariance", "curl",
-                "offset", "flatness", "frame", "noise"};
+                "offset", "flatness", "frame"};
             std::string unsupported;
             for (const std::string_view attribute :
                  unsupported_zero_attributes) {
@@ -651,9 +778,9 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
             const std::uint32_t use_control_maps = parse_uint_attribute(
                 find_classic_attribute(object.attributes, "useControlMaps"),
                 0u, "ClumpingFXModule useControlMaps");
-            if (use_control_maps != 0u) {
-                if (!unsupported.empty()) { unsupported += ", "; }
-                unsupported += "useControlMaps";
+            if (use_control_maps > 1u) {
+                throw std::runtime_error(
+                    "ClumpingFXModule useControlMaps must be zero or one");
             }
             const ClassicAttribute *volumize = find_classic_attribute(
                 object.attributes, "clumpVolumize");
@@ -676,12 +803,28 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
                     compile_expression(
                         object, required_attribute(object, "clump")),
                     compile_expression(
-                        object, required_attribute(object, "clumpScale"))};
+                        object, required_attribute(object, "clumpScale")),
+                    compile_expression(
+                        object, required_attribute(object, "noise")),
+                    compile_expression(
+                        object, required_attribute(object, "noiseScale")),
+                    compile_expression(
+                        object, required_attribute(object, "noiseFrequency")),
+                    compile_expression(
+                        object, required_attribute(object, "noiseCorrelation")),
+                    use_control_maps != 0u};
                 bool valid = true;
                 valid &= validate_inputs(clump.mask, result.fallback_reasons);
                 valid &= validate_inputs(clump.clump, result.fallback_reasons);
                 valid &= validate_inputs(
                     clump.clump_scale, result.fallback_reasons);
+                valid &= validate_inputs(clump.noise, result.fallback_reasons);
+                valid &= validate_inputs(
+                    clump.noise_scale, result.fallback_reasons);
+                valid &= validate_inputs(
+                    clump.noise_frequency, result.fallback_reasons);
+                valid &= validate_inputs(
+                    clump.noise_correlation, result.fallback_reasons);
                 if (valid) {
                     const std::uint32_t index = static_cast<std::uint32_t>(
                         result.clumps.size());
@@ -793,7 +936,11 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     for (const ClassicFloatClumpModule &clump : plan.clumps) {
         needs_random_prefix |= clump.mask.program.random_call_count != 0u ||
             clump.clump.program.random_call_count != 0u ||
-            clump.clump_scale.program.random_call_count != 0u;
+            clump.clump_scale.program.random_call_count != 0u ||
+            clump.noise.program.random_call_count != 0u ||
+            clump.noise_scale.program.random_call_count != 0u ||
+            clump.noise_frequency.program.random_call_count != 0u ||
+            clump.noise_correlation.program.random_call_count != 0u;
     }
     if (needs_random_prefix &&
         random_prefixes.size() != curves.strand_count) {
@@ -814,9 +961,18 @@ void apply_xgen_classic_float_runtime_plan_cpu(
         if (data.module_name != plan.clumps[module].name ||
             data.cvs_per_guide != curves.cvs_per_strand ||
             data.strand_guide_indices.size() != curves.strand_count ||
-            data.guide_axes.size() % curves.cvs_per_strand != 0u) {
+            data.guide_axes.size() % curves.cvs_per_strand != 0u ||
+            data.guide_normals.size() !=
+                data.guide_axes.size() / curves.cvs_per_strand ||
+            data.guide_tangents.size() != data.guide_normals.size()) {
             throw std::invalid_argument(
                 "Classic ClumpingFX geometry binding is inconsistent");
+        }
+        if (data.guide_uvs.size() != data.guide_normals.size() ||
+            data.guide_face_ids.size() != data.guide_normals.size() ||
+            data.guide_random_prefixes.size() != data.guide_normals.size()) {
+            throw std::invalid_argument(
+                "Classic ClumpingFX guide random binding is inconsistent");
         }
     }
     std::vector<std::vector<float>> clump_guide_lengths(clump_data.size());
@@ -834,6 +990,7 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     }
     std::vector<Vec3> cut_source;
     std::vector<Vec3> resampled;
+    std::vector<Vec3> clump_noise_axis;
     std::vector<std::uint8_t> keep(curves.strand_count, 1u);
     std::size_t scratch_size = 0u;
     const auto include_scratch = [&](
@@ -863,7 +1020,9 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     }
     for (const ClassicFloatClumpModule &clump : plan.clumps) {
         const ClassicFloatRuntimeExpression *expressions[] = {
-            &clump.mask, &clump.clump, &clump.clump_scale};
+            &clump.mask, &clump.clump, &clump.clump_scale, &clump.noise,
+            &clump.noise_scale, &clump.noise_frequency,
+            &clump.noise_correlation};
         for (const ClassicFloatRuntimeExpression *expression : expressions) {
             scratch_size = std::max(
                 scratch_size, expression->program.instructions.size());
@@ -939,9 +1098,25 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                                 curves.cvs_per_strand,
                         curves.cvs_per_strand};
                     context.t = 0.0f;
-                    const float mask = std::clamp(
-                        evaluate(clump.mask, context), 0.0f, 1.0f);
+                    const float raw_mask = evaluate(clump.mask, context);
+                    if (!std::isfinite(raw_mask)) {
+                        throw std::runtime_error(
+                            "Classic ClumpingFX mask is non-finite");
+                    }
+                    const float mask = std::clamp(raw_mask, 0.0f, 1.0f);
                     if (mask <= 0.0f) { continue; }
+                    ClassicFloatRuntimeContext guide_context = context;
+                    guide_context.u = data.guide_uvs[guide_index].x;
+                    guide_context.v = data.guide_uvs[guide_index].y;
+                    guide_context.face_seed = xgen_runtime_face_seed(
+                        plan.description_id, plan.description_name,
+                        data.guide_face_ids[guide_index]);
+                    build_clump_noise_axis(
+                        axis, clump, guide_context,
+                        data.guide_normals[guide_index],
+                        data.guide_tangents[guide_index],
+                        data.guide_random_prefixes[guide_index], mask, scratch,
+                        clump_noise_axis);
                     const float guide_length =
                         clump_guide_lengths[effect.module_index][guide_index];
                     // Clumping always rebuilds an affected curve, even when
@@ -951,8 +1126,13 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                     cut_to_length_and_rebuild(
                         points, guide_length, cut_source, resampled);
                     context.c_length = curve_spline_length(points);
+                    const float raw_amount = evaluate(clump.clump, context);
+                    if (!std::isfinite(raw_amount)) {
+                        throw std::runtime_error(
+                            "Classic ClumpingFX amount is non-finite");
+                    }
                     const float amount = std::clamp(
-                        evaluate(clump.clump, context), 0.0f, 1.0f);
+                        raw_amount, 0.0f, 1.0f);
                     for (std::uint32_t cv = 1u;
                          cv < curves.cvs_per_strand; ++cv) {
                         context.t = static_cast<float>(cv) /
@@ -970,6 +1150,14 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                         points[cv].x = output.x;
                         points[cv].y = output.y;
                         points[cv].z = output.z;
+                    }
+                    for (std::uint32_t cv = 1u;
+                         cv < curves.cvs_per_strand; ++cv) {
+                        const Vec3 displacement =
+                            clump_noise_axis[cv] - axis[cv];
+                        points[cv].x += displacement.x;
+                        points[cv].y += displacement.y;
+                        points[cv].z += displacement.z;
                     }
                     context.c_length = curve_spline_length(points);
                 }

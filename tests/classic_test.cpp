@@ -342,7 +342,10 @@ void test_float_runtime_clump() {
         {"curl", "0", 11u}, {"offset", "0", 12u},
         {"flatness", "0", 13u}, {"frame", "0", 14u},
         {"noise", "0", 15u}, {"useControlMaps", "0", 16u},
-        {"clumpVolumize", "false", 17u}}, 2u});
+        {"clumpVolumize", "false", 17u},
+        {"noiseScale", "rampUI(0,0,1)", 18u},
+        {"noiseFrequency", "1", 19u},
+        {"noiseCorrelation", "0", 20u}}, 2u});
     const ClassicFloatRuntimePlan plan =
         compile_xgen_classic_float_runtime_plan(description);
     require(plan.lowering_complete() && plan.clumps.size() == 1u &&
@@ -363,6 +366,11 @@ void test_float_runtime_clump() {
     data.guide_axes = {{1.0f, 0.0f, 0.0f},
                        {1.0f, 1.0f, 0.0f},
                        {1.0f, 2.0f, 0.0f}};
+    data.guide_normals = {{0.0f, 1.0f, 0.0f}};
+    data.guide_tangents = {{1.0f, 0.0f, 0.0f}};
+    data.guide_uvs = {{0.0f, 0.0f}};
+    data.guide_face_ids = {0u};
+    data.guide_random_prefixes = {0u};
     data.strand_guide_indices = {0u};
     const std::array bindings{std::move(data)};
     apply_xgen_classic_float_runtime_plan_cpu(
@@ -393,6 +401,11 @@ void test_float_runtime_clump() {
                              {0.0f, 2.0f, 0.0f},
                              {0.0f, 4.0f, 0.0f},
                              {0.0f, 6.0f, 0.0f}};
+    long_guide.guide_normals = {{0.0f, 1.0f, 0.0f}};
+    long_guide.guide_tangents = {{1.0f, 0.0f, 0.0f}};
+    long_guide.guide_uvs = {{0.0f, 0.0f}};
+    long_guide.guide_face_ids = {0u};
+    long_guide.guide_random_prefixes = {0u};
     long_guide.strand_guide_indices = {0u};
     const std::array rebuild_binding{long_guide};
     const std::vector<PackedCurvePoint> original = curved.points;
@@ -402,6 +415,34 @@ void test_float_runtime_clump() {
                 curved.points.back().x == original.back().x &&
                 std::abs(curved.points[1].x - original[1].x) > 1.0e-3f,
             "ClumpingFX did not rebuild a full-length affected curve");
+    const std::vector<PackedCurvePoint> rebuilt = curved.points;
+
+    ClassicDescription noisy_description = description;
+    for (ClassicAttribute &attribute : noisy_description.objects[1].attributes) {
+        if (attribute.name == "noise") { attribute.value = "1"; }
+        if (attribute.name == "noiseScale") {
+            attribute.value = "rampUI(0,1,1:1,1,1)";
+        }
+        if (attribute.name == "useControlMaps") { attribute.value = "1"; }
+    }
+    const ClassicFloatRuntimePlan noisy_plan =
+        compile_xgen_classic_float_runtime_plan(noisy_description);
+    require(noisy_plan.lowering_complete() &&
+                noisy_plan.clumps[0].use_control_maps,
+            "ClumpingFX noise/control-map metadata did not lower");
+    curved.points = original;
+    apply_xgen_classic_float_runtime_plan_cpu(
+        curved, noisy_plan, 1.0f, {}, {}, {}, rebuild_binding);
+    bool noise_changed_curve = false;
+    for (std::size_t point = 0u; point < curved.points.size(); ++point) {
+        const PackedCurvePoint value = curved.points[point];
+        require(std::isfinite(value.x) && std::isfinite(value.y) &&
+                    std::isfinite(value.z),
+                "ClumpingFX noise produced a non-finite point");
+        noise_changed_curve |=
+            std::memcmp(&value, &rebuilt[point], sizeof(value)) != 0;
+    }
+    require(noise_changed_curve, "ClumpingFX noise did not move the guide");
 
     for (ClassicAttribute &attribute : description.objects[1].attributes) {
         if (attribute.name == "mask") { attribute.value = "0"; }

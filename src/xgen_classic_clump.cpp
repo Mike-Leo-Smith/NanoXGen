@@ -104,8 +104,13 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
     const ClassicAlembicAssetInput &surface,
     const std::filesystem::path &description_directory,
     const ClassicRootPlan &strand_roots,
-    const ClassicFloatClumpModule &module,
+    const ClassicFloatRuntimePlan &runtime_plan,
+    std::size_t module_index,
     std::uint32_t cvs_per_guide) {
+    if (module_index >= runtime_plan.clumps.size()) {
+        fail("runtime module index is out of range");
+    }
+    const ClassicFloatClumpModule &module = runtime_plan.clumps[module_index];
     if (cvs_per_guide < 3u || description.patches.size() != 1u ||
         !surface.reference_surface) {
         fail("binding needs one subdivision patch and at least three CVs");
@@ -183,14 +188,55 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
     if (valid_samples.empty()) { fail("clump point file has no valid guides"); }
     const ClassicRootPlan guide_roots = build_xgen_classic_explicit_root_plan(
         description, surface, patch.name, valid_samples);
-    const PackedGeneratedCurves axes = generate_xgen_classic_base_curves_cpu(
+    PackedGeneratedCurves axes = generate_xgen_classic_base_curves_cpu(
         surface.asset, guide_roots, cvs_per_guide);
+    if (module_index != 0u) {
+        ClassicFloatRuntimePlan prefix = runtime_plan;
+        const auto current = std::find_if(
+            prefix.effects.begin(), prefix.effects.end(),
+            [module_index](const ClassicFloatEffect &effect) {
+                return effect.type == ClassicFloatEffectType::Clump &&
+                       effect.module_index == module_index;
+            });
+        if (current == prefix.effects.end()) {
+            fail("runtime plan does not schedule the clump module");
+        }
+        prefix.effects.erase(current, prefix.effects.end());
+        for (const ClassicFloatEffect effect : prefix.effects) {
+            if (effect.type != ClassicFloatEffectType::Clump) {
+                fail("non-clump effects before a clump guide are not yet supported");
+            }
+        }
+        prefix.clumps.resize(module_index);
+        std::vector<ClassicClumpRuntimeData> upstream;
+        upstream.reserve(module_index);
+        for (std::size_t previous = 0u; previous < module_index; ++previous) {
+            upstream.push_back(build_xgen_classic_clump_runtime_data(
+                description, surface, description_directory, guide_roots,
+                runtime_plan, previous, cvs_per_guide));
+        }
+        apply_xgen_classic_float_runtime_plan_cpu(
+            axes, prefix, 1.0f, guide_roots.surface_tangents,
+            guide_roots.random_prefixes, guide_roots.primitive_ids, upstream);
+    }
     ClassicClumpRuntimeData result{};
     result.module_name = module.name;
     result.cvs_per_guide = cvs_per_guide;
     result.guide_axes.reserve(axes.points.size());
     for (const PackedCurvePoint &point : axes.points) {
         result.guide_axes.push_back({point.x, point.y, point.z});
+    }
+    result.guide_normals.reserve(guide_roots.roots.size());
+    result.guide_tangents.reserve(guide_roots.roots.size());
+    result.guide_uvs.reserve(guide_roots.roots.size());
+    result.guide_face_ids.reserve(guide_roots.roots.size());
+    result.guide_random_prefixes = guide_roots.random_prefixes;
+    for (std::size_t guide = 0u; guide < guide_roots.roots.size(); ++guide) {
+        result.guide_normals.push_back(guide_roots.roots[guide].normal);
+        result.guide_tangents.push_back(guide_roots.surface_tangents[guide]);
+        result.guide_uvs.push_back(guide_roots.roots[guide].uv);
+        result.guide_face_ids.push_back(
+            guide_roots.roots[guide].surface_face_id);
     }
 
     const XgenPtexMap map{ptex_path};

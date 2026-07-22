@@ -279,11 +279,11 @@ int main(int argc, char **argv) try {
         const std::uint32_t runtime_cvs = options.cvs != 0u
             ? options.cvs
             : (runtime.fx_cv_count >= 2u ? runtime.fx_cv_count : 8u);
-        for (const nanoxgen::ClassicFloatClumpModule &clump : runtime.clumps) {
+        for (std::size_t module = 0u; module < runtime.clumps.size(); ++module) {
             clump_data.push_back(
                 nanoxgen::build_xgen_classic_clump_runtime_data(
                     description, imported, description_directory, roots,
-                    clump, runtime_cvs));
+                    runtime, module, runtime_cvs));
         }
         if (options.dump_runtime) {
             if (*options.dump_runtime >= roots.roots.size()) {
@@ -383,8 +383,40 @@ int main(int argc, char **argv) try {
                           << " amount "
                           << nanoxgen::evaluate_xgen_classic_float_runtime_expression(
                                  clump.clump, context)
+                          << " noise "
+                          << nanoxgen::evaluate_xgen_classic_float_runtime_expression(
+                                 clump.noise, context)
+                          << " noise_frequency "
+                          << nanoxgen::evaluate_xgen_classic_float_runtime_expression(
+                                 clump.noise_frequency, context)
+                          << " noise_correlation "
+                          << nanoxgen::evaluate_xgen_classic_float_runtime_expression(
+                                 clump.noise_correlation, context)
                           << '\n';
                 if (guide != nanoxgen::kInvalidIndex) {
+                    const nanoxgen::ClassicFloatRuntimeContext strand_context =
+                        context;
+                    context.u = binding.guide_uvs[guide].x;
+                    context.v = binding.guide_uvs[guide].y;
+                    context.face_seed = nanoxgen::xgen_runtime_face_seed(
+                        runtime.description_id, runtime.description_name,
+                        binding.guide_face_ids[guide]);
+                    context.random_prefix =
+                        binding.guide_random_prefixes[guide];
+                    std::cout << "runtime " << strand
+                              << " clump_guide_noise " << clump.name
+                              << " prefix "
+                              << binding.guide_random_prefixes[guide]
+                              << " face " << binding.guide_face_ids[guide]
+                              << " uv " << binding.guide_uvs[guide].x << ' '
+                              << binding.guide_uvs[guide].y << ' '
+                              << nanoxgen::evaluate_xgen_classic_float_runtime_expression(
+                                     clump.noise, context)
+                              << " frequency "
+                              << nanoxgen::evaluate_xgen_classic_float_runtime_expression(
+                                     clump.noise_frequency, context)
+                              << '\n';
+                    context = strand_context;
                     const std::size_t offset =
                         static_cast<std::size_t>(guide) *
                         binding.cvs_per_guide;

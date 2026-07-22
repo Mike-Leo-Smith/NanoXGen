@@ -43,6 +43,13 @@ struct ClassicFloatClumpModule {
     ClassicFloatRuntimeExpression mask;
     ClassicFloatRuntimeExpression clump;
     ClassicFloatRuntimeExpression clump_scale;
+    ClassicFloatRuntimeExpression noise;
+    ClassicFloatRuntimeExpression noise_scale;
+    ClassicFloatRuntimeExpression noise_frequency;
+    ClassicFloatRuntimeExpression noise_correlation;
+    // The point/ID maps consumed by the runtime already encode the authored
+    // control-map grouping. Retain the flag for diagnostics and cache keys.
+    bool use_control_maps{};
 };
 
 // Geometry binding for one compiled ClumpingFX module. Axes are stored
@@ -52,6 +59,11 @@ struct ClassicClumpRuntimeData {
     std::string module_name;
     std::uint32_t cvs_per_guide{};
     std::vector<Vec3> guide_axes;
+    std::vector<Vec3> guide_normals;
+    std::vector<Vec3> guide_tangents;
+    std::vector<Vec2> guide_uvs;
+    std::vector<std::uint32_t> guide_face_ids;
+    std::vector<std::uint32_t> guide_random_prefixes;
     std::vector<std::uint32_t> strand_guide_indices;
 };
 
