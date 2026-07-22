@@ -53,6 +53,16 @@ const XGenPackageReference *find_reference(
     return found == manifest.references.end() ? nullptr : &*found;
 }
 
+const XGenPackageFile *find_file(
+    const XGenPackageManifest &manifest, const std::string &relative_path) {
+    const auto found = std::find_if(
+        manifest.files.begin(), manifest.files.end(),
+        [&](const XGenPackageFile &file) {
+            return file.relative_path.generic_string() == relative_path;
+        });
+    return found == manifest.files.end() ? nullptr : &*found;
+}
+
 void test_classic_inventory_and_boundaries() {
     TempDirectory temporary;
     const std::filesystem::path root = temporary.path / "asset";
@@ -81,6 +91,10 @@ void test_classic_inventory_and_boundaries() {
     const XGenPackageManifest manifest = scan_xgen_package(root, options);
     require(manifest.backend == XGenEvaluationBackend::AutodeskClassicTyped,
             "Classic package must select the typed Autodesk backend");
+    require(manifest.execution_plan.requires_autodesk &&
+                !manifest.execution_plan.native_compatible &&
+                manifest.execution_plan.backend == manifest.backend,
+            "Classic package must include an explicit Autodesk execution plan");
     require(!manifest.dependency_closure_complete,
             "missing, external, and unresolved dependencies must make closure incomplete");
     const XGenPackageReference *density = find_reference(
@@ -127,6 +141,9 @@ void test_classic_inventory_and_boundaries() {
     require(interactive.backend == XGenEvaluationBackend::AutodeskInteractiveMaya &&
                 !interactive.dependency_closure_complete,
             "Maya scene must select Maya backend and prevent a complete core-only closure");
+    require(interactive.execution_plan.requires_autodesk &&
+                interactive.execution_plan.stages.size() == 3u,
+            "Interactive package must describe its Maya execution stages");
 }
 
 void test_content_based_xgen_detection() {
@@ -146,6 +163,96 @@ void test_content_based_xgen_detection() {
             ".xgen must be classified by content rather than extension alone");
     require(manifest.backend == XGenEvaluationBackend::NativeSnapshot,
             "evaluated snapshot must select the native backend");
+    require(manifest.execution_plan.native_compatible &&
+                !manifest.execution_plan.requires_autodesk,
+            "standalone evaluated snapshot must have a native execution plan");
+
+    write_text(temporary.path / "mask.ptx", "ptex-placeholder");
+    const XGenPackageManifest with_ptex = scan_xgen_package(temporary.path);
+    require(with_ptex.backend == XGenEvaluationBackend::AutodeskInteractiveMaya &&
+                with_ptex.execution_plan.requires_autodesk &&
+                !with_ptex.execution_plan.native_compatible,
+            "PTEX sidecars without a Classic owner must select Autodesk fallback");
+}
+
+void test_bounded_text_scan_and_content_probe() {
+    TempDirectory temporary;
+    const std::filesystem::path root = temporary.path / "asset";
+    std::filesystem::create_directories(root);
+    write_text(root / "early.abc", "archive");
+    write_text(root / "late.abc", "archive");
+    write_text(
+        root / "collection.xgen",
+        "early \"${PROJECT}/early.abc\"\n"
+        "// ignored /not/a/dependency.abc\n"
+        "value 1 # ignored /also/not/a/dependency.abc\n"
+        "windows \"C:\\show\\asset\\external.abc\"\n" +
+        std::string(1024u, 'x') +
+        "\nlate \"${PROJECT}/late.abc\"\n");
+    XGenPackageOptions options{};
+    options.max_text_file_bytes = 220u;
+    const XGenPackageManifest manifest = scan_xgen_package(root, options);
+    const XGenPackageReference *early = find_reference(
+        manifest, "${PROJECT}/early.abc");
+    const XGenPackageReference *windows = find_reference(
+        manifest, "C:\\show\\asset\\external.abc");
+    require(early && early->status == XGenReferenceStatus::Resolved,
+            "bounded prefix scan must retain early dependencies from large text files");
+    require(windows && windows->status == XGenReferenceStatus::External &&
+                windows->resolved_path &&
+                windows->resolved_path->generic_string() == "C:/show/asset/external.abc",
+            "Windows absolute paths must normalize and remain package-external");
+    require(!find_reference(manifest, "/not/a/dependency.abc"),
+            "full-line comments must not create dependencies");
+    require(!find_reference(manifest, "/also/not/a/dependency.abc"),
+            "inline XGen comments must not create dependencies");
+    require(!find_reference(manifest, "${PROJECT}/late.abc") &&
+                !manifest.dependency_closure_complete,
+            "truncated text scan must not emit partial/late references or claim closure");
+    require(std::any_of(
+                manifest.diagnostics.begin(), manifest.diagnostics.end(),
+                [](const std::string &diagnostic) {
+                    return diagnostic.find("bounded prefix") != std::string::npos;
+                }),
+            "bounded text scan must report its enforced limit");
+
+    TempDirectory binary_temporary;
+    const std::filesystem::path binary_root = binary_temporary.path / "asset";
+    std::filesystem::create_directories(binary_root);
+    std::string binary = "fake \"/must/not/be/reported.abc\"";
+    binary.push_back('\0');
+    binary += "tail";
+    write_text(binary_root / "binary.xgen", binary);
+    const XGenPackageManifest binary_manifest = scan_xgen_package(binary_root);
+    require(binary_manifest.references.empty() &&
+                !binary_manifest.dependency_closure_complete,
+            "an extension alone must not make binary content a text container");
+    require(std::any_of(
+                binary_manifest.diagnostics.begin(), binary_manifest.diagnostics.end(),
+                [](const std::string &diagnostic) {
+                    return diagnostic.find("NUL bytes") != std::string::npos;
+                }),
+            "binary content rejection must be diagnosed");
+}
+
+void test_sidecar_classification() {
+    TempDirectory temporary;
+    write_text(temporary.path / "description.xdsc", "description");
+    write_text(temporary.path / "delta.xgd", "delta");
+    write_text(temporary.path / "module.xgfx", "module");
+    write_text(temporary.path / "preset.xgip", "preset");
+    write_text(temporary.path / "data.caf", "caf");
+    const XGenPackageManifest manifest = scan_xgen_package(temporary.path);
+    require(find_file(manifest, "description.xdsc")->kind ==
+                XGenPackageFileKind::ClassicDescription &&
+                find_file(manifest, "delta.xgd")->kind ==
+                XGenPackageFileKind::ClassicDelta &&
+                find_file(manifest, "module.xgfx")->kind ==
+                XGenPackageFileKind::ClassicFxModule &&
+                find_file(manifest, "preset.xgip")->kind ==
+                XGenPackageFileKind::InteractiveGroomPreset &&
+                find_file(manifest, "data.caf")->kind == XGenPackageFileKind::Caf,
+            "Classic/Interactive sidecar extensions must keep their typed inventory kinds");
 }
 
 void test_explicit_symlink_root_rejected() {
@@ -163,6 +270,21 @@ void test_explicit_symlink_root_rejected() {
         rejected = true;
     }
     require(rejected, "explicit symbolic-link root must be rejected");
+
+    const std::filesystem::path real_parent = temporary.path / "real-parent";
+    const std::filesystem::path nested_root = real_parent / "asset";
+    std::filesystem::create_directories(nested_root);
+    const std::filesystem::path parent_link = temporary.path / "parent-link";
+    error.clear();
+    std::filesystem::create_directory_symlink(real_parent, parent_link, error);
+    if (error) { return; }
+    rejected = false;
+    try {
+        (void)scan_xgen_package(parent_link / "asset");
+    } catch (const std::runtime_error &) {
+        rejected = true;
+    }
+    require(rejected, "package root must reject a symlink in any intermediate component");
 }
 
 } // namespace
@@ -170,6 +292,8 @@ void test_explicit_symlink_root_rejected() {
 int main() try {
     test_classic_inventory_and_boundaries();
     test_content_based_xgen_detection();
+    test_bounded_text_scan_and_content_probe();
+    test_sidecar_classification();
     test_explicit_symlink_root_rejected();
     std::cout << "all NanoXGen package tests passed\n";
     return 0;

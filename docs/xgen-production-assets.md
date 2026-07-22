@@ -28,10 +28,13 @@ Those cases must select an Autodesk backend and cache the evaluated result.
   --require-complete /show/asset
 ```
 
-The command returns JSON containing the inventory, references, closure status,
-diagnostics, and the minimum evaluation backend. `${PROJECT}` defaults to the
-package root. Other variables are explicit so the scanner cannot silently bind
-a dependency to the wrong studio directory.
+The command returns a package manifest containing the inventory, typed summary,
+references, closure status, diagnostics, and an explicit backend execution
+plan. The plan records whether the package is native-compatible, whether an
+Autodesk runtime is required, the ordered evaluation/cache stages, and the
+fallback reasons. `${PROJECT}` defaults to the package root. Other variables
+are explicit so the scanner cannot silently bind a dependency to the wrong
+studio directory.
 
 The scanner:
 
@@ -42,12 +45,51 @@ The scanner:
   `${PROJECT}xgen/...` concatenated spelling;
 - reports resolved, missing, package-external, unresolved-variable, and unsafe
   references;
-- inventories but never follows symbolic links;
-- enforces file-count and per-text-file limits;
+- inventories but never follows symbolic links, including a link in an
+  intermediate root/reference component;
+- probes content before treating a known extension as text, streams only a
+  bounded prefix, retains references found before the limit, and marks closure
+  incomplete when the file was truncated;
+- normalizes mixed Windows/Unix separators while keeping Windows absolute paths
+  package-external on Linux;
 - marks Maya/Interactive dependency closure incomplete because the Maya DG must
   be enumerated by a Maya-side bridge.
 
 `--require-complete` exits with status 3 when the core cannot prove the closure.
+
+### Complete Rabbit package calibration
+
+The original external `rabbit.zip` was extracted to a fresh repository-external
+directory so generated `.nxc` files and the locally path-remapped Classic
+collection did not contaminate inventory counts. With the default 16 MiB
+bounded text prefix, the scanner inventoried 203 files and extracted 186 unique
+per-source references:
+
+| Kind | Count |
+|---|---:|
+| Classic collection | 4 |
+| Maya ASCII / binary | 5 / 2 |
+| Alembic | 20 |
+| PTEX | 90 |
+| XUV / XPD / XGC | 30 / 1 / 9 |
+| texture | 28 |
+| MEL/script | 5 |
+| archive/USD | 1 |
+| unknown ancillary | 8 |
+
+The dependency status was 73 package-external, 5 missing, and 108
+unresolved-variable references. The source contains stale studio-absolute
+paths and description/FX-module variables; its large `.xgen` and `.ma` files
+also exceed the bounded prefix, and Maya DG dependencies have not been
+enumerated. Closure is therefore correctly false. PTEX, procedural Classic
+expressions, MEL data, and Maya scenes make the package non-native-compatible;
+the execution plan selects `autodesk-interactive-maya`, followed by the
+in-memory evaluated-data bridge and external `.nxc` caching.
+
+No `.xdsc`, `.xgd`, `.xgfx`, `.xgip`, CAF, symlink, or Windows-style path was
+present in this Rabbit archive. Those types remain covered by synthetic
+scanner tests or require another production package. The full JSON manifest,
+asset paths, extracted files, and generated caches remain outside Git.
 
 ## Evaluated snapshot ingestion
 

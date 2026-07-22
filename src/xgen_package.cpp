@@ -8,11 +8,9 @@
 #include <array>
 #include <cctype>
 #include <fstream>
-#include <limits>
-#include <set>
-#include <span>
 #include <stdexcept>
 #include <string_view>
+#include <system_error>
 
 namespace nanoxgen {
 namespace {
@@ -66,7 +64,8 @@ XGenPackageFileKind classify_file(const std::filesystem::path &path) {
     }
     if (extension == ".png" || extension == ".jpg" || extension == ".jpeg" ||
         extension == ".exr" || extension == ".tif" || extension == ".tiff" ||
-        extension == ".tx" || extension == ".bmp") {
+        extension == ".tx" || extension == ".bmp" || extension == ".iff" ||
+        extension == ".cltx") {
         return XGenPackageFileKind::Texture;
     }
     if (extension == ".py" || extension == ".mel" || extension == ".so" ||
@@ -93,14 +92,15 @@ bool has_known_dependency_extension(std::string_view value) {
         ".nxc", ".nxg", ".caf", ".abc", ".ptx", ".ptex", ".xuv",
         ".xpd", ".xgc", ".ass", ".usd", ".usda", ".usdc", ".obj",
         ".fbx", ".rib", ".png", ".jpg", ".jpeg", ".exr", ".tif",
-        ".tiff", ".tx", ".bmp", ".py", ".mel", ".so", ".dll", ".dylib"});
+        ".tiff", ".tx", ".bmp", ".iff", ".cltx", ".py", ".mel",
+        ".so", ".dll", ".dylib"});
     return std::find(known.begin(), known.end(), extension) != known.end();
 }
 
 std::string trim_candidate(std::string value) {
     const auto punctuation = [](unsigned char c) {
         return std::isspace(c) || c == '\'' || c == '"' || c == ';' || c == ',' ||
-            c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}';
+            c == '(' || c == ')' || c == '[' || c == ']';
     };
     while (!value.empty() && punctuation(static_cast<unsigned char>(value.front()))) {
         value.erase(value.begin());
@@ -113,47 +113,170 @@ std::string trim_candidate(std::string value) {
 
 bool looks_like_reference(const std::string &candidate) {
     if (candidate.empty()) { return false; }
-    if (candidate.find("${") != std::string::npos) { return true; }
-    if (has_known_dependency_extension(candidate)) { return true; }
+    const bool has_expression_operator =
+        candidate.find_first_of("+*()[]<>=?") != std::string::npos;
+    if (candidate.starts_with("${")) { return !has_expression_operator; }
+    if (has_known_dependency_extension(candidate)) { return !has_expression_operator; }
     if (candidate.starts_with("./") || candidate.starts_with("../") ||
         candidate.starts_with('/')) {
-        return candidate.find_first_of("+*()[]<>=") == std::string::npos;
+        return !has_expression_operator;
     }
     // A bare expression such as a/b is not a path. Requiring a known suffix
     // avoids the false positives common in XGen density expressions.
     return false;
 }
 
-std::vector<std::string> extract_references(std::string_view text) {
-    std::vector<std::string> candidates;
-    std::string token;
-    char quote = '\0';
-    const auto flush = [&] {
-        std::string candidate = trim_candidate(token);
-        if (looks_like_reference(candidate)) { candidates.push_back(std::move(candidate)); }
-        token.clear();
-    };
-    for (const char c : text) {
-        if (quote != '\0') {
-            if (c == quote) {
-                flush();
-                quote = '\0';
-            } else {
-                token.push_back(c);
+class ReferenceExtractor {
+public:
+    void feed(std::string_view text) {
+        for (const char c : text) { feed(c); }
+    }
+
+    [[nodiscard]] std::vector<std::string> finish(bool complete) {
+        if (complete) { flush(); }
+        std::sort(_candidates.begin(), _candidates.end());
+        _candidates.erase(
+            std::unique(_candidates.begin(), _candidates.end()), _candidates.end());
+        return std::move(_candidates);
+    }
+
+private:
+    static constexpr std::size_t kMaxCandidateBytes = 16u * 1024u;
+
+    void append(char c) {
+        if (_discard_token) { return; }
+        if (_token.size() == kMaxCandidateBytes) {
+            _token.clear();
+            _discard_token = true;
+            return;
+        }
+        _token.push_back(c);
+    }
+
+    void flush() {
+        if (!_discard_token) {
+            std::string candidate = trim_candidate(_token);
+            if (looks_like_reference(candidate)) {
+                _candidates.push_back(std::move(candidate));
             }
+        }
+        _token.clear();
+        _discard_token = false;
+    }
+
+    void feed(char c) {
+        if (_skip_line) {
+            if (c == '\n') {
+                _skip_line = false;
+                _line_start = true;
+                _pending_line_slash = false;
+            }
+            return;
+        }
+        if (_quote != '\0') {
+            if (c == _quote) {
+                flush();
+                _quote = '\0';
+            } else if (c == '\n') {
+                _token.clear();
+                _discard_token = false;
+                _quote = '\0';
+                _line_start = true;
+            } else {
+                append(c);
+            }
+            return;
+        }
+        if (c == '\n') {
+            flush();
+            _line_start = true;
+            return;
+        }
+        if (_line_start) {
+            if (std::isspace(static_cast<unsigned char>(c))) { return; }
+            _line_start = false;
+            if (c == '#') {
+                _skip_line = true;
+                return;
+            }
+            if (c == '/') {
+                _pending_line_slash = true;
+                return;
+            }
+        }
+        if (_pending_line_slash) {
+            _pending_line_slash = false;
+            if (c == '/') {
+                _skip_line = true;
+                return;
+            }
+            append('/');
+        }
+        if (c == '#') {
+            flush();
+            _skip_line = true;
         } else if (c == '\'' || c == '"') {
             flush();
-            quote = c;
+            _quote = c;
         } else if (std::isspace(static_cast<unsigned char>(c)) || c == ';' || c == ',') {
             flush();
         } else {
-            token.push_back(c);
+            append(c);
         }
     }
-    flush();
-    std::sort(candidates.begin(), candidates.end());
-    candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
-    return candidates;
+
+    std::vector<std::string> _candidates;
+    std::string _token;
+    char _quote{'\0'};
+    bool _discard_token{};
+    bool _line_start{true};
+    bool _skip_line{};
+    bool _pending_line_slash{};
+};
+
+struct TextScanResult {
+    std::vector<std::string> references;
+    bool truncated{};
+};
+
+TextScanResult scan_text_file(
+    const std::filesystem::path &path,
+    std::uint64_t byte_size,
+    std::uint64_t byte_limit) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) { throw std::runtime_error("cannot open candidate text container"); }
+    const std::uint64_t scan_size = std::min(byte_size, byte_limit);
+    std::uint64_t remaining = scan_size;
+    std::uint64_t control_bytes = 0u;
+    std::array<char, 64u * 1024u> buffer{};
+    ReferenceExtractor extractor;
+    while (remaining != 0u) {
+        const std::size_t request = static_cast<std::size_t>(
+            std::min<std::uint64_t>(remaining, buffer.size()));
+        input.read(buffer.data(), static_cast<std::streamsize>(request));
+        const std::streamsize count = input.gcount();
+        if (count != static_cast<std::streamsize>(request)) {
+            throw std::runtime_error("cannot read candidate text container");
+        }
+        for (std::streamsize index = 0; index < count; ++index) {
+            const unsigned char c = static_cast<unsigned char>(buffer[index]);
+            if (c == 0u) {
+                throw std::runtime_error(
+                    "candidate text container contains NUL bytes");
+            }
+            if (c < 0x20u && c != '\n' && c != '\r' && c != '\t' && c != '\f') {
+                ++control_bytes;
+            }
+        }
+        extractor.feed({buffer.data(), static_cast<std::size_t>(count)});
+        remaining -= static_cast<std::uint64_t>(count);
+    }
+    if (control_bytes > std::max<std::uint64_t>(8u, scan_size / 100u)) {
+        throw std::runtime_error(
+            "candidate text container has binary control-byte content");
+    }
+    const bool truncated = scan_size != byte_size;
+    return {extractor.finish(!truncated), truncated};
 }
 
 bool path_is_within(const std::filesystem::path &root, const std::filesystem::path &path) {
@@ -196,28 +319,33 @@ ExpandedReference expand_reference(
             expanded.push_back(std::filesystem::path::preferred_separator);
         }
     }
+    std::replace(expanded.begin(), expanded.end(), '\\', '/');
+    const bool windows_absolute = expanded.size() >= 3u &&
+        std::isalpha(static_cast<unsigned char>(expanded[0])) &&
+        expanded[1] == ':' && expanded[2] == '/';
     std::filesystem::path path{expanded};
     if (path.empty()) { return {std::nullopt, true}; }
-    if (path.is_relative()) { path = source_parent / path; }
+    if (path.is_relative() && !windows_absolute) { path = source_parent / path; }
     return {path.lexically_normal(), false};
 }
 
-std::string read_text_file(const std::filesystem::path &path, std::uint64_t size) {
-    if (size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max()) ||
-        size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
-        throw std::runtime_error("text file is too large to address");
+bool absolute_path_has_symlink_component(const std::filesystem::path &path) {
+    const std::filesystem::path absolute =
+        std::filesystem::absolute(path).lexically_normal();
+    std::filesystem::path current = absolute.root_path();
+    for (const std::filesystem::path &component : absolute.relative_path()) {
+        current /= component;
+        std::error_code error;
+        const std::filesystem::file_status status =
+            std::filesystem::symlink_status(current, error);
+        if (error == std::errc::no_such_file_or_directory) { return false; }
+        if (error) {
+            throw std::runtime_error(
+                "cannot inspect package root component: " + current.string());
+        }
+        if (std::filesystem::is_symlink(status)) { return true; }
     }
-    std::ifstream input(path, std::ios::binary);
-    if (!input) { throw std::runtime_error("cannot open text container"); }
-    std::string text(static_cast<std::size_t>(size), '\0');
-    if (!text.empty()) {
-        input.read(text.data(), static_cast<std::streamsize>(text.size()));
-    }
-    if (!input) { throw std::runtime_error("cannot read text container"); }
-    if (text.find('\0') != std::string::npos) {
-        throw std::runtime_error("text container contains NUL bytes");
-    }
-    return text;
+    return false;
 }
 
 bool contains_symlink_component(
@@ -227,7 +355,11 @@ bool contains_symlink_component(
     std::filesystem::path current = root;
     for (const std::filesystem::path &component : relative) {
         current /= component;
-        if (std::filesystem::is_symlink(std::filesystem::symlink_status(current))) {
+        std::error_code error;
+        const std::filesystem::file_status status =
+            std::filesystem::symlink_status(current, error);
+        if (error == std::errc::no_such_file_or_directory) { return false; }
+        if (error || std::filesystem::is_symlink(status)) {
             return true;
         }
     }
@@ -290,6 +422,10 @@ XGenPackageManifest scan_xgen_package(
     if (options.max_files == 0u || options.max_text_file_bytes == 0u) {
         throw std::invalid_argument("XGen package scan limits must be non-zero");
     }
+    if (absolute_path_has_symlink_component(root)) {
+        throw std::runtime_error(
+            "XGen package root must not traverse a symbolic link");
+    }
     const std::filesystem::file_status root_status = std::filesystem::symlink_status(root);
     if (!std::filesystem::exists(root_status)) {
         throw std::runtime_error("XGen package root does not exist: " + root.string());
@@ -330,6 +466,8 @@ XGenPackageManifest scan_xgen_package(
     bool has_classic = false;
     bool has_interactive_authoring = false;
     bool has_native_snapshot = false;
+    bool has_ptex = false;
+    bool has_script_or_plugin = false;
     for (const std::filesystem::path &path : paths) {
         const std::filesystem::file_status status = std::filesystem::symlink_status(path);
         const bool symlink = std::filesystem::is_symlink(status);
@@ -356,6 +494,9 @@ XGenPackageManifest scan_xgen_package(
             kind == XGenPackageFileKind::EvaluatedSplineBlob ||
             kind == XGenPackageFileKind::CurveCache ||
             kind == XGenPackageFileKind::NanoXGenAsset;
+        has_ptex = has_ptex || kind == XGenPackageFileKind::Ptex;
+        has_script_or_plugin = has_script_or_plugin ||
+            kind == XGenPackageFileKind::Script;
         if (kind == XGenPackageFileKind::InteractiveGroomPreset ||
             kind == XGenPackageFileKind::MayaAsciiScene ||
             kind == XGenPackageFileKind::MayaBinaryScene) {
@@ -364,21 +505,21 @@ XGenPackageManifest scan_xgen_package(
                 "Maya DG dependencies require Maya-side enumeration: " + path.string());
         }
         if (!is_text_container(kind)) { continue; }
-        if (byte_size > options.max_text_file_bytes) {
-            manifest.dependency_closure_complete = false;
-            manifest.diagnostics.push_back(
-                "text container exceeds max_text_file_bytes: " + path.string());
-            continue;
-        }
-        std::string text;
+        TextScanResult text_scan;
         try {
-            text = read_text_file(path, byte_size);
+            text_scan = scan_text_file(path, byte_size, options.max_text_file_bytes);
         } catch (const std::exception &error) {
             manifest.dependency_closure_complete = false;
             manifest.diagnostics.push_back(path.string() + ": " + error.what());
             continue;
         }
-        for (const std::string &literal : extract_references(text)) {
+        if (text_scan.truncated) {
+            manifest.dependency_closure_complete = false;
+            manifest.diagnostics.push_back(
+                "text scan reached max_text_file_bytes after extracting the bounded prefix: " +
+                path.string());
+        }
+        for (const std::string &literal : text_scan.references) {
             XGenPackageReference reference{};
             reference.source = path.lexically_relative(absolute_root);
             reference.literal = literal;
@@ -407,7 +548,8 @@ XGenPackageManifest scan_xgen_package(
         }
     }
 
-    if (has_interactive_authoring) {
+    if (has_interactive_authoring ||
+        (!has_classic && (has_ptex || has_script_or_plugin))) {
         manifest.backend = XGenEvaluationBackend::AutodeskInteractiveMaya;
     } else if (has_classic) {
         manifest.backend = XGenEvaluationBackend::AutodeskClassicTyped;
@@ -415,6 +557,60 @@ XGenPackageManifest scan_xgen_package(
         manifest.backend = XGenEvaluationBackend::NativeSnapshot;
     } else {
         manifest.backend = XGenEvaluationBackend::InventoryOnly;
+    }
+    XGenBackendExecutionPlan &plan = manifest.execution_plan;
+    plan.backend = manifest.backend;
+    plan.requires_autodesk = manifest.backend == XGenEvaluationBackend::AutodeskClassicTyped ||
+        manifest.backend == XGenEvaluationBackend::AutodeskInteractiveMaya;
+    plan.native_compatible = manifest.backend == XGenEvaluationBackend::NativeSnapshot &&
+        manifest.dependency_closure_complete && !has_ptex && !has_script_or_plugin;
+    switch (manifest.backend) {
+        case XGenEvaluationBackend::NativeSnapshot:
+            plan.stages = {
+                "load and validate evaluated renderer data with NanoXGen",
+                "pack or reuse pointCounts and float4(position, radius)",
+                "retain the validated renderer data on the target device"};
+            break;
+        case XGenEvaluationBackend::AutodeskClassicTyped:
+            plan.stages = {
+                "resolve package variables and configure Classic XGen project paths",
+                "evaluate each description through public XGenRenderAPI typed callbacks",
+                "validate and cache renderer curves as NanoXGen .nxc outside the package"};
+            break;
+        case XGenEvaluationBackend::AutodeskInteractiveMaya:
+            plan.stages = {
+                "open the authoring scene and enumerate Maya DG, reference, and plugin dependencies",
+                "evaluate Interactive outRenderData in a licensed Maya runtime",
+                "serialize MPxData once to memory and build a validated NanoXGen .nxc"};
+            break;
+        case XGenEvaluationBackend::InventoryOnly:
+            plan.stages = {
+                "inventory package files and resolve safe textual references",
+                "supply an evaluated renderer snapshot before runtime ingestion"};
+            break;
+    }
+    if (has_classic) {
+        plan.reasons.emplace_back(
+            "Classic procedural descriptions and expressions require Autodesk evaluation");
+    }
+    if (has_interactive_authoring) {
+        plan.reasons.emplace_back(
+            "Maya authoring state requires DG and file-reference enumeration");
+    }
+    if (has_ptex) {
+        plan.reasons.emplace_back(
+            "PTEX assets are inventoried but native PTEX expression evaluation is unsupported");
+        plan.native_compatible = false;
+    }
+    if (has_script_or_plugin) {
+        plan.reasons.emplace_back(
+            "custom scripts or plugins require their owning Autodesk runtime");
+        plan.native_compatible = false;
+    }
+    if (!manifest.dependency_closure_complete) {
+        plan.reasons.emplace_back(
+            "the static package dependency closure is incomplete");
+        plan.native_compatible = false;
     }
     return manifest;
 }

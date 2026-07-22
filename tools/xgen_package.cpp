@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -66,11 +67,50 @@ int main(int argc, char **argv) try {
         return 2;
     }
     const XGenPackageManifest manifest = scan_xgen_package(root, options);
+    std::map<std::string, std::size_t> files_by_kind;
+    std::map<std::string, std::size_t> references_by_status;
+    for (const XGenPackageFile &file : manifest.files) {
+        ++files_by_kind[to_string(file.kind)];
+    }
+    for (const XGenPackageReference &reference : manifest.references) {
+        ++references_by_status[to_string(reference.status)];
+    }
     std::cout << "{\"root\":\"" << escape_json(manifest.root.string())
               << "\",\"backend\":\"" << to_string(manifest.backend)
               << "\",\"dependency_closure_complete\":"
               << (manifest.dependency_closure_complete ? "true" : "false")
-              << ",\"files\":[";
+              << ",\"summary\":{\"file_count\":" << manifest.files.size()
+              << ",\"reference_count\":" << manifest.references.size()
+              << ",\"files_by_kind\":{";
+    std::size_t summary_index = 0u;
+    for (const auto &[kind, count] : files_by_kind) {
+        if (summary_index++ != 0u) { std::cout << ','; }
+        std::cout << '"' << escape_json(kind) << "\":" << count;
+    }
+    std::cout << "},\"references_by_status\":{";
+    summary_index = 0u;
+    for (const auto &[status, count] : references_by_status) {
+        if (summary_index++ != 0u) { std::cout << ','; }
+        std::cout << '"' << escape_json(status) << "\":" << count;
+    }
+    const XGenBackendExecutionPlan &plan = manifest.execution_plan;
+    std::cout << "}},\"execution_plan\":{\"backend\":\""
+              << to_string(plan.backend)
+              << "\",\"native_compatible\":"
+              << (plan.native_compatible ? "true" : "false")
+              << ",\"requires_autodesk\":"
+              << (plan.requires_autodesk ? "true" : "false")
+              << ",\"stages\":[";
+    for (std::size_t index = 0u; index < plan.stages.size(); ++index) {
+        if (index != 0u) { std::cout << ','; }
+        std::cout << '"' << escape_json(plan.stages[index]) << '"';
+    }
+    std::cout << "],\"reasons\":[";
+    for (std::size_t index = 0u; index < plan.reasons.size(); ++index) {
+        if (index != 0u) { std::cout << ','; }
+        std::cout << '"' << escape_json(plan.reasons[index]) << '"';
+    }
+    std::cout << "]},\"files\":[";
     for (std::size_t index = 0u; index < manifest.files.size(); ++index) {
         const XGenPackageFile &file = manifest.files[index];
         if (index != 0u) { std::cout << ','; }

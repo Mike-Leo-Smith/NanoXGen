@@ -50,6 +50,14 @@ enum class XGenEvaluationBackend {
     InventoryOnly,
 };
 
+struct XGenBackendExecutionPlan {
+    XGenEvaluationBackend backend{XGenEvaluationBackend::InventoryOnly};
+    bool native_compatible{};
+    bool requires_autodesk{};
+    std::vector<std::string> stages;
+    std::vector<std::string> reasons;
+};
+
 struct XGenPackageFile {
     std::filesystem::path relative_path;
     XGenPackageFileKind kind{XGenPackageFileKind::Unknown};
@@ -65,6 +73,8 @@ struct XGenPackageReference {
 
 struct XGenPackageOptions {
     std::size_t max_files{100000u};
+    // Maximum prefix inspected from each candidate text container. Larger
+    // files are still partially scanned, but closure remains incomplete.
     std::uint64_t max_text_file_bytes{16u * 1024u * 1024u};
     // PROJECT defaults to the package root. DESC/PAL and studio variables are
     // intentionally explicit because guessing them can silently bind a wrong
@@ -78,6 +88,7 @@ struct XGenPackageManifest {
     std::vector<XGenPackageReference> references;
     std::vector<std::string> diagnostics;
     XGenEvaluationBackend backend{XGenEvaluationBackend::InventoryOnly};
+    XGenBackendExecutionPlan execution_plan;
     // False means a Maya DG, unresolved variable, missing dependency, unsafe
     // reference, unreadable text container, or an enforced scan limit prevents
     // NanoXGen from proving the dependency closure.

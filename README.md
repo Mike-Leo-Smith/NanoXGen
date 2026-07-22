@@ -41,8 +41,8 @@ The current prototype provides:
   converter using only C++ and zlib;
 - a production-package inventory that distinguishes Classic collections from
   evaluated BLOBs by content, resolves path variables, reports missing/external
-  dependencies, refuses symlink traversal, and selects a native, Classic typed,
-  or Interactive Maya backend;
+  dependencies, refuses symlink traversal, and emits a typed manifest plus a
+  native, Classic typed, or Interactive Maya backend execution plan;
 - an optional Classic curve bridge that consumes public XGen RenderAPI typed
   callbacks directly and can write `.nxc` without an intermediate renderer BLOB;
 - an optional Interactive Maya command that serializes `outRenderData` to
