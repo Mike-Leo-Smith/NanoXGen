@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -121,14 +122,37 @@ int main(int argc, char **argv) try {
                        other.point_counts());
         if (!topology_matches) {
             std::set<Identity> other_identities;
+            using CurveRange = std::pair<std::uint64_t, std::uint32_t>;
+            std::map<Identity, CurveRange> input_ranges;
+            std::map<Identity, CurveRange> compare_ranges;
+            std::uint64_t input_point_offset{};
+            if (view.face_ids() && view.face_uvs()) {
+                for (std::uint32_t strand = 0u;
+                     strand < header.strand_count; ++strand) {
+                    const nanoxgen::Vec2 uv = view.face_uvs()[strand];
+                    const std::uint32_t count = view.point_counts()[strand];
+                    input_ranges.emplace(
+                        Identity{view.face_ids()[strand],
+                                 std::bit_cast<std::uint32_t>(uv.x),
+                                 std::bit_cast<std::uint32_t>(uv.y)},
+                        CurveRange{input_point_offset, count});
+                    input_point_offset += count;
+                }
+            }
+            std::uint64_t compare_point_offset{};
             if (other.face_ids() && other.face_uvs()) {
                 for (std::uint32_t strand = 0u;
                      strand < other.header().strand_count; ++strand) {
                     const nanoxgen::Vec2 uv = other.face_uvs()[strand];
-                    other_identities.emplace(
+                    const Identity identity{
                         other.face_ids()[strand],
                         std::bit_cast<std::uint32_t>(uv.x),
-                        std::bit_cast<std::uint32_t>(uv.y));
+                        std::bit_cast<std::uint32_t>(uv.y)};
+                    const std::uint32_t count = other.point_counts()[strand];
+                    other_identities.insert(identity);
+                    compare_ranges.emplace(
+                        identity, CurveRange{compare_point_offset, count});
+                    compare_point_offset += count;
                 }
             }
             std::vector<Identity> only_input;
@@ -141,10 +165,110 @@ int main(int argc, char **argv) try {
                 other_identities.begin(), other_identities.end(),
                 identities.begin(), identities.end(),
                 std::back_inserter(only_compare));
+            std::uint64_t common_curves{};
+            std::uint64_t common_points{};
+            std::uint64_t common_point_count_mismatches{};
+            double common_position_squared_error{};
+            double common_radius_squared_error{};
+            float common_max_position_error{};
+            float common_max_radius_error{};
+            for (const auto &[identity, input_range] : input_ranges) {
+                const auto found = compare_ranges.find(identity);
+                if (found == compare_ranges.end()) { continue; }
+                ++common_curves;
+                const CurveRange compare_range = found->second;
+                if (input_range.second != compare_range.second) {
+                    ++common_point_count_mismatches;
+                    continue;
+                }
+                common_points += input_range.second;
+                for (std::uint32_t cv = 0u; cv < input_range.second; ++cv) {
+                    const nanoxgen::PackedCurvePoint a =
+                        view.points()[input_range.first + cv];
+                    const nanoxgen::PackedCurvePoint b =
+                        other.points()[compare_range.first + cv];
+                    const float position_errors[]{
+                        std::abs(a.x - b.x), std::abs(a.y - b.y),
+                        std::abs(a.z - b.z)};
+                    for (const float error : position_errors) {
+                        common_position_squared_error +=
+                            static_cast<double>(error) * error;
+                        common_max_position_error = std::max(
+                            common_max_position_error, error);
+                    }
+                    const float radius_error =
+                        std::abs(a.radius - b.radius);
+                    common_radius_squared_error +=
+                        static_cast<double>(radius_error) * radius_error;
+                    common_max_radius_error = std::max(
+                        common_max_radius_error, radius_error);
+                }
+            }
+            const double common_position_rms = common_points == 0u
+                ? 0.0
+                : std::sqrt(common_position_squared_error /
+                            (3.0 * static_cast<double>(common_points)));
+            const double common_radius_rms = common_points == 0u
+                ? 0.0
+                : std::sqrt(common_radius_squared_error /
+                            static_cast<double>(common_points));
+            const auto length_range = [](const nanoxgen::CurveCacheView &curves,
+                                         const auto &ranges,
+                                         const std::vector<Identity> &values) {
+                float minimum = std::numeric_limits<float>::infinity();
+                float maximum = 0.0f;
+                for (const Identity &identity : values) {
+                    const CurveRange range = ranges.at(identity);
+                    // Renderer endpoints are not authored CVs and would add
+                    // two extrapolated segments to a near-zero cut curve.
+                    const std::uint32_t begin = range.second > 2u ? 1u : 0u;
+                    const std::uint32_t end = range.second > 2u
+                        ? range.second - 1u : range.second;
+                    float length = 0.0f;
+                    for (std::uint32_t cv = begin + 1u; cv < end; ++cv) {
+                        const nanoxgen::PackedCurvePoint a =
+                            curves.points()[range.first + cv - 1u];
+                        const nanoxgen::PackedCurvePoint b =
+                            curves.points()[range.first + cv];
+                        const float dx = b.x - a.x;
+                        const float dy = b.y - a.y;
+                        const float dz = b.z - a.z;
+                        length += std::sqrt(dx * dx + dy * dy + dz * dz);
+                    }
+                    minimum = std::min(minimum, length);
+                    maximum = std::max(maximum, length);
+                }
+                if (values.empty()) { minimum = 0.0f; }
+                return std::pair{minimum, maximum};
+            };
+            const auto input_lengths =
+                length_range(view, input_ranges, only_input);
+            const auto compare_lengths =
+                length_range(other, compare_ranges, only_compare);
             std::cout << "{\"compare\":\"" << compare_path->string()
                       << "\",\"topology_matches\":false"
                       << ",\"only_in_input\":" << only_input.size()
-                      << ",\"only_in_compare\":" << only_compare.size();
+                      << ",\"only_in_compare\":" << only_compare.size()
+                      << ",\"common_curves\":" << common_curves
+                      << ",\"common_points\":" << common_points
+                      << ",\"common_point_count_mismatches\":"
+                      << common_point_count_mismatches
+                      << ",\"common_max_position_error\":"
+                      << common_max_position_error
+                      << ",\"common_position_rms_error\":"
+                      << common_position_rms
+                      << ",\"common_max_radius_error\":"
+                      << common_max_radius_error
+                      << ",\"common_radius_rms_error\":"
+                      << common_radius_rms
+                      << ",\"only_in_input_length_min\":"
+                      << input_lengths.first
+                      << ",\"only_in_input_length_max\":"
+                      << input_lengths.second
+                      << ",\"only_in_compare_length_min\":"
+                      << compare_lengths.first
+                      << ",\"only_in_compare_length_max\":"
+                      << compare_lengths.second;
             const auto write_identity = [](std::string_view label,
                                            const Identity &identity) {
                 std::cout << ",\"" << label << "\":["
@@ -158,6 +282,39 @@ int main(int argc, char **argv) try {
             if (!only_compare.empty()) {
                 write_identity("first_only_in_compare", only_compare.front());
             }
+            const auto write_identities = [](
+                std::string_view label,
+                const std::vector<Identity> &values) {
+                std::cout << ",\"" << label << "\":[";
+                const std::size_t count = std::min<std::size_t>(
+                    values.size(), 16u);
+                for (std::size_t index = 0u; index < count; ++index) {
+                    if (index != 0u) { std::cout << ','; }
+                    std::cout << '[' << std::get<0>(values[index]) << ','
+                              << std::get<1>(values[index]) << ','
+                              << std::get<2>(values[index]) << ']';
+                }
+                std::cout << ']';
+            };
+            const auto write_face_counts = [](
+                std::string_view label,
+                const std::vector<Identity> &values) {
+                std::map<std::uint32_t, std::uint32_t> face_counts;
+                for (const Identity &identity : values) {
+                    ++face_counts[std::get<0>(identity)];
+                }
+                std::cout << ",\"" << label << "\":{";
+                std::size_t index = 0u;
+                for (const auto &[face, count] : face_counts) {
+                    if (index++ != 0u) { std::cout << ','; }
+                    std::cout << '\"' << face << "\":" << count;
+                }
+                std::cout << '}';
+            };
+            write_identities("input_identity_sample", only_input);
+            write_identities("compare_identity_sample", only_compare);
+            write_face_counts("input_only_face_counts", only_input);
+            write_face_counts("compare_only_face_counts", only_compare);
             std::cout << "}\n";
         } else {
             double position_squared_error{};

@@ -56,7 +56,9 @@ private:
 
 class TypedCallbacks final : public api::ProceduralCallbacks {
 public:
-    explicit TypedCallbacks(std::string cache_dir) : _cache_dir(std::move(cache_dir)) {}
+    TypedCallbacks(std::string cache_dir, bool dump_surface_frame)
+        : _cache_dir(std::move(cache_dir)),
+          _dump_surface_frame(dump_surface_frame) {}
 
     void flush(const char *, api::PrimitiveCache *cache) override {
         if (!_error.empty()) { return; }
@@ -98,6 +100,40 @@ public:
                 (u_count != 0u && !u) || (v_count != 0u && !v) ||
                 (face_id_count != 0u && !face_ids)) {
                 throw std::runtime_error("Classic PrimitiveCache returned a null channel");
+            }
+            if (_dump_surface_frame && _flush_count == 0u) {
+                const unsigned int normal_count =
+                    cache->getSize(api::PrimitiveCache::N_XS);
+                const unsigned int tangent_count =
+                    cache->getSize(api::PrimitiveCache::dPdu_XS);
+                const api::vec3 *normals =
+                    cache->get(api::PrimitiveCache::N_XS);
+                const api::vec3 *tangents =
+                    cache->get(api::PrimitiveCache::dPdu_XS);
+                const api::vec3 *positions =
+                    cache->get(api::PrimitiveCache::P_XS);
+                const api::vec3 *reference_positions =
+                    cache->get(api::PrimitiveCache::Pg_XS);
+                if (normal_count != 0u && tangent_count != 0u &&
+                    normals && tangents) {
+                    std::cerr << std::setprecision(9)
+                              << "surface_frame normal "
+                              << normals[0].x << ' ' << normals[0].y << ' '
+                              << normals[0].z << " tangent "
+                              << tangents[0].x << ' ' << tangents[0].y << ' '
+                              << tangents[0].z;
+                    if (positions) {
+                        std::cerr << " position " << positions[0].x << ' '
+                                  << positions[0].y << ' ' << positions[0].z;
+                    }
+                    if (reference_positions) {
+                        std::cerr << " reference_position "
+                                  << reference_positions[0].x << ' '
+                                  << reference_positions[0].y << ' '
+                                  << reference_positions[0].z;
+                    }
+                    std::cerr << '\n';
+                }
             }
             std::optional<float> constant_width;
             if (width_count == 0u) {
@@ -168,6 +204,7 @@ public:
 
 private:
     std::string _cache_dir;
+    bool _dump_surface_frame{};
     classic::Curves _curves;
     std::string _error;
     std::size_t _flush_count{};
@@ -217,6 +254,7 @@ int main(int argc, char **argv) try {
     std::optional<std::size_t> fx_count;
     std::vector<ModuleAttributeOverride> module_attribute_overrides;
     std::optional<std::filesystem::path> output_path;
+    bool dump_surface_frame = false;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if (argument == "--xgen-args" && index + 1 < argc) {
@@ -237,6 +275,8 @@ int main(int argc, char **argv) try {
         } else if (argument == "--module-attr" && index + 4 < argc) {
             module_attribute_overrides.push_back({
                 argv[++index], argv[++index], argv[++index], argv[++index]});
+        } else if (argument == "--dump-surface-frame") {
+            dump_surface_frame = true;
         } else if (argument == "--nxc" && index + 1 < argc) {
             output_path = argv[++index];
         } else if (argument == "--help") {
@@ -245,7 +285,8 @@ int main(int argc, char **argv) try {
                    "[--cache-dir <dir>] [--nxc <output.nxc>] "
                    "[--description <name> [--generator-mask <expression>] "
                    "[--fx-count <count>] "
-                   "[--module-attr <module> <attribute> <type> <value> ...]]\n";
+                   "[--module-attr <module> <attribute> <type> <value> ...]] "
+                   "[--dump-surface-frame]\n";
             return 0;
         } else {
             throw std::invalid_argument("unknown or incomplete argument: " + argument);
@@ -260,7 +301,7 @@ int main(int argc, char **argv) try {
             "runtime overrides require --description");
     }
 
-    TypedCallbacks callbacks{std::move(cache_dir)};
+    TypedCallbacks callbacks{std::move(cache_dir), dump_surface_frame};
     const auto evaluation_begin = std::chrono::steady_clock::now();
     {
         CleanupOnce cleanup;
