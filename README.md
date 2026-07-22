@@ -12,7 +12,9 @@ The current prototype provides:
 - rest-area-weighted deterministic root sampling on triangle meshes;
 - precomputed fixed-size guide stencils for bounded GPU work;
 - root-relative guide interpolation with compact support weights;
-- width taper and a first strand-stable noise modifier;
+- width taper and an XGen-compatible 3D gradient-noise core with verified
+  magnitude, frequency, correlation, and length preservation plus a
+  parallel-transported surface frame;
 - one shared C++/CUDA generation function and a CUDA launch kernel;
 - direct CPU/CUDA generation into renderer `float4(position, radius)` and
   fixed `pointCounts` buffers, with checked device capacities and deformation
@@ -73,7 +75,9 @@ It records the public Maya schemas for noise, cut, clump, coil, and collision
 nodes, then sweeps noise magnitude, frequency, correlation, length preservation,
 and noise/cut order. A differential probe reports root drift, per-CV
 displacement, tangent/normal components, arc-length change, width change, and
-spatial correlation. Generated Autodesk BLOBs stay under ignored build output.
+spatial correlation. A separate numerical verifier reconstructs the official
+noise field from the independently implemented model and fails on a mismatch.
+Generated Autodesk BLOBs stay under ignored build output.
 
 Run the benchmark separately:
 

@@ -4,20 +4,37 @@
 is a 64-bit byte offset from the blob base; there are no host pointers, virtual
 functions, strings, or owning containers. Sections are at least 16-byte aligned.
 
-The v0.1 sections are:
+The v0.2 sections are:
 
 1. vertex positions, normals, and optional UVs;
 2. triangle indices;
 3. Walker alias entries weighted by rest-pose triangle area;
 4. guide records and a packed guide-CV array;
-5. a fixed eight-guide candidate stencil per triangle.
+5. a fixed eight-guide candidate stencil per triangle;
+6. the 256-entry SeExpr 3D gradient table used by the noise modifier.
 
 The header carries magic/version/size metadata plus an FNV-1a content hash.
 `validate_asset` checks all section ranges and cross-references before the blob
 is uploaded to a GPU. `DeviceAssetView` is a small non-owning accessor that is
 compiled unchanged for C++ and CUDA/HIP device code.
 
-Generated curves use fixed CV counts in v0.1. Points and widths are strand-major,
+The blob base is a 64-byte alignment boundary. Host-owned `Asset` and
+`CurveCache` objects use an aligned allocator, and checked device descriptors
+reject a misaligned upload pointer. A plain `std::vector<std::byte>` is not a
+valid backing store for a live view unless its data is copied into aligned
+storage first; the container's element alignment is otherwise insufficient for
+the aligned header and renderer `float4` sections.
+
+Adding the embedded gradient table advances the asset format from 0.1 to 0.2.
+The validator deliberately rejects 0.1 blobs; rebuild them from their source
+mesh/guides so a device launch can never read a missing table.
+
+The gradient data is distributed under BSD-3-Clause; the complete notice is in
+`LICENSES/SeExpr-BSD-3-Clause.txt`. It is stored inside the relocatable asset so
+the same noise lookup runs on a CPU or GPU without a host global or device
+symbol initialization step.
+
+Generated curves use fixed CV counts in v0.2. Points and widths are strand-major,
 so a CUDA thread owns one contiguous strand. The CUDA kernel keeps its direct
 static mapping. On CPU, a logical work block is a contiguous tile of strands
 with the same default width as a CUDA block (128 strands); persistent CPU worker
@@ -31,6 +48,11 @@ position, normal, and guide-CV pointers replace the corresponding immutable
 sections during generation. The rest-pose alias table and sampled
 triangle/barycentric coordinates remain unchanged, which preserves strand
 identity across motion samples.
+
+Noise lookup positions use the rest-pose root, while the transported surface
+frame uses the current deformed geometry. This keeps the procedural field from
+swimming under rigid motion while allowing its direction to follow the animated
+surface.
 
 Renderer payloads are deliberately separate from `.nxg`: they own point counts,
 aligned `float4(position, radius)` values, root UVs, motion positions, and

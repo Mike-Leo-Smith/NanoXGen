@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(NanoXGen VERSION 0.1.0 LANGUAGES CXX)
+project(NanoXGen VERSION 0.2.0 LANGUAGES CXX)
 
 find_package(Threads REQUIRED)
 

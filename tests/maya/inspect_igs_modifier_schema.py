@@ -42,12 +42,33 @@ def main() -> None:
                 }
                 continue
 
+            actual_type = cmds.nodeType(node)
+            if actual_type != node_type:
+                result["node_types"][node_type] = {
+                    "available": False,
+                    "actual_type": actual_type,
+                    "error": "Maya created an unknown placeholder for this node type",
+                }
+                cmds.delete(node)
+                continue
+
             attributes = {}
+            skipped_instance_paths = []
             for attribute in sorted(cmds.listAttr(node) or []):
+                # listAttr includes paths to children of uninstantiated array
+                # compounds (for example
+                # magnitudeScale.magnitudeScale_FloatValue).  Such a path is
+                # schema metadata, not an addressable plug: it needs a logical
+                # array index before getAttr/attributeQuery can resolve it.
+                # The compound itself is still reported by listAttr, so retain
+                # that entry and record the unresolved child path explicitly.
+                if "." in attribute:
+                    skipped_instance_paths.append(attribute)
+                    continue
                 plug = f"{node}.{attribute}"
                 try:
                     attribute_type = cmds.getAttr(plug, type=True)
-                except RuntimeError:
+                except (RuntimeError, ValueError):
                     continue
                 entry = {
                     "type": attribute_type,
@@ -76,7 +97,9 @@ def main() -> None:
                 attributes[attribute] = entry
             result["node_types"][node_type] = {
                 "available": True,
+                "actual_type": actual_type,
                 "attributes": attributes,
+                "skipped_uninstantiated_compound_paths": skipped_instance_paths,
             }
             cmds.delete(node)
 

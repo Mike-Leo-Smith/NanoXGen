@@ -20,7 +20,7 @@ std::size_t align_up(std::size_t value, std::size_t alignment) {
 }
 
 template<typename T>
-std::uint64_t append_array(std::vector<std::byte> &blob, std::span<const T> values) {
+std::uint64_t append_array(AlignedByteVector &blob, std::span<const T> values) {
     if (values.empty()) { return 0u; }
     const std::size_t offset = align_up(blob.size(), std::max(kSectionAlignment, alignof(T)));
     if (values.size_bytes() > std::numeric_limits<std::size_t>::max() - offset) {
@@ -135,7 +135,7 @@ CurveCache build_curve_cache(const CurveCacheBuildInput &input) {
         previous_time = time;
     }
 
-    std::vector<std::byte> bytes(sizeof(CurveCacheHeader));
+    AlignedByteVector bytes(sizeof(CurveCacheHeader));
     CurveCacheHeader header{};
     header.strand_count = static_cast<std::uint32_t>(input.point_counts.size());
     header.point_count = static_cast<std::uint32_t>(input.points.size());
@@ -165,6 +165,9 @@ CurveCache build_curve_cache(const CurveCacheBuildInput &input) {
 
 std::string validate_curve_cache(std::span<const std::byte> bytes) {
     if (bytes.size() < sizeof(CurveCacheHeader)) { return "blob is smaller than CurveCacheHeader"; }
+    if (reinterpret_cast<std::uintptr_t>(bytes.data()) % alignof(CurveCacheHeader) != 0u) {
+        return "curve-cache base is not 64-byte aligned";
+    }
     CurveCacheHeader header{};
     std::memcpy(&header, bytes.data(), sizeof(header));
     if (header.magic != kCurveCacheMagic) { return "bad curve-cache magic"; }
@@ -256,7 +259,7 @@ CurveCache load_curve_cache(const std::filesystem::path &path) {
     if (!input) { throw std::runtime_error("failed to open curve cache: " + path.string()); }
     const std::streampos end = input.tellg();
     if (end < 0) { throw std::runtime_error("failed to query curve-cache size"); }
-    std::vector<std::byte> bytes(static_cast<std::size_t>(end));
+    AlignedByteVector bytes(static_cast<std::size_t>(end));
     input.seekg(0);
     input.read(reinterpret_cast<char *>(bytes.data()), end);
     if (!input) { throw std::runtime_error("failed to read curve cache: " + path.string()); }

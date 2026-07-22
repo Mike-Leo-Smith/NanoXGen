@@ -1,4 +1,5 @@
 #include "nanoxgen/asset.h"
+#include "nanoxgen/seexpr_noise_table.h"
 
 #include <algorithm>
 #include <atomic>
@@ -22,7 +23,7 @@ std::size_t align_up(std::size_t value, std::size_t alignment) {
 }
 
 template<typename T>
-std::uint64_t append_array(std::vector<std::byte> &blob, std::span<T> values) {
+std::uint64_t append_array(AlignedByteVector &blob, std::span<T> values) {
     if (values.empty()) { return 0u; }
     const std::size_t offset = align_up(blob.size(), std::max(kSectionAlignment, alignof(T)));
     blob.resize(offset + values.size_bytes());
@@ -236,7 +237,7 @@ Asset build_asset(const AssetBuildInput &input) {
         }
     }
 
-    std::vector<std::byte> blob(sizeof(AssetHeader));
+    AlignedByteVector blob(sizeof(AssetHeader));
     AssetHeader header{};
     header.flags = HasNormals | (input.texcoords.empty() ? 0u : HasTexcoords);
     header.vertex_count = static_cast<std::uint32_t>(input.positions.size());
@@ -251,6 +252,8 @@ Asset build_asset(const AssetBuildInput &input) {
     header.guides_offset = append_array(blob, std::span{guides});
     header.guide_cvs_offset = append_array(blob, std::span{guide_cvs});
     header.triangle_guides_offset = append_array(blob, std::span{triangle_guides});
+    header.noise_gradients_offset = append_array(
+        blob, std::span<const Vec3>{detail::kSeExprNoiseGradients, kNoiseGradientCount});
     header.byte_size = blob.size();
     std::memcpy(blob.data(), &header, sizeof(header));
     header.content_hash = fnv1a(std::span{blob}.subspan(sizeof(AssetHeader)));
@@ -260,13 +263,21 @@ Asset build_asset(const AssetBuildInput &input) {
 
 std::string validate_asset(std::span<const std::byte> bytes) {
     if (bytes.size() < sizeof(AssetHeader)) { return "blob is smaller than AssetHeader"; }
+    if (reinterpret_cast<std::uintptr_t>(bytes.data()) % alignof(AssetHeader) != 0u) {
+        return "blob base is not 64-byte aligned";
+    }
     AssetHeader h{};
     std::memcpy(&h, bytes.data(), sizeof(h));
     if (h.magic != kMagic) { return "bad NanoXGen magic"; }
-    if (h.version_major != kVersionMajor) { return "unsupported major version"; }
+    if (h.version_major != kVersionMajor || h.version_minor != kVersionMinor) {
+        return "unsupported NanoXGen asset version";
+    }
     if (h.byte_size != bytes.size()) { return "header byte_size does not match file size"; }
     if (h.triangle_count == 0u || h.vertex_count == 0u || h.guide_count == 0u) { return "required section is empty"; }
     if (h.guide_stencil_size != kGuideStencilSize) { return "unsupported guide stencil size"; }
+    if (h.noise_gradient_count != kNoiseGradientCount) {
+        return "unsupported noise gradient table";
+    }
     if (!section_fits<Vec3>(h, h.positions_offset, h.vertex_count) ||
         !section_fits<Vec3>(h, h.normals_offset, h.vertex_count) ||
         !section_fits<Vec2>(h, h.texcoords_offset, (h.flags & HasTexcoords) ? h.vertex_count : 0u) ||
@@ -275,7 +286,8 @@ std::string validate_asset(std::span<const std::byte> bytes) {
         !section_fits<GuideRecord>(h, h.guides_offset, h.guide_count) ||
         !section_fits<Vec3>(h, h.guide_cvs_offset, h.guide_cv_count) ||
         !section_fits<std::uint32_t>(h, h.triangle_guides_offset,
-                                     static_cast<std::uint64_t>(h.triangle_count) * h.guide_stencil_size)) {
+                                     static_cast<std::uint64_t>(h.triangle_count) * h.guide_stencil_size) ||
+        !section_fits<Vec3>(h, h.noise_gradients_offset, h.noise_gradient_count)) {
         return "one or more sections are out of bounds";
     }
     if (fnv1a(bytes.subspan(sizeof(AssetHeader))) != h.content_hash) { return "content hash mismatch"; }
@@ -309,7 +321,7 @@ Asset load_asset(const std::filesystem::path &path) {
     if (!stream) { throw std::runtime_error("failed to open asset: " + path.string()); }
     const auto size = stream.tellg();
     if (size < 0) { throw std::runtime_error("failed to query asset size"); }
-    std::vector<std::byte> bytes(static_cast<std::size_t>(size));
+    AlignedByteVector bytes(static_cast<std::size_t>(size));
     stream.seekg(0);
     stream.read(reinterpret_cast<char *>(bytes.data()), size);
     if (!stream) { throw std::runtime_error("failed to read asset: " + path.string()); }
@@ -325,6 +337,9 @@ DeviceAssetDescriptor make_device_asset_descriptor(
     const std::string error = validate_asset(asset.bytes());
     if (!error.empty()) { throw std::invalid_argument("invalid asset: " + error); }
     if (!device_data) { throw std::invalid_argument("device asset pointer is null"); }
+    if (reinterpret_cast<std::uintptr_t>(device_data) % alignof(AssetHeader) != 0u) {
+        throw std::invalid_argument("device asset pointer is not 64-byte aligned");
+    }
     if (device_byte_capacity < asset.bytes().size()) {
         throw std::invalid_argument("device asset allocation is smaller than the asset");
     }

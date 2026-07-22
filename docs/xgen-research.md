@@ -40,9 +40,9 @@ influence represented by sweep angles and radii. For a generated primitive:
 5. rebuild active guides to the same CV count, translate them to the primitive
    root, and compute a weighted average per CV ("relative interpolation").
 
-## NanoXGen v0.1 mapping
+## NanoXGen v0.2 mapping
 
-| XGen concept | NanoXGen v0.1 | Status |
+| XGen concept | NanoXGen v0.2 | Status |
 |---|---|---|
 | Patch/PRef | indexed triangle mesh and rest-area alias table | implemented |
 | Random generator | counter-based deterministic sampling + area alias table | implemented |
@@ -50,13 +50,13 @@ influence represented by sweep angles and radii. For a generated primitive:
 | Range of influence | isotropic compact support radius | implemented approximation |
 | Relative interpolation | translate guide to sampled root, resample and blend CVs | implemented |
 | Width/taper | linear root-to-tip width | implemented |
-| Noise modifier | strand-stable sinusoidal displacement | initial implementation |
+| Noise modifier | 3D gradient field, transported frame, correlation and length preservation | scalar/length model oracle-verified |
 | XGen expressions/PTEX | compiled expression IR and texture sampling | planned |
 | Geodesic guide neighborhoods | surface graph / UV-space acceleration | planned |
 | Clump/collision/coil/wind | ordered GPU modifier graph | planned |
 | Interactive Groom BLOB import | canonical, bit-exact `.nxc` evaluated cache | validated with Maya 2027.1 |
 
-The v0.1 guide stencil deliberately moves expensive guide selection to asset
+The guide stencil deliberately moves expensive guide selection to asset
 construction. Runtime work is bounded by `strand_count * cvs_per_strand * 8`,
 with one GPU thread per strand. CUDA keeps a direct static mapping; on CPU,
 persistent worker threads dynamically claim CUDA-block-sized strand tiles
@@ -117,17 +117,19 @@ The non-bitwise position values are caused by Maya/XGen's higher-precision
 intermediate evaluation before float output. Near zero, ULP counts can be large
 despite sub-micro-unit absolute error, so the regression requires either the
 absolute or ULP bound while still reporting both. Width evaluation is bitwise
-identical. Noise remains an oracle-only fixture because NanoXGen's current
-sinusoidal noise is not XGen's random field; clump and guide modifiers remain
-future parity work.
+identical. The native root sampler still does not reproduce XGen's undocumented
+root RNG. Noise arithmetic is verified separately against official per-curve
+fields, as described below; clump and guide-neighborhood parity remain future
+work.
 
 ## Modifier-identification harness
 
-`scripts/run_xgen_modifier_study.sh` isolates official IGS modifier behavior
-without inspecting private code or in-memory layouts. It first dumps the public
-Maya attribute schemas for noise, cut, clump, coil, and collision candidate
-nodes. This prevents implementation from being built around guessed node or
-attribute names.
+`scripts/run_xgen_modifier_study.sh` isolates official IGS modifier behavior and
+dumps the public Maya attribute schemas for noise, cut, clump, coil, and
+collision candidate nodes. This prevents implementation from being built around
+guessed node or attribute names. Maya 2027.1 does not instantiate
+`xgmModifierCoil` as a known node, so the harness records it as unavailable
+instead of treating the resulting unknown-node placeholder as a valid schema.
 
 The initial matrix varies noise magnitude, frequency, correlation, and
 `preserveLength`, repeats an identical fixture, and evaluates both
@@ -141,13 +143,51 @@ matches curves by `faceId + faceUV + patchUV` and reports:
 - width changes;
 - distance-binned cosine correlation between tip displacement vectors.
 
-The verifier asserts only model-independent invariants: zero magnitude is an
+The first verifier asserts model-independent invariants: zero magnitude is an
 identity, roots remain fixed, identical fixtures repeat, magnitude scales
 displacement monotonically, parameters change the field, full length
 preservation does not worsen arc-length error, and modifier order is observable.
-These measurements are intended to falsify candidate noise models before any
-one model is promoted to a parity implementation. Clump experiments will be
-constructed from the captured public schema rather than hard-coded guesses.
+The second verifier performs a direct numerical reconstruction. The identified
+core behavior is:
+
+- a quintic-smoothed 3D gradient field using the 256-vector SeExpr table;
+- distance along the control polygon samples the field independently on its
+  three axes;
+- effective frequency is `max(0.5 / curveLength, frequency)`;
+- the UI correlation percentage maps to root-domain scale
+  `100 * (1 - correlation / 100)^2`;
+- the default magnitude scale is a linear root-to-tip ramp;
+- the local vector includes a tangential component and is transformed through
+  a parallel-transported surface frame;
+- `preserveLength` uniformly scales the noisy control polygon around its root
+  to the blend of original and noisy lengths.
+
+The high-CV flat fixtures recover only each official curve's surface-frame
+rotation from the fully correlated result. They then predict all other fields
+without fitting noise values, amplitude, frequency, or correlation. Across
+correlation values 0, 25, 50, 75, 90, 95, 99, and 100, the worst component RMS
+was `1.24e-7` and the maximum absolute error was `1.91e-6`. Uniform scaling
+predicted the official 100% and 40% length-preservation fields with RMS
+`8.42e-8` and `7.62e-8`, respectively. Separate fixtures verify magnitude
+linearity and the `0.5 / curveLength` frequency floor.
+
+The shipped Autodesk kernel was used as an interoperability reference, but its
+source and private headers are not redistributed or copied into NanoXGen. The
+gradient table is the separately licensed Disney SeExpr table; its complete
+BSD-3-Clause notice is retained in `LICENSES/SeExpr-BSD-3-Clause.txt`. The
+runtime implementation is shared `NXG_HOST_DEVICE` C++ and is independently
+guarded by fixed scalar samples, motion-stability tests, and the official output
+matrix.
+
+Current procedural boundaries remain explicit: NanoXGen accepts a scalar mask
+and implements the default linear magnitude ramp, not arbitrary Maya
+expressions, texture/PTEX masks, or authored ramp curves. Its surface-U basis is
+derived from mesh UVs; unusual Maya patch parameterizations still need targeted
+fixtures. The current oracle matrix covers straight hairs on flat and wave
+surfaces; a fixture with authored curved input is still needed to validate every
+parallel-transport step by output rather than by the interoperability reference.
+Clump experiments will be constructed from the captured public schema rather
+than hard-coded guesses.
 
 ## CPU and renderer-payload performance snapshot
 
@@ -158,8 +198,8 @@ speedup.
 
 | Curves | NanoXGen direct renderer output | NanoXGen generation + generic pack | XGen already-BLOB load + execute + materialize | Minimal `.nxc` read + full validation | Maya invalidated export |
 |---:|---:|---:|---:|---:|---:|
-| 10,000 / 9,970 XGen | 0.773 ms | 0.898 ms | 10.940 ms | 0.789 ms | 355.908 ms |
-| 100,000 / 99,929 XGen | 6.044 ms | 8.202 ms | 29.889 ms | 8.1–9.5 ms | 558–562 ms |
+| 10,000 / 9,970 XGen | 0.956 ms | 1.123 ms | 10.940 ms | 0.789 ms | 355.908 ms |
+| 100,000 / 99,929 XGen | 7.049 ms | 9.209 ms | 29.889 ms | 8.1–9.5 ms | 558–562 ms |
 
 Direct renderer output writes `float4(position, radius)` during generation and
 avoids the separate position/width intermediate. The generic pack remains for
@@ -167,6 +207,17 @@ variable CV counts, transforms, resampling, primvar merging, and owning 64K
 batches. XGen already-BLOB ingestion is still not an identical algorithm
 comparison: it parses a proprietary, more general result while NanoXGen
 implements fewer authoring features.
+
+Those rows have noise disabled. With the verified gradient-noise core enabled
+at magnitude 0.043, frequency 3.17, mask 0.83, correlation 35%, and
+`preserveLength` 40%, 100,000 strands / 1.2 million CVs took 68.8 ms for direct
+renderer output on the same 9-logical-CPU container. Length preservation needs
+an original-length pass, a noisy-length pass, and a final output pass; each CV
+also performs three eight-corner gradient samples. This CPU result is still far
+below Maya's roughly 550 ms serialization stage, but it is slower than decoding
+an already-produced XGen BLOB. The intended production path for expensive
+modifiers remains the shared CUDA implementation; no GPU throughput is claimed
+until it is compiled and measured on the target renderer hardware.
 
 The linear modifier reference is intentionally excluded from speedup claims: it
 starts from official root/tip seeds and performs neither root sampling nor guide
@@ -219,20 +270,26 @@ not consistently faster because wide-vector frequency effects compete with the
 memory-bound pack. A 256-bit preference is exposed for per-hardware tuning.
 
 The precision fixture uses a wave surface, 16 nonuniform guides, noninteger
-weight power, and live noise. Across 31 repeats, fast math reduced the median
-from 5.572 to 5.262 ms (5.6%) on this CPU. It kept root triangle indices exact,
+weight power, verified gradient noise, 35% correlation, and 40% length
+preservation. Across 31 single-thread repeats, fast math reduced the median from
+90.301 to 88.372 ms (2.1%) on this CPU. It kept root triangle indices exact,
 introduced no non-finite values, and produced:
 
 | Array | Maximum absolute error | RMS error |
 |---|---:|---:|
-| positions | `1.43051147e-6` | `1.87759391e-7` |
+| positions | `9.95397568e-5` | `4.74876137e-7` |
 | widths | `1.86264515e-9` | `9.18501397e-10` |
-| root float attributes | `9.53674316e-7` | `1.03593679e-7` |
+| root float attributes | `9.53674316e-7` | `1.03651435e-7` |
 
 This passed the fixture's relaxed, scene-scale-specific production budget but
-did not pass strict XGen parity: 8,193 of 960,000 position components were
-outside `(5e-7 absolute OR 4 ULP)`. Fast math remains opt-in and must be tested
-separately on the target CUDA architecture before enabling `--use_fast_math`.
+did not pass strict XGen parity: 10,418 of 960,000 position components were
+outside `(5e-7 absolute OR 4 ULP)`. The large maximum is localized: 83
+components on three strands exceeded `4e-6` because strict and fast arithmetic
+placed their noisy-length delta on opposite sides of XGen's `1e-4` activation
+threshold for length preservation. The precision gate therefore limits both
+the number of these discontinuities and their `1.1e-4` hard maximum, in addition
+to the global RMS bound. Fast math remains opt-in and must be tested separately
+on the target CUDA architecture before enabling `--use_fast_math`.
 
 One benchmark pitfall was found while adding renderer materialization:
 `XgItSpline::vertexCount()` must be cached once per iterator batch. Calling it
@@ -250,19 +307,22 @@ actual renderer-buffer copy.
    guide regions and validate interpolation error against those fixtures.
 4. Compile a restricted XGen-expression subset to a typed GPU bytecode/IR and
    add PTEX sampling through a texture indirection table.
-5. Implement modifier passes in dependency order: cut/length, clump, noise,
-   coil, collision, and wind. Fuse passes where locality permits and use
+5. Implement remaining modifier passes in authored dependency order: cut/length,
+   clump, coil, collision, and wind. Fuse passes where locality permits and use
    explicit intermediate curve buffers where modifiers need neighborhoods.
 6. Compile and benchmark the existing direct CUDA kernel on target renderer
    GPUs, add a LuisaCompute backend, and compare throughput, memory,
    determinism, and strict/fast-math error against the XGen CPU baseline.
 
-## Clean-room rule
+## Interoperability implementation rule
 
-Algorithm work should use Autodesk's public documentation, public SDK surface,
-and controlled input/output comparisons. Do not copy proprietary implementation
-code or depend on undocumented in-memory layouts. Differential fixtures should
-store our own inputs and numeric outputs, not Autodesk binaries.
+Algorithm work may use Autodesk's public documentation, public SDK surface,
+controlled input/output comparisons, and source files shipped to licensed Maya
+users as interoperability references. Do not redistribute or copy Autodesk
+implementation code, private headers, or depend on undocumented in-memory
+layouts. Implement behavior independently and retain third-party notices for
+any separately licensed data. Differential fixtures store our own inputs and
+numeric outputs, not Autodesk binaries.
 
 ## Public references
 
@@ -272,6 +332,10 @@ store our own inputs and numeric outputs, not Autodesk binaries.
   <https://blog.autodesk.io/support-xgen-interactive-grooming-feature-in-your-plugin/>
 - Autodesk's documented guide neighborhood and interpolation process:
   <https://download.autodesk.com/global/docs/maya2014/en_us/files/GUID-49B8C299-71DD-4341-8638-97437D9A328F.htm>
+- Autodesk's noise frequency, correlation, and length-preservation documentation:
+  <https://help.autodesk.com/cloudhelp/2017/CHS/Maya/files/GUID-968ACF77-A9CC-4BF1-9CE0-73C1B4EB06F7.htm>
+- Autodesk's noise magnitude and magnitude-scale documentation:
+  <https://help.autodesk.com/cloudhelp/2017/CHS/Maya/files/GUID-F6E70334-5E7D-4393-9D07-F675A08A9695.htm>
 - Autodesk's XGen file inventory:
   <https://download.autodesk.com/global/docs/maya2014/en_US/files/GUID-66DECD58-3AEC-46B1-8CC7-FD968B60B044.htm>
 - Thompson, Petti, and Tappan, *XGen: Arbitrary Primitive Generator*:

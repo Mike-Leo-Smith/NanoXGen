@@ -18,6 +18,16 @@ void require(bool condition, const char *message) {
     if (!condition) { throw std::runtime_error(message); }
 }
 
+float strand_arc_length(const GeneratedCurves &curves, std::uint32_t strand) {
+    const std::size_t first = static_cast<std::size_t>(strand) * curves.cvs_per_strand;
+    float length = 0.0f;
+    for (std::uint32_t cv = 1u; cv < curves.cvs_per_strand; ++cv) {
+        length += std::sqrt(length_squared(
+            curves.points[first + cv] - curves.points[first + cv - 1u]));
+    }
+    return length;
+}
+
 AssetBuildInput fixture() {
     AssetBuildInput input{};
     input.positions = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
@@ -40,7 +50,7 @@ void test_blob_round_trip() {
     require(asset.view().header().triangle_count == 1u, "triangle count");
     require(asset.view().header().guide_count == 1u, "guide count");
 
-    std::vector<std::byte> corrupt(asset.bytes().begin(), asset.bytes().end());
+    AlignedByteVector corrupt(asset.bytes().begin(), asset.bytes().end());
     corrupt.back() ^= std::byte{1};
     require(validate_asset(corrupt) == "content hash mismatch", "corruption must be detected");
 }
@@ -149,6 +159,85 @@ void test_cpu_persistent_work_queue() {
     require(std::memcmp(serial.widths.data(), parallel.widths.data(),
                         serial.widths.size() * sizeof(float)) == 0,
             "persistent CPU scheduling must preserve deterministic widths");
+}
+
+void test_xgen_noise_math_and_length_preservation() {
+    const Asset asset = build_asset(fixture());
+    const DeviceAssetView view = asset.view();
+    const std::array<std::pair<Vec3, float>, 6u> samples = {{
+        {{0.0f, 0.0f, 0.0f}, 0.5f},
+        {{0.0457031233125f, 0.0f, 0.0f}, 0.513789508165f},
+        {{0.0f, 0.0457031233125f, 0.0f}, 0.518000278518f},
+        {{0.0f, 0.0f, 0.0457031233125f}, 0.496315375404f},
+        {{1.234f, -2.5f, 3.75f}, 0.672824373032f},
+        {{-3.2f, 4.1f, -0.7f}, 0.515891027958f},
+    }};
+    for (const auto &[point, expected] : samples) {
+        require(std::abs(gradient_noise(view, point) - expected) < 2.0e-6f,
+                "XGen-compatible gradient noise reference sample");
+    }
+
+    GenerationParams params{};
+    params.strand_count = 32u;
+    params.cvs_per_strand = 33u;
+    params.seed = 173u;
+    params.noise_amplitude = 0.24f;
+    params.noise_frequency = 0.0f;
+    params.noise_correlation = 0.75f;
+    const StrandGenerationState state = make_strand_generation_state(
+        view, {}, params, 0u);
+    const Vec3 expected_domain =
+        (rest_root_position(view, state.root) +
+         Vec3{0.419276f, 0.184247f, 0.805721f}) * 6.25f;
+    require(length_squared(state.noise_domain - expected_domain) < 1.0e-11f,
+            "XGen correlation percentage-to-domain mapping");
+    require(std::abs(state.effective_noise_frequency - 0.5f / state.original_length) <
+                1.0e-6f,
+            "XGen noise frequency floor");
+
+    GenerationParams base_params = params;
+    base_params.noise_amplitude = 0.0f;
+    const GeneratedCurves base = generate_cpu(asset, base_params, {1u, 16u});
+    params.noise_frequency = 2.25f;
+    params.noise_preserve_length = 0.0f;
+    const GeneratedCurves noisy = generate_cpu(asset, params, {1u, 16u});
+    params.noise_preserve_length = 1.0f;
+    const GeneratedCurves preserved = generate_cpu(asset, params, {1u, 16u});
+    params.noise_preserve_length = 0.4f;
+    const GeneratedCurves partially_preserved = generate_cpu(asset, params, {1u, 16u});
+
+    std::uint32_t exercised = 0u;
+    for (std::uint32_t strand = 0u; strand < params.strand_count; ++strand) {
+        const std::size_t root_index = static_cast<std::size_t>(strand) * params.cvs_per_strand;
+        require(length_squared(noisy.points[root_index] - base.points[root_index]) < 1.0e-12f &&
+                length_squared(preserved.points[root_index] - base.points[root_index]) < 1.0e-12f,
+                "XGen noise must keep the root fixed");
+        const float base_length = strand_arc_length(base, strand);
+        const float noisy_length = strand_arc_length(noisy, strand);
+        if (std::abs(noisy_length - base_length) <= 2.0e-4f) { continue; }
+        ++exercised;
+        require(std::abs(strand_arc_length(preserved, strand) - base_length) < 2.0e-5f,
+                "preserveLength=1 must restore base control-polygon length");
+        const float target = 0.4f * base_length + 0.6f * noisy_length;
+        require(std::abs(strand_arc_length(partially_preserved, strand) - target) < 2.0e-5f,
+                "partial preserveLength must blend base and noisy length");
+    }
+    require(exercised > 0u, "noise preserve-length test must exercise scaling");
+
+    const Vec3 translation{2.0f, 3.0f, -4.0f};
+    std::vector<Vec3> positions(view.positions(), view.positions() + view.header().vertex_count);
+    std::vector<Vec3> normals(view.normals(), view.normals() + view.header().vertex_count);
+    std::vector<Vec3> guide_cvs(view.guide_cvs(), view.guide_cvs() + view.header().guide_cv_count);
+    for (Vec3 &point : positions) { point = point + translation; }
+    for (Vec3 &point : guide_cvs) { point = point + translation; }
+    params.noise_preserve_length = 0.4f;
+    const GeneratedCurves moved = generate_deformed_cpu(
+        asset, params, DeformedGeometryView{positions, normals, guide_cvs}, {1u, 16u});
+    for (std::size_t point = 0u; point < moved.points.size(); ++point) {
+        require(length_squared((moved.points[point] - partially_preserved.points[point]) -
+                               translation) < 2.0e-11f,
+                "reference-root noise domain must not swim under rigid motion");
+    }
 }
 
 void test_area_weighted_sampling() {
@@ -287,8 +376,9 @@ void test_direct_packed_generation_math() {
     for (std::size_t point = 0u; point < packed.size(); ++point) {
         require(std::memcmp(&packed[point], &soa.points[point], sizeof(Vec3)) == 0,
                 "packed and SoA positions must be bitwise equal");
-        require(packed[point].radius == 0.5f * soa.widths[point] * 1.5f,
-                "packed generation radius conversion");
+        require(std::abs(packed[point].radius -
+                         0.5f * soa.widths[point] * 1.5f) <= 5.0e-9f,
+                "packed generation radius conversion within float rounding");
     }
 
     const PackedGeneratedCurves public_output =
@@ -388,6 +478,22 @@ void test_checked_device_generation_contract() {
                 DeviceGenerationError::AssetCapacityTooSmall,
             "checked device asset capacity");
 
+    const DeviceAssetDescriptor misaligned_asset{
+        DeviceAssetView{asset.bytes().data() + 1u}, device_asset.header,
+        device_asset.byte_capacity - 1u};
+    require(validate_device_packed_generation_request(
+                misaligned_asset, {}, params, output) ==
+                DeviceGenerationError::MisalignedAsset,
+            "checked device asset alignment");
+
+    DeviceAssetDescriptor bad_noise_table = device_asset;
+    bad_noise_table.header.noise_gradients_offset =
+        bad_noise_table.header.byte_size - sizeof(float);
+    require(validate_device_packed_generation_request(
+                bad_noise_table, {}, params, output) ==
+                DeviceGenerationError::InvalidAssetMetadata,
+            "checked device noise-table bounds");
+
     GenerationParams overflowing_params = params;
     overflowing_params.strand_count = std::numeric_limits<std::uint32_t>::max();
     overflowing_params.cvs_per_strand = std::numeric_limits<std::uint32_t>::max();
@@ -461,7 +567,7 @@ void test_exact_curve_cache() {
                         motion_points.size() * sizeof(Vec3)) == 0,
             "curve cache must preserve aligned motion samples bitwise");
 
-    std::vector<std::byte> corrupt(cache.bytes().begin(), cache.bytes().end());
+    AlignedByteVector corrupt(cache.bytes().begin(), cache.bytes().end());
     corrupt.back() ^= std::byte{1};
     require(validate_curve_cache(corrupt) == "curve-cache content hash mismatch",
             "curve-cache corruption must be detected");
@@ -475,6 +581,7 @@ int main() try {
     test_guide_interpolation();
     test_deformed_geometry_generation();
     test_cpu_persistent_work_queue();
+    test_xgen_noise_math_and_length_preservation();
     test_area_weighted_sampling();
     test_linear_compatibility_generation();
     test_renderer_curve_payload();

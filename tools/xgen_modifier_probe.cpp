@@ -171,6 +171,33 @@ void write_stats(const char *name, const ScalarStats &stats) {
               << ",\"mean\":" << stats.mean() << ",\"rms\":" << stats.rms() << '}';
 }
 
+void write_vec3(Vec3 value) {
+    std::cout << '[' << value.x << ',' << value.y << ',' << value.z << ']';
+}
+
+void write_field(const std::vector<OfficialCurve> &base,
+                 const std::vector<OfficialCurve> &target) {
+    std::cout << "  \"field\":[\n";
+    for (std::size_t curve = 0u; curve < base.size(); ++curve) {
+        std::cout << "    {\"face_id\":" << base[curve].face_id
+                  << ",\"face_uv\":[" << base[curve].face_uv.x << ','
+                  << base[curve].face_uv.y << "],\"patch_uv\":["
+                  << base[curve].patch_uv.x << ',' << base[curve].patch_uv.y
+                  << "],\"base\":[";
+        for (std::size_t cv = 0u; cv < base[curve].points.size(); ++cv) {
+            write_vec3(base[curve].points[cv]);
+            if (cv + 1u != base[curve].points.size()) { std::cout << ','; }
+        }
+        std::cout << "],\"target\":[";
+        for (std::size_t cv = 0u; cv < target[curve].points.size(); ++cv) {
+            write_vec3(target[curve].points[cv]);
+            if (cv + 1u != target[curve].points.size()) { std::cout << ','; }
+        }
+        std::cout << "]}" << (curve + 1u == base.size() ? "\n" : ",\n");
+    }
+    std::cout << "  ]\n";
+}
+
 struct SpatialBin {
     std::uint64_t pairs{};
     long double cosine_sum{};
@@ -179,12 +206,15 @@ struct SpatialBin {
 } // namespace
 
 int main(int argc, char **argv) try {
-    if (argc != 3) {
-        std::cerr << "usage: nanoxgen_xgen_modifier_probe <base.xgen> <target.xgen>\n";
+    const bool include_field = argc == 4 && std::string{argv[1]} == "--include-field";
+    const int base_arg = include_field ? 2 : 1;
+    if ((!include_field && argc != 3) || (include_field && argc != 4)) {
+        std::cerr << "usage: nanoxgen_xgen_modifier_probe [--include-field] "
+                     "<base.xgen> <target.xgen>\n";
         return 2;
     }
-    const std::vector<OfficialCurve> base = load_curves(argv[1]);
-    const std::vector<OfficialCurve> target = load_curves(argv[2]);
+    const std::vector<OfficialCurve> base = load_curves(argv[base_arg]);
+    const std::vector<OfficialCurve> target = load_curves(argv[base_arg + 1]);
     if (base.empty() || base.size() != target.size()) {
         throw std::runtime_error("base and target curve counts differ or are empty");
     }
@@ -316,7 +346,14 @@ int main(int argc, char **argv) try {
                   << ",\"mean_cosine\":" << mean << '}'
                   << (bin + 1u == spatial.size() ? "\n" : ",\n");
     }
-    std::cout << "  ]\n}\n";
+    std::cout << "  ]";
+    if (include_field) {
+        std::cout << ",\n";
+        write_field(base, target);
+    } else {
+        std::cout << '\n';
+    }
+    std::cout << "}\n";
     return metadata_mismatches == 0u ? 0 : 1;
 } catch (const std::exception &error) {
     std::cerr << "error: " << error.what() << '\n';

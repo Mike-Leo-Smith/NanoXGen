@@ -124,12 +124,15 @@ Timing measure_packed(std::uint32_t repeats, Function &&function) {
 
 int main(int argc, char **argv) try {
     std::uint32_t repeats = 7u;
+    bool xgen_noise = false;
     std::vector<std::uint32_t> counts;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--repeats") {
             if (++i >= argc) { throw std::invalid_argument("missing repeat count"); }
             repeats = static_cast<std::uint32_t>(std::stoul(argv[i]));
+        } else if (arg == "--xgen-noise") {
+            xgen_noise = true;
         } else {
             counts.push_back(static_cast<std::uint32_t>(std::stoul(arg)));
         }
@@ -140,7 +143,9 @@ int main(int argc, char **argv) try {
     const Asset asset = make_asset();
     std::cout << std::setprecision(9)
               << "{\n  \"logical_cpus\": " << std::max(1u, std::thread::hardware_concurrency())
-              << ",\n  \"repeats\": " << repeats << ",\n  \"cases\": [\n";
+              << ",\n  \"repeats\": " << repeats
+              << ",\n  \"xgen_noise\": " << (xgen_noise ? "true" : "false")
+              << ",\n  \"cases\": [\n";
     for (std::size_t case_index = 0u; case_index < counts.size(); ++case_index) {
         const std::uint32_t count = counts[case_index];
         GenerationParams native_params{};
@@ -149,7 +154,13 @@ int main(int argc, char **argv) try {
         native_params.seed = 23u;
         native_params.root_width = 0.02f;
         native_params.tip_width = 0.02f;
-        native_params.noise_amplitude = 0.0f;
+        if (xgen_noise) {
+            native_params.noise_amplitude = 0.043f;
+            native_params.noise_frequency = 3.17f;
+            native_params.noise_mask = 0.83f;
+            native_params.noise_correlation = 0.35f;
+            native_params.noise_preserve_length = 0.4f;
+        }
         const Timing native = measure(repeats, [&] { return generate_cpu(asset, native_params); });
         const Timing direct_packed = measure_packed(repeats, [&] {
             return generate_packed_cpu(asset, native_params);

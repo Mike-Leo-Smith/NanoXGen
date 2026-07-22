@@ -68,6 +68,20 @@ The original raw-pointer overload remains available for tightly controlled
 internal code, but it cannot prove allocation sizes and should not be used at
 the renderer boundary.
 
+The verified noise parameters map to Maya as follows:
+
+| NanoXGen field | Maya/XGen value |
+|---|---|
+| `noise_amplitude` | `magnitude` in scene units |
+| `noise_frequency` | `frequency` in cycles per scene-unit of curve length |
+| `noise_mask` | scalar `[0, 1]` multiplier |
+| `noise_correlation` | UI `correlation / 100` |
+| `noise_preserve_length` | UI `preserveLength / 100` |
+
+The current native path implements the default linear magnitude-scale ramp.
+Authored ramp curves, expressions, and PTEX/texture masks require additional
+asset sections and are not silently approximated.
+
 `launch_generate_motion_cuda` accepts all shutter overlays together. It first
 validates every deformation descriptor, strictly increasing finite sample
 times, and the complete sample-major output capacity. Only after the whole
@@ -150,7 +164,8 @@ while procedural parity is expanded.
 | Frame-stable deterministic roots | implemented with NanoXGen RNG |
 | Exact XGen root RNG | not implemented; use explicit XGen seeds for parity work |
 | Cut and width taper parity | verified on linear official fixtures |
-| XGen noise and clump parity | not implemented |
+| XGen noise core | implemented and oracle-verified; scalar mask/default linear magnitude ramp only |
+| XGen clump/coil/collision | not implemented |
 | XGen expressions and PTEX | not implemented |
 | Camera-frustum generation culling | not implemented |
 | Classic archive/card/sphere primitives | outside the current curve-only scope |

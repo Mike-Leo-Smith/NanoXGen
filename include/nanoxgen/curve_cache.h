@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nanoxgen/blob_storage.h"
 #include "nanoxgen/types.h"
 
 #include <cstddef>
@@ -89,14 +90,18 @@ private:
 class CurveCache {
 public:
     CurveCache() = default;
-    explicit CurveCache(std::vector<std::byte> bytes) : _bytes(std::move(bytes)) {}
+    explicit CurveCache(AlignedByteVector bytes) : _bytes(std::move(bytes)) {}
+    explicit CurveCache(const std::vector<std::byte> &bytes)
+        : _bytes(bytes.begin(), bytes.end()) {}
 
     [[nodiscard]] CurveCacheView view() const noexcept { return CurveCacheView{_bytes.data()}; }
-    [[nodiscard]] std::span<const std::byte> bytes() const noexcept { return _bytes; }
+    [[nodiscard]] std::span<const std::byte> bytes() const noexcept {
+        return {_bytes.data(), _bytes.size()};
+    }
     [[nodiscard]] bool empty() const noexcept { return _bytes.empty(); }
 
 private:
-    std::vector<std::byte> _bytes;
+    AlignedByteVector _bytes;
 };
 
 [[nodiscard]] CurveCache build_curve_cache(const CurveCacheBuildInput &input);

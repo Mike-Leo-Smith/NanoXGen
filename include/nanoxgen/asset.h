@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nanoxgen/blob_storage.h"
 #include "nanoxgen/device_contract.h"
 #include "nanoxgen/generate.h"
 
@@ -30,14 +31,18 @@ struct AssetBuildInput {
 class Asset {
 public:
     Asset() = default;
-    explicit Asset(std::vector<std::byte> bytes) : _bytes(std::move(bytes)) {}
+    explicit Asset(AlignedByteVector bytes) : _bytes(std::move(bytes)) {}
+    explicit Asset(const std::vector<std::byte> &bytes)
+        : _bytes(bytes.begin(), bytes.end()) {}
 
     [[nodiscard]] DeviceAssetView view() const noexcept { return DeviceAssetView{_bytes.data()}; }
-    [[nodiscard]] std::span<const std::byte> bytes() const noexcept { return _bytes; }
+    [[nodiscard]] std::span<const std::byte> bytes() const noexcept {
+        return {_bytes.data(), _bytes.size()};
+    }
     [[nodiscard]] bool empty() const noexcept { return _bytes.empty(); }
 
 private:
-    std::vector<std::byte> _bytes;
+    AlignedByteVector _bytes;
 };
 
 struct GeneratedCurves {

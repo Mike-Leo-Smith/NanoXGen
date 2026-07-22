@@ -24,6 +24,32 @@ NXG_HOST_DEVICE inline float nxg_sin(float x) noexcept {
 #endif
 }
 
+NXG_HOST_DEVICE inline float nxg_cos(float x) noexcept {
+#if defined(__CUDA_ARCH__)
+    return cosf(x);
+#else
+    return std::cos(x);
+#endif
+}
+
+NXG_HOST_DEVICE inline float nxg_acos(float x) noexcept {
+#if defined(__CUDA_ARCH__)
+    return acosf(x);
+#else
+    return std::acos(x);
+#endif
+}
+
+NXG_HOST_DEVICE inline float nxg_floor(float x) noexcept {
+#if defined(__CUDA_ARCH__)
+    return floorf(x);
+#else
+    return std::floor(x);
+#endif
+}
+
+NXG_HOST_DEVICE inline float nxg_abs(float x) noexcept { return x < 0.0f ? -x : x; }
+
 NXG_HOST_DEVICE inline float nxg_pow(float x, float y) noexcept {
 #if defined(__CUDA_ARCH__)
     return powf(x, y);
@@ -255,51 +281,294 @@ NXG_HOST_DEVICE inline Vec3 interpolate_offset(
 struct StrandGenerationState {
     RootSample root{};
     GuideBlendState guide_blend{};
-    Vec3 noise_direction{};
-    float noise_phase{};
+    Vec3 surface_u{};
+    Vec3 noise_domain{};
+    float original_length{};
+    float effective_noise_frequency{};
+    float preserve_scale{1.0f};
 };
+
+NXG_HOST_DEVICE inline bool noise_is_enabled(const GenerationParams &params) noexcept {
+    return params.noise_amplitude != 0.0f && params.noise_mask != 0.0f;
+}
+
+NXG_HOST_DEVICE inline float strand_parameter(
+    const GenerationParams &params, std::uint32_t cv) noexcept {
+    return static_cast<float>(cv) / static_cast<float>(params.cvs_per_strand - 1u);
+}
+
+NXG_HOST_DEVICE inline Vec3 evaluate_base_strand_cv(
+    DeviceAssetView asset,
+    DeviceDeformedGeometryView deformed,
+    const GenerationParams &params,
+    const StrandGenerationState &state,
+    std::uint32_t cv) noexcept {
+    const float t = strand_parameter(params, cv);
+    return state.root.position +
+        interpolate_offset(asset, deformed, state.root, state.guide_blend, t) *
+            params.length_scale;
+}
+
+NXG_HOST_DEVICE inline Vec3 fallback_surface_u(Vec3 normal) noexcept {
+    const Vec3 axis = normal.z > -0.999f && normal.z < 0.999f
+        ? Vec3{0.0f, 0.0f, 1.0f} : Vec3{0.0f, 1.0f, 0.0f};
+    return normalize(cross(normal, axis));
+}
+
+NXG_HOST_DEVICE inline Vec3 root_surface_u(
+    DeviceAssetView asset,
+    DeviceDeformedGeometryView deformed,
+    const RootSample &root) noexcept {
+    const UInt3 tri = asset.triangles()[root.triangle_index];
+    const Vec3 *positions = frame_positions(asset, deformed);
+    Vec3 tangent{};
+    if ((asset.header().flags & HasTexcoords) != 0u) {
+        const Vec2 *uvs = asset.texcoords();
+        const Vec3 edge1 = positions[tri.y] - positions[tri.x];
+        const Vec3 edge2 = positions[tri.z] - positions[tri.x];
+        const Vec2 duv1{uvs[tri.y].x - uvs[tri.x].x,
+                        uvs[tri.y].y - uvs[tri.x].y};
+        const Vec2 duv2{uvs[tri.z].x - uvs[tri.x].x,
+                        uvs[tri.z].y - uvs[tri.x].y};
+        const float determinant = duv1.x * duv2.y - duv1.y * duv2.x;
+        if (nxg_abs(determinant) > 1.0e-12f) {
+            tangent = (edge1 * duv2.y - edge2 * duv1.y) / determinant;
+            tangent = tangent - root.normal * dot(tangent, root.normal);
+        }
+    }
+    return length_squared(tangent) > 1.0e-20f
+        ? normalize(tangent) : fallback_surface_u(root.normal);
+}
+
+NXG_HOST_DEVICE inline Vec3 rest_root_position(
+    DeviceAssetView asset, const RootSample &root) noexcept {
+    const UInt3 tri = asset.triangles()[root.triangle_index];
+    const float b1 = root.barycentric.x;
+    const float b2 = root.barycentric.y;
+    const float b0 = 1.0f - b1 - b2;
+    return asset.positions()[tri.x] * b0 + asset.positions()[tri.y] * b1 +
+           asset.positions()[tri.z] * b2;
+}
+
+NXG_HOST_DEVICE inline std::uint32_t noise_hash(
+    std::int32_t x, std::int32_t y, std::int32_t z) noexcept {
+    std::uint32_t seed = 0u;
+    seed = seed * 1664525u + static_cast<std::uint32_t>(x) + 1013904223u;
+    seed = seed * 1664525u + static_cast<std::uint32_t>(y) + 1013904223u;
+    seed = seed * 1664525u + static_cast<std::uint32_t>(z) + 1013904223u;
+    seed ^= seed >> 11u;
+    seed ^= (seed << 7u) & 0x9d2c5680u;
+    seed ^= (seed << 15u) & 0xefc60000u;
+    seed ^= seed >> 18u;
+    return (((seed & 0x00ff0000u) >> 4u) + (seed & 0xffu)) & 0xffu;
+}
+
+NXG_HOST_DEVICE inline float noise_s_curve(float t) noexcept {
+    return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
+}
+
+NXG_HOST_DEVICE inline float gradient_noise(
+    DeviceAssetView asset, Vec3 sample) noexcept {
+    const float fx = nxg_floor(sample.x);
+    const float fy = nxg_floor(sample.y);
+    const float fz = nxg_floor(sample.z);
+    const std::int32_t ix = static_cast<std::int32_t>(fx);
+    const std::int32_t iy = static_cast<std::int32_t>(fy);
+    const std::int32_t iz = static_cast<std::int32_t>(fz);
+    const Vec3 weights{sample.x - fx, sample.y - fy, sample.z - fz};
+    float values[8]{};
+    for (std::uint32_t corner = 0u; corner < 8u; ++corner) {
+        const std::int32_t ox = static_cast<std::int32_t>(corner & 1u);
+        const std::int32_t oy = static_cast<std::int32_t>((corner >> 1u) & 1u);
+        const std::int32_t oz = static_cast<std::int32_t>((corner >> 2u) & 1u);
+        const Vec3 gradient = asset.noise_gradients()[noise_hash(ix + ox, iy + oy, iz + oz)];
+        values[corner] = gradient.x * (weights.x - static_cast<float>(ox)) +
+                         gradient.y * (weights.y - static_cast<float>(oy)) +
+                         gradient.z * (weights.z - static_cast<float>(oz));
+    }
+    const float alphas[3] = {
+        noise_s_curve(weights.x), noise_s_curve(weights.y), noise_s_curve(weights.z)};
+    for (std::int32_t dimension = 2; dimension >= 0; --dimension) {
+        const std::int32_t count = 1 << dimension;
+        for (std::int32_t value = 0; value < count; ++value) {
+            const std::int32_t index = value * (1 << (3 - dimension));
+            const std::int32_t axis = 3 - dimension - 1;
+            const std::int32_t other = index + (1 << axis);
+            values[index] = (1.0f - alphas[axis]) * values[index] +
+                            alphas[axis] * values[other];
+        }
+    }
+    return 0.5f * values[0] + 0.5f;
+}
+
+NXG_HOST_DEVICE inline Vec3 rotate_by(Vec3 value, Vec3 axis, float angle) noexcept {
+    const float cosine = nxg_cos(angle);
+    const float sine = nxg_sin(angle);
+    const float one_minus_cosine = 1.0f - cosine;
+    return {
+        dot(value, {axis.x * axis.x * one_minus_cosine + cosine,
+                    axis.x * axis.y * one_minus_cosine - axis.z * sine,
+                    axis.x * axis.z * one_minus_cosine + axis.y * sine}),
+        dot(value, {axis.x * axis.y * one_minus_cosine + axis.z * sine,
+                    axis.y * axis.y * one_minus_cosine + cosine,
+                    axis.y * axis.z * one_minus_cosine - axis.x * sine}),
+        dot(value, {axis.x * axis.z * one_minus_cosine - axis.y * sine,
+                    axis.y * axis.z * one_minus_cosine + axis.x * sine,
+                    axis.z * axis.z * one_minus_cosine + cosine})};
+}
+
+NXG_HOST_DEVICE inline float base_strand_length(
+    DeviceAssetView asset,
+    DeviceDeformedGeometryView deformed,
+    const GenerationParams &params,
+    const StrandGenerationState &state) noexcept {
+    Vec3 previous = evaluate_base_strand_cv(asset, deformed, params, state, 0u);
+    float length = 0.0f;
+    for (std::uint32_t cv = 1u; cv < params.cvs_per_strand; ++cv) {
+        const Vec3 current = evaluate_base_strand_cv(asset, deformed, params, state, cv);
+        length += nxg_sqrt(length_squared(current - previous));
+        previous = current;
+    }
+    return length;
+}
+
+struct StrandNoiseCursor {
+    std::uint32_t cv{};
+    Vec3 previous_base{};
+    Vec3 current_base{};
+    Vec3 next_base{};
+    Vec3 tangent{};
+    Vec3 transported_normal{};
+    float arc_length{};
+};
+
+NXG_HOST_DEVICE inline StrandNoiseCursor make_noise_cursor(
+    DeviceAssetView asset,
+    DeviceDeformedGeometryView deformed,
+    const GenerationParams &params,
+    const StrandGenerationState &state) noexcept {
+    StrandNoiseCursor cursor{};
+    cursor.current_base = evaluate_base_strand_cv(asset, deformed, params, state, 0u);
+    cursor.previous_base = cursor.current_base;
+    cursor.next_base = evaluate_base_strand_cv(asset, deformed, params, state, 1u);
+    cursor.tangent = state.root.normal;
+    cursor.transported_normal = state.surface_u;
+    return cursor;
+}
+
+NXG_HOST_DEVICE inline Vec3 evaluate_and_advance_noise_cursor(
+    DeviceAssetView asset,
+    DeviceDeformedGeometryView deformed,
+    const GenerationParams &params,
+    const StrandGenerationState &state,
+    StrandNoiseCursor &cursor) noexcept {
+    if (cursor.cv > 0u) {
+        cursor.arc_length += nxg_sqrt(length_squared(
+            cursor.current_base - cursor.previous_base));
+    }
+
+    Vec3 next_tangent = cursor.tangent;
+    if (cursor.cv + 1u < params.cvs_per_strand) {
+        const Vec3 segment = cursor.next_base - cursor.current_base;
+        if (length_squared(segment) > 0.0f) { next_tangent = normalize(segment); }
+    }
+    const Vec3 axis = cross(cursor.tangent, next_tangent);
+    if (length_squared(axis) > 0.0f) {
+        const float angle = nxg_acos(
+            nxg_clamp(dot(cursor.tangent, next_tangent), -1.0f, 1.0f));
+        cursor.transported_normal = normalize(
+            rotate_by(cursor.transported_normal, axis, angle));
+    }
+    const Vec3 normal = cursor.transported_normal;
+    const Vec3 binormal = cross(normal, next_tangent);
+    const Vec3 tangent = cross(binormal, normal);
+
+    Vec3 point = cursor.current_base;
+    if (cursor.cv > 0u) {
+        const float distance = cursor.arc_length * state.effective_noise_frequency;
+        const float magnitude = params.noise_mask * params.noise_amplitude *
+                                strand_parameter(params, cursor.cv);
+        const Vec3 local{
+            (gradient_noise(asset, {state.noise_domain.x + distance,
+                                    state.noise_domain.y,
+                                    state.noise_domain.z}) - 0.5f) * magnitude,
+            (gradient_noise(asset, {state.noise_domain.x,
+                                    state.noise_domain.y + distance,
+                                    state.noise_domain.z}) - 0.5f) * magnitude,
+            (gradient_noise(asset, {state.noise_domain.x,
+                                    state.noise_domain.y,
+                                    state.noise_domain.z + distance}) - 0.5f) * magnitude};
+        point = point + normal * local.x + binormal * local.y + tangent * local.z;
+    }
+
+    cursor.tangent = next_tangent;
+    cursor.previous_base = cursor.current_base;
+    if (cursor.cv + 1u < params.cvs_per_strand) {
+        cursor.current_base = cursor.next_base;
+        if (cursor.cv + 2u < params.cvs_per_strand) {
+            cursor.next_base = evaluate_base_strand_cv(
+                asset, deformed, params, state, cursor.cv + 2u);
+        }
+    }
+    ++cursor.cv;
+    return point;
+}
+
+NXG_HOST_DEVICE inline float noisy_strand_length(
+    DeviceAssetView asset,
+    DeviceDeformedGeometryView deformed,
+    const GenerationParams &params,
+    const StrandGenerationState &state) noexcept {
+    StrandNoiseCursor cursor = make_noise_cursor(asset, deformed, params, state);
+    Vec3 previous = evaluate_and_advance_noise_cursor(asset, deformed, params, state, cursor);
+    float length = 0.0f;
+    for (std::uint32_t cv = 1u; cv < params.cvs_per_strand; ++cv) {
+        const Vec3 current = evaluate_and_advance_noise_cursor(
+            asset, deformed, params, state, cursor);
+        length += nxg_sqrt(length_squared(current - previous));
+        previous = current;
+    }
+    return length;
+}
 
 NXG_HOST_DEVICE inline StrandGenerationState make_strand_generation_state(
     DeviceAssetView asset,
     DeviceDeformedGeometryView deformed,
     const GenerationParams &params,
     std::uint32_t strand) noexcept {
-    constexpr float two_pi = 6.2831853071795864769f;
     StrandGenerationState state{};
     state.root = sample_root(asset, deformed, params, strand);
     state.guide_blend = make_guide_blend_state(asset, deformed, params, state.root);
-    if (params.noise_amplitude != 0.0f) {
-        const Vec3 tangent_axis = state.root.normal.z > -0.999f && state.root.normal.z < 0.999f
-            ? Vec3{0.0f, 0.0f, 1.0f} : Vec3{0.0f, 1.0f, 0.0f};
-        const Vec3 tangent = normalize(cross(state.root.normal, tangent_axis));
-        const Vec3 bitangent = normalize(cross(state.root.normal, tangent));
-        state.noise_phase = two_pi * random01(params.seed, strand, 4u);
-        const float angle = two_pi * random01(params.seed, strand, 5u);
-        state.noise_direction = tangent * nxg_sin(angle) +
-                                bitangent * nxg_sin(angle + 1.57079632679f);
+    if (noise_is_enabled(params)) {
+        state.surface_u = root_surface_u(asset, deformed, state.root);
+        state.original_length = base_strand_length(asset, deformed, params, state);
+        state.effective_noise_frequency = state.original_length > 0.0f
+            ? nxg_max(0.5f / state.original_length, params.noise_frequency)
+            : params.noise_frequency;
+        const float decorrelation = 1.0f - params.noise_correlation;
+        const float domain_scale = 100.0f * decorrelation * decorrelation;
+        state.noise_domain =
+            (rest_root_position(asset, state.root) +
+             Vec3{0.419276f, 0.184247f, 0.805721f}) * domain_scale;
+        if (params.noise_preserve_length > 0.001f) {
+            const float noisy_length = noisy_strand_length(asset, deformed, params, state);
+            if (noisy_length > 0.0f) {
+                const float target_length =
+                    state.original_length * params.noise_preserve_length +
+                    noisy_length * (1.0f - params.noise_preserve_length);
+                if (nxg_abs(noisy_length - target_length) >= 0.0001f) {
+                    state.preserve_scale = target_length / noisy_length;
+                }
+            }
+        }
     }
     return state;
 }
 
-NXG_HOST_DEVICE inline void evaluate_strand_cv(
-    DeviceAssetView asset,
-    DeviceDeformedGeometryView deformed,
-    const GenerationParams &params,
-    const StrandGenerationState &state,
-    std::uint32_t cv,
-    Vec3 &point,
-    float &width) noexcept {
-    constexpr float two_pi = 6.2831853071795864769f;
-    const float t = params.cvs_per_strand > 1u
-        ? static_cast<float>(cv) / static_cast<float>(params.cvs_per_strand - 1u) : 0.0f;
-    point = state.root.position +
-            interpolate_offset(asset, deformed, state.root, state.guide_blend, t) * params.length_scale;
-    if (params.noise_amplitude != 0.0f) {
-        const float envelope = t * t;
-        point = point + state.noise_direction * (params.noise_amplitude * envelope *
-            nxg_sin(two_pi * params.noise_frequency * t + state.noise_phase));
-    }
-    width = params.root_width * (1.0f - t) + params.tip_width * t;
+NXG_HOST_DEVICE inline float evaluate_strand_width(
+    const GenerationParams &params, std::uint32_t cv) noexcept {
+    const float t = strand_parameter(params, cv);
+    return params.root_width * (1.0f - t) + params.tip_width * t;
 }
 
 NXG_HOST_DEVICE inline void generate_strand(
@@ -310,12 +579,21 @@ NXG_HOST_DEVICE inline void generate_strand(
     DeviceDeformedGeometryView deformed = {}) noexcept {
     const StrandGenerationState state = make_strand_generation_state(
         asset, deformed, params, strand);
+    const bool noise_enabled = noise_is_enabled(params);
     if (output.roots) { output.roots[strand] = state.root; }
-
+    StrandNoiseCursor cursor{};
+    if (noise_enabled) {
+        cursor = make_noise_cursor(asset, deformed, params, state);
+    }
     for (std::uint32_t cv = 0; cv < params.cvs_per_strand; ++cv) {
-        Vec3 point{};
-        float width = 0.0f;
-        evaluate_strand_cv(asset, deformed, params, state, cv, point, width);
+        Vec3 point = noise_enabled
+            ? evaluate_and_advance_noise_cursor(asset, deformed, params, state, cursor)
+            : evaluate_base_strand_cv(asset, deformed, params, state, cv);
+        if (state.preserve_scale != 1.0f) {
+            point = state.root.position +
+                    (point - state.root.position) * state.preserve_scale;
+        }
+        const float width = evaluate_strand_width(params, cv);
         const std::uint64_t index = static_cast<std::uint64_t>(strand) * params.cvs_per_strand + cv;
         if (output.points) { output.points[index] = point; }
         if (output.widths) { output.widths[index] = width; }
@@ -330,13 +608,23 @@ NXG_HOST_DEVICE inline void generate_packed_strand(
     DeviceDeformedGeometryView deformed = {}) noexcept {
     const StrandGenerationState state = make_strand_generation_state(
         asset, deformed, params, strand);
+    const bool noise_enabled = noise_is_enabled(params);
     if (output.roots) { output.roots[strand] = state.root; }
     if (output.root_uvs) { output.root_uvs[strand] = state.root.uv; }
     if (output.point_counts) { output.point_counts[strand] = params.cvs_per_strand; }
+    StrandNoiseCursor cursor{};
+    if (noise_enabled) {
+        cursor = make_noise_cursor(asset, deformed, params, state);
+    }
     for (std::uint32_t cv = 0u; cv < params.cvs_per_strand; ++cv) {
-        Vec3 point{};
-        float width = 0.0f;
-        evaluate_strand_cv(asset, deformed, params, state, cv, point, width);
+        Vec3 point = noise_enabled
+            ? evaluate_and_advance_noise_cursor(asset, deformed, params, state, cursor)
+            : evaluate_base_strand_cv(asset, deformed, params, state, cv);
+        if (state.preserve_scale != 1.0f) {
+            point = state.root.position +
+                    (point - state.root.position) * state.preserve_scale;
+        }
+        const float width = evaluate_strand_width(params, cv);
         const std::uint64_t index = static_cast<std::uint64_t>(strand) *
                                     params.cvs_per_strand + cv;
         output.points[index] = {point.x, point.y, point.z,

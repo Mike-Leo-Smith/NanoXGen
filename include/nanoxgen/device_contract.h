@@ -58,6 +58,7 @@ struct DeviceLaunchConfig {
 enum class DeviceGenerationError : std::uint32_t {
     None,
     NullAsset,
+    MisalignedAsset,
     InvalidAssetMetadata,
     AssetCapacityTooSmall,
     InvalidGenerationParameters,
@@ -83,6 +84,8 @@ enum class DeviceGenerationError : std::uint32_t {
     switch (error) {
         case DeviceGenerationError::None: return "";
         case DeviceGenerationError::NullAsset: return "device asset pointer is null";
+        case DeviceGenerationError::MisalignedAsset:
+            return "device asset pointer is not 64-byte aligned";
         case DeviceGenerationError::InvalidAssetMetadata: return "device asset metadata is invalid";
         case DeviceGenerationError::AssetCapacityTooSmall: return "device asset allocation is too small";
         case DeviceGenerationError::InvalidGenerationParameters: return "generation parameters are invalid";
@@ -124,7 +127,11 @@ namespace detail {
         params.root_width >= 0.0f && std::isfinite(params.tip_width) &&
         params.tip_width >= 0.0f && std::isfinite(params.noise_amplitude) &&
         params.noise_amplitude >= 0.0f && std::isfinite(params.noise_frequency) &&
-        params.noise_frequency >= 0.0f;
+        params.noise_frequency >= 0.0f && std::isfinite(params.noise_mask) &&
+        params.noise_mask >= 0.0f && params.noise_mask <= 1.0f &&
+        std::isfinite(params.noise_correlation) && params.noise_correlation >= 0.0f &&
+        params.noise_correlation <= 1.0f && std::isfinite(params.noise_preserve_length) &&
+        params.noise_preserve_length >= 0.0f && params.noise_preserve_length <= 1.0f;
 }
 
 [[nodiscard]] inline DeviceGenerationError validate_common_device_input(
@@ -133,11 +140,20 @@ namespace detail {
     const GenerationParams &params,
     const DeviceLaunchConfig &config) noexcept {
     if (!asset.asset) { return DeviceGenerationError::NullAsset; }
+    if (reinterpret_cast<std::uintptr_t>(asset.asset.data()) % alignof(AssetHeader) != 0u) {
+        return DeviceGenerationError::MisalignedAsset;
+    }
     const AssetHeader &header = asset.header;
     if (header.magic != kMagic || header.version_major != kVersionMajor ||
+        header.version_minor != kVersionMinor ||
         header.byte_size < sizeof(AssetHeader) || header.vertex_count == 0u ||
         header.triangle_count == 0u || header.guide_count == 0u ||
-        header.guide_cv_count == 0u || header.guide_stencil_size != kGuideStencilSize) {
+        header.guide_cv_count == 0u || header.guide_stencil_size != kGuideStencilSize ||
+        header.noise_gradient_count != kNoiseGradientCount ||
+        header.noise_gradients_offset < sizeof(AssetHeader) ||
+        header.noise_gradients_offset > header.byte_size ||
+        static_cast<std::uint64_t>(header.noise_gradient_count) * sizeof(Vec3) >
+            header.byte_size - header.noise_gradients_offset) {
         return DeviceGenerationError::InvalidAssetMetadata;
     }
     if (asset.byte_capacity < header.byte_size) {

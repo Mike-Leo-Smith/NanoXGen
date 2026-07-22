@@ -16,8 +16,9 @@ namespace nanoxgen {
 
 inline constexpr std::uint64_t kMagic = 0x4e4547584f4e414eull; // "NANOXGEN", little endian
 inline constexpr std::uint16_t kVersionMajor = 0;
-inline constexpr std::uint16_t kVersionMinor = 1;
+inline constexpr std::uint16_t kVersionMinor = 2;
 inline constexpr std::uint32_t kGuideStencilSize = 8;
+inline constexpr std::uint32_t kNoiseGradientCount = 256;
 inline constexpr std::uint32_t kInvalidIndex = 0xffffffffu;
 
 struct Vec2 {
@@ -86,7 +87,7 @@ struct alignas(64) AssetHeader {
     std::uint32_t guide_count{};
     std::uint32_t guide_cv_count{};
     std::uint32_t guide_stencil_size{kGuideStencilSize};
-    std::uint32_t reserved0{};
+    std::uint32_t noise_gradient_count{kNoiseGradientCount};
 
     std::uint64_t positions_offset{};
     std::uint64_t normals_offset{};
@@ -96,6 +97,7 @@ struct alignas(64) AssetHeader {
     std::uint64_t guides_offset{};
     std::uint64_t guide_cvs_offset{};
     std::uint64_t triangle_guides_offset{};
+    std::uint64_t noise_gradients_offset{};
 };
 
 static_assert(std::is_trivially_copyable_v<Vec2>);
@@ -115,7 +117,10 @@ struct GenerationParams {
     float root_width{0.01f};
     float tip_width{0.001f};
     float noise_amplitude{0.0f};
-    float noise_frequency{2.0f};
+    float noise_frequency{2.0f};        // cycles per scene-unit of curve length
+    float noise_mask{1.0f};
+    float noise_correlation{0.0f};      // normalized XGen UI value in [0, 1]
+    float noise_preserve_length{0.0f};  // normalized XGen UI value in [0, 1]
 };
 
 struct RootSample {

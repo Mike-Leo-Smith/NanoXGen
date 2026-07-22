@@ -23,6 +23,9 @@ public:
     NXG_HOST_DEVICE const std::uint32_t *triangle_guides() const noexcept {
         return at<std::uint32_t>(header().triangle_guides_offset);
     }
+    NXG_HOST_DEVICE const Vec3 *noise_gradients() const noexcept {
+        return at<Vec3>(header().noise_gradients_offset);
+    }
 
     NXG_HOST_DEVICE const void *data() const noexcept { return _base; }
     NXG_HOST_DEVICE explicit operator bool() const noexcept { return _base != nullptr; }

@@ -79,7 +79,7 @@ def main() -> None:
     preserve_0 = studies["noise-preserve-000"]["arc_length_relative_error"]["mean"]
     preserve_1 = studies["noise-preserve-100"]["arc_length_relative_error"]["mean"]
     require(preserve_1 <= preserve_0 + 1.0e-6,
-            "preserveLength=1 did not improve arc-length preservation")
+            "preserveLength=100 did not improve arc-length preservation")
     require(studies["order-noise-cut"]["displacement_hash"] !=
             studies["order-cut-noise"]["displacement_hash"],
             "noise and cut unexpectedly commuted")
