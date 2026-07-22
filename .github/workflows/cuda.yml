@@ -1,0 +1,34 @@
+name: CUDA
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  compile-and-test-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: nvidia/cuda:12.9.2-devel-ubuntu22.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install --yes cmake ninja-build g++
+          cmake --version
+          ninja --version
+
+      - name: Configure CUDA build
+        run: cmake --preset cuda-release
+
+      - name: Build all CUDA targets
+        run: cmake --build --preset cuda-release
+
+      - name: Run CPU tests and detect GPU availability
+        run: ctest --preset cuda-release

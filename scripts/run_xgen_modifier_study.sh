@@ -11,7 +11,7 @@ XGEN_ROOT="${XGEN_ROOT:-${MAYA_LOCATION}/plug-ins/xgen}"
 COMPAT_LIB_DIR="${NANOXGEN_COMPAT_LIB_DIR:-}"
 BUILD_DIR="${NANOXGEN_XGEN_MODIFIER_BUILD_DIR:-${ROOT}/build/xgen-modifier-study}"
 MAYAPY="${MAYA_LOCATION}/bin/mayapy"
-PROBE="${BUILD_DIR}/nanoxgen_xgen_modifier_probe"
+PROBE="${ROOT}/build/calibration-release/nanoxgen_xgen_modifier_probe"
 
 "${ROOT}/scripts/check_xgen_sdk.sh" "${XGEN_ROOT}"
 if [[ ! -x "${MAYAPY}" ]]; then
@@ -40,11 +40,12 @@ env \
   "${MAYAPY}" "${ROOT}/tests/maya/inspect_igs_modifier_schema.py" \
     --output "${BUILD_DIR}/modifier-schema.json"
 
-"${CXX:-c++}" -std=c++20 -O2 -Wall -Wextra -Wpedantic \
-  -I"${ROOT}/include" -I"${XGEN_ROOT}/include" \
-  "${ROOT}/tools/xgen_modifier_probe.cpp" \
-  -L"${XGEN_ROOT}/lib" -L"${MAYA_LOCATION}/lib" \
-  -Wl,--allow-shlib-undefined -lAdskXGen -lclew -o "${PROBE}"
+(cd "${ROOT}" && \
+  "${CMAKE:-cmake}" --preset calibration-release \
+    -DXGEN_ROOT="${XGEN_ROOT}" \
+    -DNANOXGEN_COMPAT_LIB_DIR="${COMPAT_LIB_DIR}" && \
+  "${CMAKE:-cmake}" --build --preset calibration-release --target \
+    nanoxgen_xgen_modifier_probe)
 
 run_fixture() {
   local name="$1"

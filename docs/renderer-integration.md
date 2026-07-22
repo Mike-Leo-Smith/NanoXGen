@@ -5,6 +5,12 @@ renderer integration. It covers both classic `xgmDescription` data received
 through `XGenRenderAPI::PrimitiveCache` and Interactive Grooming data received
 through `XGenSplineAPI::XgFnSpline`.
 
+These Maya/XGen APIs describe calibration and one-time interchange paths, not
+the NanoXGen runtime dependency graph. The core renderer path consumes `.nxg`
+or `.nxc` and does not link Autodesk libraries. Raw Interactive Grooming
+`outRenderData` `.xgen` BLOBs still require the optional calibration converter
+until an independent decoder is implemented.
+
 ## Data the renderer actually consumes
 
 The renderer-facing representation is much smaller than the Maya/XGen authoring
@@ -88,6 +94,27 @@ times, and the complete sample-major output capacity. Only after the whole
 request is valid does it enqueue one position-only kernel per sample on the
 same stream. Every launch reuses the base asset, seed, strand count, and CV
 count, preserving root identity while avoiding widths/UVs in motion buffers.
+
+### CUDA validation and benchmarking
+
+Configure with `-DNANOXGEN_ENABLE_CUDA=ON`. When tests are enabled, the build
+also creates `nanoxgen_cuda_tests`. It compares the shared CPU and CUDA math for
+XGen-compatible noise, 40% length preservation, packed renderer output,
+deformed geometry, and sample-major motion. The test returns CTest's explicit
+skip code when no CUDA device is visible; a successful NVCC build alone is not
+reported as device validation.
+
+For a real `.nxg` asset, benchmark direct renderer-buffer generation with:
+
+```bash
+./build/cuda-release/nanoxgen_cuda_benchmark groom.nxg --strands 100000 --cvs 12
+./build/cuda-release/nanoxgen_cuda_benchmark groom.nxg --strands 100000 --cvs 12 --noise
+```
+
+The JSON result reports the CUDA device, compute capability, median/p95 kernel
+time, and generated-CV throughput. Transfers and renderer submission are
+intentionally outside the timed region; the asset and output allocations stay
+GPU-resident across repetitions.
 
 ## Compiler modes and numerical policy
 

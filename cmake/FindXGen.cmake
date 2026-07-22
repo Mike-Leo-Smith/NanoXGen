@@ -43,6 +43,28 @@ if(XGen_FOUND AND NOT TARGET XGen::XGen)
     IMPORTED_LOCATION "${XGen_LIBRARY}"
     INTERFACE_INCLUDE_DIRECTORIES "${XGen_INCLUDE_DIR}"
     INTERFACE_LINK_LIBRARIES "${XGen_CLEW_LIBRARY}")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Autodesk's shared objects carry dependencies supplied by Maya's supported
+    # distro rather than by the XGen SDK target itself. Match the standalone
+    # calibration scripts and defer those transitive resolutions to runtime.
+    set_property(TARGET XGen::XGen APPEND PROPERTY
+      INTERFACE_LINK_OPTIONS "-Wl,--allow-shlib-undefined")
+  endif()
+  set(_XGEN_COMPAT_LIB_DIR
+    "${NANOXGEN_COMPAT_LIB_DIR}")
+  if(NOT _XGEN_COMPAT_LIB_DIR)
+    set(_XGEN_COMPAT_LIB_DIR "$ENV{NANOXGEN_COMPAT_LIB_DIR}")
+  endif()
+  if(_XGEN_COMPAT_LIB_DIR)
+    if(NOT IS_DIRECTORY "${_XGEN_COMPAT_LIB_DIR}")
+      message(FATAL_ERROR
+        "NANOXGEN_COMPAT_LIB_DIR is not a directory: ${_XGEN_COMPAT_LIB_DIR}")
+    endif()
+    set_property(TARGET XGen::XGen APPEND PROPERTY
+      INTERFACE_LINK_DIRECTORIES "${_XGEN_COMPAT_LIB_DIR}")
+    set_property(TARGET XGen::XGen APPEND PROPERTY
+      INTERFACE_LINK_OPTIONS "-Wl,-rpath,${_XGEN_COMPAT_LIB_DIR}")
+  endif()
 endif()
 
 mark_as_advanced(XGen_INCLUDE_DIR XGen_LIBRARY XGen_CLEW_LIBRARY)

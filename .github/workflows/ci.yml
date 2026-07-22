@@ -16,16 +16,18 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Install CMake and Ninja
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cmake ninja-build
+          cmake --version
+          ninja --version
+
       - name: Configure
-        run: >-
-          cmake -S . -B build
-          -DCMAKE_BUILD_TYPE=Release
-          -DNANOXGEN_BUILD_TESTS=ON
-          -DNANOXGEN_BUILD_XGEN_PROBE=OFF
-          -DNANOXGEN_ENABLE_CUDA=OFF
+        run: cmake --preset release
 
       - name: Build
-        run: cmake --build build --parallel 2
+        run: cmake --build --preset release
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --preset release

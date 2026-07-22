@@ -11,9 +11,10 @@ XGEN_ROOT="${XGEN_ROOT:-${MAYA_LOCATION}/plug-ins/xgen}"
 COMPAT_LIB_DIR="${NANOXGEN_COMPAT_LIB_DIR:-}"
 BUILD_DIR="${NANOXGEN_XGEN_BUILD_DIR:-${ROOT}/build/xgen-real}"
 MAYAPY="${MAYA_LOCATION}/bin/mayapy"
-PROBE="${BUILD_DIR}/nanoxgen_xgen_probe"
-PARITY="${BUILD_DIR}/nanoxgen_xgen_parity"
-CACHE="${BUILD_DIR}/nanoxgen_xgen_cache"
+CALIBRATION_BIN_DIR="${ROOT}/build/calibration-release"
+PROBE="${CALIBRATION_BIN_DIR}/nanoxgen_xgen_probe"
+PARITY="${CALIBRATION_BIN_DIR}/nanoxgen_xgen_parity"
+CACHE="${CALIBRATION_BIN_DIR}/nanoxgen_xgen_cache"
 
 "${ROOT}/scripts/check_xgen_sdk.sh" "${XGEN_ROOT}"
 if [[ ! -x "${MAYAPY}" ]]; then
@@ -28,24 +29,12 @@ if [[ -n "${COMPAT_LIB_DIR}" ]]; then
   RUNTIME_LIBS="${RUNTIME_LIBS}:${COMPAT_LIB_DIR}"
 fi
 
-"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Wpedantic \
-  -I"${XGEN_ROOT}/include" \
-  "${ROOT}/tools/xgen_probe.cpp" \
-  -L"${XGEN_ROOT}/lib" -L"${MAYA_LOCATION}/lib" \
-  -Wl,--allow-shlib-undefined \
-  -lAdskXGen -lclew -o "${PROBE}"
-"${CXX:-c++}" -std=c++20 -O2 -Wall -Wextra -Wpedantic -pthread \
-  -I"${ROOT}/include" -I"${XGEN_ROOT}/include" \
-  "${ROOT}/src/asset.cpp" "${ROOT}/tools/xgen_parity.cpp" \
-  -L"${XGEN_ROOT}/lib" -L"${MAYA_LOCATION}/lib" \
-  -Wl,--allow-shlib-undefined \
-  -lAdskXGen -lclew -o "${PARITY}"
-"${CXX:-c++}" -std=c++20 -O2 -Wall -Wextra -Wpedantic \
-  -I"${ROOT}/include" -I"${XGEN_ROOT}/include" \
-  "${ROOT}/src/curve_cache.cpp" "${ROOT}/tools/xgen_cache.cpp" \
-  -L"${XGEN_ROOT}/lib" -L"${MAYA_LOCATION}/lib" \
-  -Wl,--allow-shlib-undefined \
-  -lAdskXGen -lclew -o "${CACHE}"
+(cd "${ROOT}" && \
+  "${CMAKE:-cmake}" --preset calibration-release \
+    -DXGEN_ROOT="${XGEN_ROOT}" \
+    -DNANOXGEN_COMPAT_LIB_DIR="${COMPAT_LIB_DIR}" && \
+  "${CMAKE:-cmake}" --build --preset calibration-release --target \
+    nanoxgen_xgen_probe nanoxgen_xgen_parity nanoxgen_xgen_cache)
 
 run_fixture() {
   local name="$1"

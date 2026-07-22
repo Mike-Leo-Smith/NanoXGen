@@ -1,6 +1,7 @@
 # NanoXGen
 
 [![CI](https://github.com/Mike-Leo-Smith/NanoXGen/actions/workflows/ci.yml/badge.svg)](https://github.com/Mike-Leo-Smith/NanoXGen/actions/workflows/ci.yml)
+[![CUDA](https://github.com/Mike-Leo-Smith/NanoXGen/actions/workflows/cuda.yml/badge.svg)](https://github.com/Mike-Leo-Smith/NanoXGen/actions/workflows/cuda.yml)
 
 NanoXGen is an experimental, GPU-oriented procedural hair representation and
 generator inspired by the relationship between NanoVDB and OpenVDB. It is not
@@ -16,6 +17,7 @@ The current prototype provides:
   magnitude, frequency, correlation, and length preservation plus a
   parallel-transported surface frame;
 - one shared C++/CUDA generation function and a CUDA launch kernel;
+- an executable CPU/CUDA parity suite plus a GPU-resident JSON benchmark;
 - direct CPU/CUDA generation into renderer `float4(position, radius)` and
   fixed `pointCounts` buffers, with checked device capacities and deformation
   lengths at the public CUDA boundary;
@@ -34,7 +36,23 @@ The current prototype provides:
   bypassing Maya/XGen on repeated static renders;
 - optional native ISA, SIMD-width, IPO/LTO, and precision-gated fast-math modes.
 
-## Build and run without CMake
+## Build and test
+
+CMake with Ninja is the primary build path. The checked-in presets keep local
+and CI configuration identical:
+
+```bash
+cmake --preset release
+cmake --build --preset release
+ctest --preset release
+```
+
+Use `debug`, `native-release`, or `cuda-release` in place of `release` for the
+corresponding core configuration. CUDA builds require an installed CUDA
+toolkit; the CUDA test is reported as skipped when the build host has NVCC but
+no usable GPU. None of these presets discovers or links Maya/XGen.
+
+The Makefile is a fallback for minimal CPU-only environments:
 
 ```bash
 make test
@@ -44,7 +62,12 @@ make bin/nanoxgen_demo
 
 The demo writes `build/demo/demo.nxg` and `build/demo/curves.obj`.
 
-## SDK setup
+## Autodesk calibration (optional)
+
+The NanoXGen core loads `.nxg` assets and `.nxc` evaluated-curve caches without
+Maya or any Autodesk library. It does **not yet** independently decode an
+Interactive Grooming `outRenderData` `.xgen` BLOB: the current `.xgen` probes
+and `.xgen`-to-`.nxc` converter call Autodesk's `XgFnSpline` API.
 
 See [`docs/sdk-setup.md`](docs/sdk-setup.md). The official Maya DevKit is
 downloadable without sign-in, but Autodesk ships the actual XGen headers and
@@ -90,13 +113,15 @@ linear modifier reference, Maya BLOB export, and `XgFnSpline`
 load/execute/materialization as separate stages. These stages are not collapsed
 into one misleading speedup number.
 
-`nanoxgen_xgen_cache` converts already-evaluated official spline BLOBs to the
+The optional `calibration-release` preset builds `nanoxgen_xgen_cache`, which
+converts already-evaluated official spline BLOBs to the
 runtime-only `.nxc` cache. `--renderer-minimal` stores only the topology and
 bit-exact renderer points; `--motion` adds separately evaluated shutter samples
 after canonical face/UV matching. The converter is built only when a licensed
 XGen SDK is available; loading `.nxc` does not require Autodesk libraries.
 
-For production compiler experiments, run `make fast-math-check`. The test
+For production compiler experiments, run `scripts/run_fast_math_comparison.sh`.
+The test
 compares every float from strict and fast builds and fails if its documented
 relaxed error budget is exceeded.
 
@@ -110,8 +135,8 @@ curve payload contract and coverage relative to the Maya renderer paths.
 
 ## Continuous integration
 
-GitHub Actions builds the CPU library and demo with CMake and runs the test
-suite on every push and pull request. The optional Autodesk XGen probe and CUDA
-kernel are excluded from hosted CI because they require external SDK/toolchain
-installations. Run `scripts/run_xgen_real_tests.sh` on a licensed Maya machine
-for the proprietary-runtime integration coverage.
+GitHub Actions configures CMake/Ninja presets, builds the CPU targets, and runs
+the core test suite on every push and pull request. A separate official CUDA
+toolkit image compiles all CUDA targets and marks runtime parity as skipped when
+no GPU is exposed. Autodesk calibration is intentionally excluded; run
+`scripts/run_xgen_real_tests.sh` on a licensed Maya machine for that coverage.

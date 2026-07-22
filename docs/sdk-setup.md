@@ -27,11 +27,15 @@ Point NanoXGen to the full installation:
 export MAYA_LOCATION=/usr/autodesk/maya2027
 export XGEN_ROOT="$MAYA_LOCATION/plug-ins/xgen"
 ./scripts/check_xgen_sdk.sh "$XGEN_ROOT"
-cmake -S . -B build -DXGEN_ROOT="$XGEN_ROOT"
+cmake --preset calibration-release -DXGEN_ROOT="$XGEN_ROOT"
+cmake --build --preset calibration-release
 ```
 
-With the SDK present, CMake builds `nanoxgen_xgen_probe`. Create an Interactive
-Grooming fixture in Maya and export its serialized render data with:
+Only the explicit calibration preset discovers XGen and builds
+`nanoxgen_xgen_probe`, `nanoxgen_xgen_parity`, and the `.xgen`-to-`.nxc`
+converter. The default release/debug/native/CUDA presets never inspect Maya or
+link Autodesk libraries. Create an Interactive Grooming fixture in Maya and
+export its serialized render data with:
 
 ```mel
 xgmExportSplineDataInternal -output "/tmp/fixture.xgen" "description1_Shape.outRenderData";
@@ -41,12 +45,14 @@ Then run:
 
 ```bash
 LD_LIBRARY_PATH="$XGEN_ROOT/lib:${MAYA_LOCATION}/lib:$LD_LIBRARY_PATH" \
-  ./build/nanoxgen_xgen_probe /tmp/fixture.xgen
+  ./build/calibration-release/nanoxgen_xgen_probe /tmp/fixture.xgen
 ```
 
 The probe reports motion samples, batches, curve and vertex counts, CV ranges,
 widths, position and patch-UV bounds, and a canonical geometry hash. The
-standalone NanoXGen core does not need Maya or XGen at runtime.
+standalone NanoXGen core does not need Maya or XGen at build or runtime. The
+calibration probe still uses `XgFnSpline`; an Autodesk-free decoder for the raw
+Interactive Grooming BLOB is not part of the core yet.
 
 For the complete reproducible test, run:
 
@@ -92,9 +98,9 @@ to an Autodesk-free runtime cache. Motion samples are separate official
 evaluations and are canonicalized before storage:
 
 ```bash
-./build/nanoxgen_xgen_cache --renderer-minimal \
+./build/calibration-release/nanoxgen_xgen_cache --renderer-minimal \
   --motion 0.5 /tmp/shutter-close.xgen /tmp/base.xgen /tmp/groom.nxc
-./build/nanoxgen_cache_benchmark --repeats 15 /tmp/groom.nxc
+./build/release/nanoxgen_cache_benchmark --repeats 15 /tmp/groom.nxc
 ```
 
 Maya's supported RHEL/Rocky systems should provide the required libraries. On

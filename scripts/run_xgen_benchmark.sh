@@ -18,8 +18,16 @@ if [[ -n "${COMPAT_LIB_DIR}" ]]; then
   RUNTIME_LIBS="${RUNTIME_LIBS}:${COMPAT_LIB_DIR}"
 fi
 
-make -C "${ROOT}" bin/nanoxgen_benchmark
-"${ROOT}/bin/nanoxgen_benchmark" --repeats "${REPEATS}" 10000 100000 \
+(cd "${ROOT}" && \
+  "${CMAKE:-cmake}" --preset release && \
+  "${CMAKE:-cmake}" --build --preset release --target nanoxgen_benchmark && \
+  "${CMAKE:-cmake}" --preset calibration-release \
+    -DXGEN_ROOT="${XGEN_ROOT}" \
+    -DNANOXGEN_COMPAT_LIB_DIR="${COMPAT_LIB_DIR}" && \
+  "${CMAKE:-cmake}" --build --preset calibration-release --target \
+    nanoxgen_xgen_benchmark)
+"${ROOT}/build/release/nanoxgen_benchmark" \
+  --repeats "${REPEATS}" 10000 100000 \
   > "${BUILD_DIR}/nanoxgen-benchmark.json"
 
 env \
@@ -37,13 +45,9 @@ env \
   "${MAYA_LOCATION}/bin/mayapy" "${ROOT}/tests/maya/benchmark_igs.py" \
     --output "${BUILD_DIR}/xgen-benchmark.json" --repeats "${REPEATS}" 10000 100000
 
-"${CXX:-c++}" -std=c++17 -O2 -Wall -Wextra -Wpedantic \
-  -I"${XGEN_ROOT}/include" "${ROOT}/tools/xgen_benchmark.cpp" \
-  -L"${XGEN_ROOT}/lib" -L"${MAYA_LOCATION}/lib" \
-  -Wl,--allow-shlib-undefined -lAdskXGen -lclew \
-  -o "${BUILD_DIR}/nanoxgen_xgen_benchmark"
 LD_LIBRARY_PATH="${RUNTIME_LIBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
-  "${BUILD_DIR}/nanoxgen_xgen_benchmark" --repeats "${REPEATS}" \
+  "${ROOT}/build/calibration-release/nanoxgen_xgen_benchmark" \
+  --repeats "${REPEATS}" \
   "${BUILD_DIR}/xgen-benchmark-10000.xgen" \
   "${BUILD_DIR}/xgen-benchmark-100000.xgen" \
   > "${BUILD_DIR}/xgen-decode-benchmark.json"
