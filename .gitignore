@@ -1,0 +1,9 @@
+/build/
+/bin/
+/third_party/downloads/
+/third_party/maya-devkit-*/
+/third_party/xgen-spline-to-cyhair/
+/.cache/
+NanoXGen-prototype-*.tar.gz
+*.nxg
+*.obj

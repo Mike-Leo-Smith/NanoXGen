@@ -1,0 +1,68 @@
+#pragma once
+
+#include "nanoxgen/generate.h"
+
+#include <filesystem>
+#include <span>
+#include <string>
+#include <vector>
+
+namespace nanoxgen {
+
+struct GuideInput {
+    std::vector<Vec3> cvs;
+    Vec3 root_normal{0.0f, 1.0f, 0.0f};
+    Vec2 root_uv{};
+    std::uint32_t triangle_index{kInvalidIndex};
+    Vec2 barycentric{};
+    float support_radius{0.0f}; // zero selects an automatic radius
+};
+
+struct AssetBuildInput {
+    std::vector<Vec3> positions;
+    std::vector<Vec3> normals;
+    std::vector<Vec2> texcoords;
+    std::vector<UInt3> triangles;
+    std::vector<GuideInput> guides;
+};
+
+class Asset {
+public:
+    Asset() = default;
+    explicit Asset(std::vector<std::byte> bytes) : _bytes(std::move(bytes)) {}
+
+    [[nodiscard]] DeviceAssetView view() const noexcept { return DeviceAssetView{_bytes.data()}; }
+    [[nodiscard]] std::span<const std::byte> bytes() const noexcept { return _bytes; }
+    [[nodiscard]] bool empty() const noexcept { return _bytes.empty(); }
+
+private:
+    std::vector<std::byte> _bytes;
+};
+
+struct GeneratedCurves {
+    std::uint32_t strand_count{};
+    std::uint32_t cvs_per_strand{};
+    std::vector<Vec3> points;
+    std::vector<float> widths;
+    std::vector<RootSample> roots;
+};
+
+// CPU workers persist for the duration of one generation call and dynamically
+// claim logical work blocks. The default tile contains as many strands as the
+// unchanged CUDA kernel has threads per block, so one CPU worker serially
+// executes the logical work corresponding to one CUDA block at a time.
+struct CpuGenerationOptions {
+    std::uint32_t worker_count{};             // zero selects hardware concurrency
+    std::uint32_t strands_per_work_block{128u};
+};
+
+[[nodiscard]] Asset build_asset(const AssetBuildInput &input);
+[[nodiscard]] std::string validate_asset(std::span<const std::byte> bytes);
+void save_asset(const Asset &asset, const std::filesystem::path &path);
+[[nodiscard]] Asset load_asset(const std::filesystem::path &path);
+[[nodiscard]] GeneratedCurves generate_cpu(const Asset &asset, const GenerationParams &params);
+[[nodiscard]] GeneratedCurves generate_cpu(
+    const Asset &asset, const GenerationParams &params, const CpuGenerationOptions &options);
+void write_curves_obj(const GeneratedCurves &curves, const std::filesystem::path &path);
+
+} // namespace nanoxgen
