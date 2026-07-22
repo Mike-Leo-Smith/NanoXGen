@@ -83,6 +83,10 @@ struct ClassicFloatCustomInput {
     XgenFloatExpressionProgram program;
 };
 
+struct ClassicFloatPrefNoiseInput {
+    float frequency{};
+};
+
 // Runtime subset of one Classic SplinePrimitive. Authoring values are parsed
 // losslessly elsewhere; this retained/JIT form contains float/uint data only.
 struct ClassicFloatRuntimePlan {
@@ -107,6 +111,10 @@ struct ClassicFloatRuntimePlan {
     // evaluated once per root by the optional native input stage, then become
     // ordinary float inputs in both CPU and Luisa execution.
     std::vector<ClassicFloatCustomInput> custom_inputs;
+    // Scalar noise($Prefg * frequency) calls. $Prefg is a reference-pose
+    // vector, so the optional native stage evaluates these once per root and
+    // supplies only the resulting float to retained CPU/GPU execution.
+    std::vector<ClassicFloatPrefNoiseInput> pref_noise_inputs;
     // Requirements outside this plan (for example a custom expression or an
     // authored FX module) are preserved as explicit fallback diagnostics.
     // Classic random root sampling is planned separately by xgen_classic_roots.
@@ -132,6 +140,7 @@ struct ClassicFloatRuntimeContext {
     bool has_random_prefix{};
     std::span<const float> ptex_values;
     std::span<const float> custom_values;
+    std::span<const float> pref_noise_values;
 };
 
 [[nodiscard]] ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
@@ -155,7 +164,7 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     std::span<const std::uint32_t> random_prefixes = {},
     std::span<const std::uint32_t> primitive_ids = {},
     std::span<const ClassicClumpRuntimeData> clump_data = {},
-    // Row-major [strand][ptex paths followed by custom inputs]. Kept as plain
+    // Row-major [strand][PTEX, custom, $Prefg-noise inputs]. Kept as plain
     // float data so the same table can be uploaded to GPU backends.
     std::span<const float> runtime_inputs = {});
 

@@ -107,6 +107,8 @@ void test_full_mask_and_generation() {
                 first.primitive_ids.front() == 1u &&
                 first.primitive_ids.back() == 64u,
             "per-face primitive IDs do not match RandomGenerator candidates");
+    require(first.reference_positions.size() == first.roots.size(),
+            "root plan did not retain $Prefg positions");
     require(first.roots.size() == second.roots.size() &&
                 std::memcmp(first.roots.data(), second.roots.data(),
                             first.roots.size() * sizeof(nanoxgen::RootSample)) == 0,
@@ -121,28 +123,37 @@ void test_full_mask_and_generation() {
     nanoxgen::ClassicDescription runtime_description = description();
     runtime_description.objects.push_back({"SplinePrimitive", {
         {"fxCVCount", "4", 4u},
-        {"length", "0.5+map('${DESC}/paintmaps/density')+long()", 5u}}, 4u});
+        {"length",
+         "$freq=2; 0.5+map('${DESC}/paintmaps/density')+long()+"
+         "noise($Prefg*$freq)",
+         5u}}, 4u});
     const std::array<nanoxgen::ClassicAttribute, 1u> palette{{
         {"custom_float_long", "hash($id)<.5?1:0", 6u}}};
     const nanoxgen::ClassicFloatRuntimePlan runtime =
         nanoxgen::compile_xgen_classic_float_runtime_plan(
             runtime_description, palette);
     require(runtime.lowering_complete() && runtime.ptex_paths.size() == 1u &&
-                runtime.custom_inputs.size() == 1u,
+                runtime.custom_inputs.size() == 1u &&
+                runtime.pref_noise_inputs.size() == 1u &&
+                runtime.pref_noise_inputs.front().frequency == 2.0f,
             "runtime map expression did not lower");
     const nanoxgen::ClassicRuntimeInputData runtime_data =
         nanoxgen::build_xgen_classic_runtime_input_data(
             runtime, fixture.path, "testPatch", first);
     require(runtime_data.strand_count == first.roots.size() &&
-                runtime_data.values_per_strand == 2u &&
-                runtime_data.values.size() == first.roots.size() * 2u,
+                runtime_data.values_per_strand == 3u &&
+                runtime_data.values.size() == first.roots.size() * 3u,
             "runtime PTEX table dimensions mismatch");
     for (std::size_t strand = 0u; strand < first.roots.size(); ++strand) {
-        require(runtime_data.values[strand * 2u] == 1.0f,
+        require(runtime_data.values[strand * 3u] == 1.0f,
                 "runtime PTEX sample mismatch");
-        const float custom = runtime_data.values[strand * 2u + 1u];
+        const float custom = runtime_data.values[strand * 3u + 1u];
         require(custom == 0.0f || custom == 1.0f,
                 "runtime custom sample mismatch");
+        require(runtime_data.values[strand * 3u + 2u] ==
+                    nanoxgen::xgen_classic_noise_float(
+                        first.reference_positions[strand] * 2.0f),
+                "runtime $Prefg noise sample mismatch");
     }
 
     const nanoxgen::Asset asset = nanoxgen::build_asset(input.asset);

@@ -264,6 +264,7 @@ int main(int argc, char **argv) try {
     if (root_plan.primitive_ids.size() != root_plan.roots.size() ||
         root_plan.random_prefixes.size() != root_plan.roots.size() ||
         root_plan.surface_tangents.size() != root_plan.roots.size() ||
+        root_plan.reference_positions.size() != root_plan.roots.size() ||
         root_plan.influence_offsets.size() != root_plan.roots.size() + 1u) {
         throw std::runtime_error("Classic root plan metadata is inconsistent");
     }

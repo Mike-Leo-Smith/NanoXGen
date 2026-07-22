@@ -7,12 +7,14 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <vector>
 
 namespace {
 
@@ -118,8 +120,45 @@ int main(int argc, char **argv) try {
                        view.point_counts() + header.strand_count,
                        other.point_counts());
         if (!topology_matches) {
+            std::set<Identity> other_identities;
+            if (other.face_ids() && other.face_uvs()) {
+                for (std::uint32_t strand = 0u;
+                     strand < other.header().strand_count; ++strand) {
+                    const nanoxgen::Vec2 uv = other.face_uvs()[strand];
+                    other_identities.emplace(
+                        other.face_ids()[strand],
+                        std::bit_cast<std::uint32_t>(uv.x),
+                        std::bit_cast<std::uint32_t>(uv.y));
+                }
+            }
+            std::vector<Identity> only_input;
+            std::vector<Identity> only_compare;
+            std::set_difference(
+                identities.begin(), identities.end(),
+                other_identities.begin(), other_identities.end(),
+                std::back_inserter(only_input));
+            std::set_difference(
+                other_identities.begin(), other_identities.end(),
+                identities.begin(), identities.end(),
+                std::back_inserter(only_compare));
             std::cout << "{\"compare\":\"" << compare_path->string()
-                      << "\",\"topology_matches\":false}\n";
+                      << "\",\"topology_matches\":false"
+                      << ",\"only_in_input\":" << only_input.size()
+                      << ",\"only_in_compare\":" << only_compare.size();
+            const auto write_identity = [](std::string_view label,
+                                           const Identity &identity) {
+                std::cout << ",\"" << label << "\":["
+                          << std::get<0>(identity) << ','
+                          << std::get<1>(identity) << ','
+                          << std::get<2>(identity) << ']';
+            };
+            if (!only_input.empty()) {
+                write_identity("first_only_in_input", only_input.front());
+            }
+            if (!only_compare.empty()) {
+                write_identity("first_only_in_compare", only_compare.front());
+            }
+            std::cout << "}\n";
         } else {
             double position_squared_error{};
             double radius_squared_error{};

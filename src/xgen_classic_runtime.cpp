@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <limits>
@@ -81,11 +82,62 @@ const ClassicAttribute &required_attribute(
     return *attribute;
 }
 
+bool identifier_character(char c) noexcept {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+std::optional<float> constant_local_assignment(
+    std::string_view source, std::string_view name, std::size_t before) {
+    const std::string token = "$" + std::string{name};
+    std::optional<float> result;
+    for (std::size_t index = 0u; index < before;) {
+        index = source.find(token, index);
+        if (index == std::string_view::npos || index >= before) { break; }
+        std::size_t cursor = index + token.size();
+        if (cursor < source.size() && identifier_character(source[cursor])) {
+            index = cursor;
+            continue;
+        }
+        while (cursor < before &&
+               (source[cursor] == ' ' || source[cursor] == '\t' ||
+                source[cursor] == '\r' || source[cursor] == '\n')) {
+            ++cursor;
+        }
+        if (cursor >= before || source[cursor] != '=' ||
+            (cursor + 1u < before && source[cursor + 1u] == '=')) {
+            index = cursor;
+            continue;
+        }
+        ++cursor;
+        while (cursor < before &&
+               (source[cursor] == ' ' || source[cursor] == '\t' ||
+                source[cursor] == '\r' || source[cursor] == '\n')) {
+            ++cursor;
+        }
+        float sign = 1.0f;
+        if (cursor < before &&
+            (source[cursor] == '+' || source[cursor] == '-')) {
+            if (source[cursor++] == '-') { sign = -1.0f; }
+        }
+        float value{};
+        const auto converted = std::from_chars(
+            source.data() + cursor, source.data() + before, value);
+        if (converted.ec == std::errc{} && converted.ptr != source.data() + cursor &&
+            std::isfinite(value)) {
+            result = sign * value;
+        }
+        index = cursor;
+    }
+    return result;
+}
+
 ClassicFloatRuntimeExpression compile_expression(
     const ClassicObject &object, const ClassicAttribute &attribute,
     std::vector<std::string> &ptex_paths,
     std::span<const ClassicAttribute> palette_attributes,
-    std::vector<ClassicFloatCustomInput> &custom_inputs) {
+    std::vector<ClassicFloatCustomInput> &custom_inputs,
+    std::vector<ClassicFloatPrefNoiseInput> &pref_noise_inputs) {
     std::string source;
     source.reserve(attribute.value.size());
     bool quoted = false;
@@ -179,11 +231,118 @@ ClassicFloatRuntimeExpression compile_expression(
         rewritten += "$__nxg_map_" + std::to_string(map_index);
         index = cursor;
     }
+    // The scalar IR deliberately has no vector values. Bind Classic's
+    // reference-global position noise as a root input, retaining the local
+    // scalar frequency in the authored expression. More complex vector noise
+    // forms remain checked fallbacks.
+    for (std::size_t index = 0u;;) {
+        index = rewritten.find("noise", index);
+        if (index == std::string::npos) { break; }
+        if ((index != 0u && identifier_character(rewritten[index - 1u])) ||
+            (index + 5u < rewritten.size() &&
+             identifier_character(rewritten[index + 5u]))) {
+            index += 5u;
+            continue;
+        }
+        std::size_t cursor = index + 5u;
+        while (cursor < rewritten.size() &&
+               (rewritten[cursor] == ' ' || rewritten[cursor] == '\t')) {
+            ++cursor;
+        }
+        if (cursor >= rewritten.size() || rewritten[cursor++] != '(') {
+            index += 5u;
+            continue;
+        }
+        while (cursor < rewritten.size() &&
+               (rewritten[cursor] == ' ' || rewritten[cursor] == '\t')) {
+            ++cursor;
+        }
+        constexpr std::string_view prefg{"$Prefg"};
+        if (rewritten.compare(cursor, prefg.size(), prefg) != 0 ||
+            (cursor + prefg.size() < rewritten.size() &&
+             identifier_character(rewritten[cursor + prefg.size()]))) {
+            index += 5u;
+            continue;
+        }
+        cursor += prefg.size();
+        while (cursor < rewritten.size() &&
+               (rewritten[cursor] == ' ' || rewritten[cursor] == '\t')) {
+            ++cursor;
+        }
+        if (cursor >= rewritten.size() || rewritten[cursor++] != '*') {
+            index += 5u;
+            continue;
+        }
+        while (cursor < rewritten.size() &&
+               (rewritten[cursor] == ' ' || rewritten[cursor] == '\t')) {
+            ++cursor;
+        }
+        std::optional<float> frequency;
+        if (cursor < rewritten.size() && rewritten[cursor] == '$') {
+            const std::size_t name_begin = ++cursor;
+            while (cursor < rewritten.size() &&
+                   identifier_character(rewritten[cursor])) {
+                ++cursor;
+            }
+            if (cursor != name_begin) {
+                frequency = constant_local_assignment(
+                    rewritten,
+                    std::string_view{rewritten}.substr(
+                        name_begin, cursor - name_begin),
+                    index);
+            }
+        } else {
+            float sign = 1.0f;
+            if (cursor < rewritten.size() &&
+                (rewritten[cursor] == '+' || rewritten[cursor] == '-')) {
+                if (rewritten[cursor++] == '-') { sign = -1.0f; }
+            }
+            float value{};
+            const auto converted = std::from_chars(
+                rewritten.data() + cursor,
+                rewritten.data() + rewritten.size(), value);
+            if (converted.ec == std::errc{} &&
+                converted.ptr != rewritten.data() + cursor &&
+                std::isfinite(value)) {
+                frequency = sign * value;
+                cursor = static_cast<std::size_t>(
+                    converted.ptr - rewritten.data());
+            }
+        }
+        while (cursor < rewritten.size() &&
+               (rewritten[cursor] == ' ' || rewritten[cursor] == '\t')) {
+            ++cursor;
+        }
+        if (!frequency || cursor >= rewritten.size() ||
+            rewritten[cursor++] != ')') {
+            index += 5u;
+            continue;
+        }
+        auto found = std::find_if(
+            pref_noise_inputs.begin(), pref_noise_inputs.end(),
+            [frequency](const ClassicFloatPrefNoiseInput &input) {
+                return std::bit_cast<std::uint32_t>(input.frequency) ==
+                       std::bit_cast<std::uint32_t>(*frequency);
+            });
+        std::size_t noise_index{};
+        if (found == pref_noise_inputs.end()) {
+            if (ptex_paths.size() + custom_inputs.size() +
+                    pref_noise_inputs.size() >= 61u) {
+                throw std::runtime_error(
+                    "runtime external input limit exceeded");
+            }
+            noise_index = pref_noise_inputs.size();
+            pref_noise_inputs.push_back({*frequency});
+        } else {
+            noise_index = static_cast<std::size_t>(
+                found - pref_noise_inputs.begin());
+        }
+        const std::string input =
+            "$__nxg_pref_noise_" + std::to_string(noise_index);
+        rewritten.replace(index, cursor - index, input);
+        index += input.size();
+    }
     constexpr std::string_view custom_prefix{"custom_float_"};
-    const auto identifier_character = [](char c) noexcept {
-        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-               (c >= '0' && c <= '9') || c == '_';
-    };
     for (const ClassicAttribute &custom_attribute : palette_attributes) {
         if (!custom_attribute.name.starts_with(custom_prefix) ||
             custom_attribute.name.size() == custom_prefix.size()) {
@@ -225,7 +384,8 @@ ClassicFloatRuntimeExpression compile_expression(
                 });
             std::size_t custom_index{};
             if (found == custom_inputs.end()) {
-                if (ptex_paths.size() + custom_inputs.size() >= 61u) {
+                if (ptex_paths.size() + custom_inputs.size() +
+                        pref_noise_inputs.size() >= 61u) {
                     throw std::runtime_error(
                         "runtime external input limit exceeded");
                 }
@@ -268,18 +428,22 @@ void compile_optional(const ClassicObject &object, std::string_view attribute_na
                       std::vector<std::string> &fallback_reasons,
                       std::vector<std::string> &ptex_paths,
                       std::span<const ClassicAttribute> palette_attributes,
-                      std::vector<ClassicFloatCustomInput> &custom_inputs) {
+                      std::vector<ClassicFloatCustomInput> &custom_inputs,
+                      std::vector<ClassicFloatPrefNoiseInput> &pref_noise_inputs) {
     const ClassicAttribute *attribute = find_classic_attribute(
         object.attributes, attribute_name);
     if (attribute == nullptr || attribute->value.empty()) { return; }
     const std::size_t map_count = ptex_paths.size();
     const std::size_t custom_count = custom_inputs.size();
+    const std::size_t pref_noise_count = pref_noise_inputs.size();
     try {
         destination = compile_expression(
-            object, *attribute, ptex_paths, palette_attributes, custom_inputs);
+            object, *attribute, ptex_paths, palette_attributes, custom_inputs,
+            pref_noise_inputs);
     } catch (const std::exception &error) {
         ptex_paths.resize(map_count);
         custom_inputs.resize(custom_count);
+        pref_noise_inputs.resize(pref_noise_count);
         fallback_reasons.push_back(
             object.type + "." + std::string{attribute_name} + ": " +
             error.what());
@@ -295,10 +459,13 @@ bool supported_runtime_input(std::string_view input) {
     }
     constexpr std::string_view map_prefix{"__nxg_map_"};
     constexpr std::string_view custom_prefix{"__nxg_custom_"};
+    constexpr std::string_view pref_noise_prefix{"__nxg_pref_noise_"};
     if (input.starts_with(map_prefix)) {
         input.remove_prefix(map_prefix.size());
     } else if (input.starts_with(custom_prefix)) {
         input.remove_prefix(custom_prefix.size());
+    } else if (input.starts_with(pref_noise_prefix)) {
+        input.remove_prefix(pref_noise_prefix.size());
     } else {
         return false;
     }
@@ -363,6 +530,20 @@ float input_value(std::string_view name,
                 "Classic runtime custom input is not bound");
         }
         return context.custom_values[index];
+    }
+    constexpr std::string_view pref_noise_prefix{"__nxg_pref_noise_"};
+    if (name.starts_with(pref_noise_prefix)) {
+        name.remove_prefix(pref_noise_prefix.size());
+        std::uint32_t index{};
+        const auto converted = std::from_chars(
+            name.data(), name.data() + name.size(), index);
+        if (name.empty() || converted.ec != std::errc{} ||
+            converted.ptr != name.data() + name.size() ||
+            index >= context.pref_noise_values.size()) {
+            throw std::runtime_error(
+                "Classic runtime $Prefg noise input is not bound");
+        }
+        return context.pref_noise_values[index];
     }
     throw std::runtime_error(
         "Classic runtime variable is not bound: $" + std::string{name});
@@ -906,7 +1087,7 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
                                    const ClassicAttribute &attribute) {
         return compile_expression(
             object, attribute, result.ptex_paths, palette_attributes,
-            result.custom_inputs);
+            result.custom_inputs, result.pref_noise_inputs);
     };
     result.description_name = description.name;
     result.description_id = parse_uint_attribute(
@@ -922,19 +1103,24 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
         "fxCVCount");
     compile_optional(*primitive, "length", result.length,
                      result.fallback_reasons, result.ptex_paths,
-                     palette_attributes, result.custom_inputs);
+                     palette_attributes, result.custom_inputs,
+                     result.pref_noise_inputs);
     compile_optional(*primitive, "width", result.width,
                      result.fallback_reasons, result.ptex_paths,
-                     palette_attributes, result.custom_inputs);
+                     palette_attributes, result.custom_inputs,
+                     result.pref_noise_inputs);
     compile_optional(*primitive, "taper", result.taper,
                      result.fallback_reasons, result.ptex_paths,
-                     palette_attributes, result.custom_inputs);
+                     palette_attributes, result.custom_inputs,
+                     result.pref_noise_inputs);
     compile_optional(*primitive, "taperStart", result.taper_start,
                      result.fallback_reasons, result.ptex_paths,
-                     palette_attributes, result.custom_inputs);
+                     palette_attributes, result.custom_inputs,
+                     result.pref_noise_inputs);
     compile_optional(*primitive, "widthRamp", result.width_ramp,
                      result.fallback_reasons, result.ptex_paths,
-                     palette_attributes, result.custom_inputs);
+                     palette_attributes, result.custom_inputs,
+                     result.pref_noise_inputs);
     validate_optional_inputs(result.length, result.fallback_reasons);
     validate_optional_inputs(result.width, result.fallback_reasons);
     validate_optional_inputs(result.taper, result.fallback_reasons);
@@ -1192,7 +1378,9 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     }
     const std::size_t ptex_count = plan.ptex_paths.size();
     const std::size_t custom_count = plan.custom_inputs.size();
-    const std::size_t input_stride = ptex_count + custom_count;
+    const std::size_t pref_noise_count = plan.pref_noise_inputs.size();
+    const std::size_t input_stride =
+        ptex_count + custom_count + pref_noise_count;
     if (input_stride == 0u) {
         if (!runtime_inputs.empty()) {
             throw std::invalid_argument(
@@ -1314,6 +1502,8 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                 input_stride);
             context.ptex_values = row.first(ptex_count);
             context.custom_values = row.subspan(ptex_count, custom_count);
+            context.pref_noise_values = row.subspan(
+                ptex_count + custom_count, pref_noise_count);
         }
         context.c_length = curve_spline_length(points);
         if (plan.length) {

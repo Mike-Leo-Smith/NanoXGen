@@ -633,6 +633,8 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
             Vec3 position{};
             Vec3 normal{};
             Vec3 surface_tangent{};
+            Vec3 reference_position{};
+            Vec3 reference_normal{};
             if (surface.reference_surface) {
                 const ClassicReferenceSurfaceSample current =
                     surface.reference_surface->evaluate_current(
@@ -640,6 +642,11 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
                 position = current.position;
                 normal = current.normal;
                 surface_tangent = current.tangent;
+                const ClassicReferenceSurfaceSample reference =
+                    surface.reference_surface->evaluate(
+                        face.patch_name, face.face_id, uv.x, uv.y);
+                reference_position = reference.position;
+                reference_normal = reference.normal;
             } else {
                 position = surface.asset.positions[triangle.x] * b0 +
                     surface.asset.positions[triangle.y] * barycentric.x +
@@ -651,27 +658,31 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
                         surface.asset.positions[triangle.x]));
                 surface_tangent = normalize(
                     surface.asset.positions[triangle.y] -
-                    surface.asset.positions[triangle.x]);
-            }
-            if (guide_support.enabled()) {
-                Vec3 reference_position{};
-                Vec3 reference_normal{};
-                if (surface.reference_surface) {
-                    const ClassicReferenceSurfaceSample reference =
-                        surface.reference_surface->evaluate(
-                            face.patch_name, face.face_id, uv.x, uv.y);
-                    reference_position = reference.position;
-                    reference_normal = reference.normal;
-                } else {
+                        surface.asset.positions[triangle.x]);
+                if (surface.asset.reference_positions.size() ==
+                    surface.asset.positions.size()) {
                     reference_position =
                         surface.asset.reference_positions[triangle.x] * b0 +
-                        surface.asset.reference_positions[triangle.y] * barycentric.x +
-                        surface.asset.reference_positions[triangle.z] * barycentric.y;
+                        surface.asset.reference_positions[triangle.y] *
+                            barycentric.x +
+                        surface.asset.reference_positions[triangle.z] *
+                            barycentric.y;
+                } else {
+                    reference_position = position;
+                }
+                if (surface.asset.reference_normals.size() ==
+                    surface.asset.positions.size()) {
                     reference_normal = normalize(
                         surface.asset.reference_normals[triangle.x] * b0 +
-                        surface.asset.reference_normals[triangle.y] * barycentric.x +
-                        surface.asset.reference_normals[triangle.z] * barycentric.y);
+                        surface.asset.reference_normals[triangle.y] *
+                            barycentric.x +
+                        surface.asset.reference_normals[triangle.z] *
+                            barycentric.y);
+                } else {
+                    reference_normal = normal;
                 }
+            }
+            if (guide_support.enabled()) {
                 guide_support.gather(
                     reference_position, reference_normal, guide_influences);
                 if (guide_influences.empty()) {
@@ -684,6 +695,7 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
             }
             result.roots.push_back({position, normal, uv, triangle_index,
                                     barycentric, face.face_id});
+            result.reference_positions.push_back(reference_position);
             result.surface_tangents.push_back(surface_tangent);
             result.primitive_ids.push_back(accepted_candidate);
             const std::array random_arguments{
@@ -722,6 +734,7 @@ ClassicRootPlan build_xgen_classic_explicit_root_plan(
     }
     ClassicRootPlan result{};
     result.roots.reserve(samples.size());
+    result.reference_positions.reserve(samples.size());
     result.surface_tangents.reserve(samples.size());
     result.primitive_ids.reserve(samples.size());
     result.random_prefixes.reserve(samples.size());
@@ -751,6 +764,7 @@ ClassicRootPlan build_xgen_classic_explicit_root_plan(
         result.roots.push_back({
             sample.position, current.normal, sample.uv, 0u, {},
             sample.face_id});
+        result.reference_positions.push_back(reference.position);
         result.surface_tangents.push_back(current.tangent);
         result.primitive_ids.push_back(sample.primitive_id);
         const std::array random_arguments{

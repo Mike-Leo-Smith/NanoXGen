@@ -43,7 +43,8 @@ ClassicRuntimeInputData build_xgen_classic_runtime_input_data(
     std::string_view patch_name,
     const ClassicRootPlan &roots) {
     const std::size_t value_count =
-        plan.ptex_paths.size() + plan.custom_inputs.size();
+        plan.ptex_paths.size() + plan.custom_inputs.size() +
+        plan.pref_noise_inputs.size();
     if (value_count >
         std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("Classic runtime input count exceeds ABI");
@@ -70,7 +71,12 @@ ClassicRuntimeInputData build_xgen_classic_runtime_input_data(
         (roots.primitive_ids.size() != roots.roots.size() ||
          roots.random_prefixes.size() != roots.roots.size())) {
         throw std::runtime_error(
-            "Classic custom inputs need primitive IDs and random prefixes");
+            "Classic root inputs need primitive IDs and random prefixes");
+    }
+    if (!plan.pref_noise_inputs.empty() &&
+        roots.reference_positions.size() != roots.roots.size()) {
+        throw std::runtime_error(
+            "Classic $Prefg noise needs one reference position per root");
     }
     std::size_t custom_scratch_size = 0u;
     for (const ClassicFloatCustomInput &custom : plan.custom_inputs) {
@@ -116,6 +122,15 @@ ClassicRuntimeInputData build_xgen_classic_runtime_input_data(
                          plan.description_id, plan.description_name, face),
                      0.0f, roots.random_prefixes[strand], true},
                     custom_scratch);
+        }
+        for (std::size_t noise = 0u;
+             noise < plan.pref_noise_inputs.size(); ++noise) {
+            const float frequency = plan.pref_noise_inputs[noise].frequency;
+            const Vec3 reference = roots.reference_positions[strand];
+            result.values[
+                strand * value_count + maps.size() +
+                plan.custom_inputs.size() + noise] =
+                xgen_classic_noise_float(reference * frequency);
         }
     }
     return result;

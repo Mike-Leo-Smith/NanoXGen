@@ -50,9 +50,11 @@ ClassicFloatRuntimeLuisaContext make_context(
             runtime_hash(seed_arguments), c_length, c_width, t,
             root_runtime.read(strand * 2u + 1u), true, ptex_values,
             strand * static_cast<uint>(
-                plan.ptex_paths.size() + plan.custom_inputs.size()),
+                plan.ptex_paths.size() + plan.custom_inputs.size() +
+                plan.pref_noise_inputs.size()),
             static_cast<std::uint32_t>(plan.ptex_paths.size()),
-            static_cast<std::uint32_t>(plan.custom_inputs.size())};
+            static_cast<std::uint32_t>(plan.custom_inputs.size()),
+            static_cast<std::uint32_t>(plan.pref_noise_inputs.size())};
 }
 
 Float3 xgen_curve_eval(const BufferFloat4 &points, Expr<uint> first,
@@ -271,6 +273,23 @@ Expr<float> lower_classic_runtime_expression(
             }
             inputs.emplace_back(context.ptex_values->read(
                 context.ptex_offset + context.ptex_stride + index));
+        } else if (input.starts_with("__nxg_pref_noise_")) {
+            std::string_view suffix{input};
+            suffix.remove_prefix(
+                std::string_view{"__nxg_pref_noise_"}.size());
+            std::uint32_t index{};
+            const auto converted = std::from_chars(
+                suffix.data(), suffix.data() + suffix.size(), index);
+            if (suffix.empty() || converted.ec != std::errc{} ||
+                converted.ptr != suffix.data() + suffix.size() ||
+                context.ptex_values == nullptr ||
+                index >= context.pref_noise_count) {
+                throw std::runtime_error(
+                    "Classic Luisa $Prefg noise input is not bound");
+            }
+            inputs.emplace_back(context.ptex_values->read(
+                context.ptex_offset + context.ptex_stride +
+                context.custom_count + index));
         } else {
             throw std::runtime_error(
                 "Classic Luisa runtime variable is not bound: $" + input);
@@ -472,7 +491,8 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
             context.id, frame_nu.w, frame_tv.w,
             runtime_hash(guide_seed_arguments), input_length, state.y,
             0.0f, guide_prefix, true, context.ptex_values,
-            context.ptex_offset, context.ptex_stride, context.custom_count};
+            context.ptex_offset, context.ptex_stride, context.custom_count,
+            context.pref_noise_count};
         const Float noise = max(
             lower_classic_runtime_expression(clump.noise, guide_context),
             0.0f);
@@ -576,7 +596,8 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
                     static_cast<float>(cvs_per_strand - 1u),
                 guide_context.random_prefix, true,
                 guide_context.ptex_values, guide_context.ptex_offset,
-                guide_context.ptex_stride, guide_context.custom_count};
+                guide_context.ptex_stride, guide_context.custom_count,
+                guide_context.pref_noise_count};
             const Float scale = max(
                 lower_classic_runtime_expression(
                     clump.noise_scale, guide_cv_context),

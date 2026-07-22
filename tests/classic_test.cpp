@@ -252,6 +252,16 @@ void test_float_runtime_fallbacks_and_validation() {
                 !fallback.fallback_reasons.empty(),
             "unsupported runtime binding was not retained as fallback");
 
+    ClassicDescription dynamic_vector{};
+    dynamic_vector.name = "dynamicVector";
+    dynamic_vector.objects.push_back({"SplinePrimitive", {
+        {"length", "$freq=rand(); noise($Prefg*$freq)", 1u}}, 1u});
+    const ClassicFloatRuntimePlan dynamic_vector_plan =
+        compile_xgen_classic_float_runtime_plan(dynamic_vector);
+    require(!dynamic_vector_plan.lowering_complete() &&
+                dynamic_vector_plan.pref_noise_inputs.empty(),
+            "dynamic $Prefg vector noise was silently accepted");
+
     ClassicDescription negative{};
     negative.name = "negative";
     negative.objects.push_back({"SplinePrimitive", {

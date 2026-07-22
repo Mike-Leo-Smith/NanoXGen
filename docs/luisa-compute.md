@@ -153,10 +153,10 @@ and JIT, and 10.78 ms warm median. HIP differed from the native CPU path by at
 most `1.78e-3`; both reached about `3.16e-3` maximum position error against the
 Maya oracle because of the same subdivision-boundary outlier. Thus `head_A`
 still fails the strict `1e-3` maximum-error gate even though the CPU RMS error is
-about `4.13e-6`. Full Rabbit remains incomplete: PTEX and palette-scalar
-lowering have since reduced the syntactic fallback set to `erduo`, while
-several descriptions with zero fallback still fail topology or geometry
-parity. A zero lowering-fallback count is reported separately from
+about `4.13e-6`. Full Rabbit remains incomplete: PTEX, palette-scalar, and
+root-bound `$Prefg` noise lowering have since made all nine active runtime
+plans syntactically complete, while several descriptions still fail topology
+or geometry parity. A zero lowering-fallback count is reported separately from
 `oracle_within_tolerance`.
 
 The Luisa `fallback` backend built against system LLVM 22/Embree 4.4.1 on this
@@ -201,3 +201,11 @@ strands / 1144729 points versus Maya's 67231 / 1142927, and its maximum HIP/CPU
 position difference was `6.01e-3`. These measurements diagnose the working
 GPU transport and the cost of per-effect JIT, but fail both topology and
 strict geometry parity and therefore are not a Maya speedup claim.
+
+Rabbit `erduo` exercises the root-bound `noise($Prefg*$freq)` input. A fresh
+HIP process ran all eight effects with `fallback_count=0` in 13432.3 ms cold,
+including 12675.8 ms of allocation/JIT. First dispatch/download/packing took
+44.30 ms and the one measured warm iteration took 20.89 ms. Native CPU
+generation took 3326.4 ms. CPU produced 339573 strands / 5772741 points versus
+Maya's 339574 / 5772758; HIP/CPU maximum position error was `2.58e-2`.
+Consequently this is execution coverage, not an accepted Maya speedup result.

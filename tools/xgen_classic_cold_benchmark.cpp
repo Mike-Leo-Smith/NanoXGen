@@ -320,7 +320,11 @@ int main(int argc, char **argv) try {
                         runtime_inputs.values_per_strand,
                     runtime_inputs.values_per_strand);
                 context.ptex_values = row.first(runtime.ptex_paths.size());
-                context.custom_values = row.subspan(runtime.ptex_paths.size());
+                context.custom_values = row.subspan(
+                    runtime.ptex_paths.size(), runtime.custom_inputs.size());
+                context.pref_noise_values = row.subspan(
+                    runtime.ptex_paths.size() + runtime.custom_inputs.size(),
+                    runtime.pref_noise_inputs.size());
             }
             const std::array<float, 1u> runtime_hash_input{
                 static_cast<float>(context.id)};
@@ -555,7 +559,10 @@ int main(int argc, char **argv) try {
                 continue;
             }
             std::cout << "root " << index << ' ' << root.surface_face_id
-                      << ' ' << root.uv.x << ' ' << root.uv.y << '\n';
+                      << ' ' << root.uv.x << ' ' << root.uv.y
+                      << " bits " << std::bit_cast<std::uint32_t>(root.uv.x)
+                      << ' ' << std::bit_cast<std::uint32_t>(root.uv.y)
+                      << '\n';
             ++dumped_roots;
         }
         for (std::uint32_t index = 0u;

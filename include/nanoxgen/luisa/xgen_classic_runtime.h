@@ -54,6 +54,7 @@ struct ClassicFloatRuntimeLuisaContext {
     luisa::compute::Expr<luisa::uint> ptex_offset{0u};
     std::uint32_t ptex_stride{};
     std::uint32_t custom_count{};
+    std::uint32_t pref_noise_count{};
 };
 
 // Bind a Classic runtime expression directly to values in the surrounding

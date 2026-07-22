@@ -32,6 +32,9 @@ struct ClassicGuideInfluence {
 
 struct ClassicRootPlan {
     std::vector<RootSample> roots;
+    // Reference-pose global position used by Classic's $Prefg expression
+    // variable. This remains separate from the current renderer root.
+    std::vector<Vec3> reference_positions;
     // Current-pose XGen cU frame direction used by authored FX modules.
     std::vector<Vec3> surface_tangents;
     // XGen resets the renderer primitive ID for every patch face and counts

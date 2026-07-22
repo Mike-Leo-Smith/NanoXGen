@@ -16,10 +16,10 @@ struct ClassicRuntimeInputData {
     std::vector<float> values;
 };
 
-// Resolve and point-sample each retained PTEX map, then evaluate retained
-// palette scalar functions at every stable root identity. This is an optional
-// host preprocessing stage; the retained runtime and all GPU kernels consume
-// only the resulting float table.
+// Resolve and point-sample each retained PTEX map, evaluate retained palette
+// scalar functions, and bind supported $Prefg vector noise at every stable
+// root identity. This is an optional host preprocessing stage; the retained
+// runtime and all GPU kernels consume only the resulting float table.
 [[nodiscard]] ClassicRuntimeInputData build_xgen_classic_runtime_input_data(
     const ClassicFloatRuntimePlan &plan,
     const std::filesystem::path &description_directory,

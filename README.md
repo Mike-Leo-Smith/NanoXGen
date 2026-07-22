@@ -111,8 +111,11 @@ point-sampled once at stable strand roots and CPU/Luisa execution consumes only
 a dense float table. No-argument palette scalar functions use the same table;
 this lowers Rabbit `nose` without fallback. This removes the prior PTEX/custom
 lowering fallbacks from Rabbit `body`, `head`, and `nose`, but their complete
-geometry/topology still does not pass the Maya differential gate. Remaining
-vector SeExpr forms and advanced controls are still explicit fallbacks, so the
+geometry/topology still does not pass the Maya differential gate. The active
+`erduo` `$Prefg` vector-noise call is root-bound to the same float table, making
+all nine current Rabbit runtime plans syntactically complete. Unsupported
+vector SeExpr forms and advanced controls remain explicit fallbacks when
+active; zero fallback is reported separately from oracle parity, so the
 complete Rabbit package is not yet claimed as native-compatible.
 
 The Makefile is a fallback for minimal CPU-only environments:

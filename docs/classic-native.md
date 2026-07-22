@@ -115,8 +115,10 @@ without fallback. Rabbit `nose` also lowers its palette scalar function, but
 produces 67337 native strands versus 67231 in the Maya cache. These are not yet
 parity claims: `body` produces 330101 native strands versus 330038 in the
 current Maya cache, and the deeper multi-effect Luisa differential still has a
-`3.07e-2` maximum position error. `erduo` retains a position-vector `noise`
-expression fallback; several zero-fallback descriptions retain known
+`3.07e-2` maximum position error. `erduo` root-binds its active
+`noise($Prefg*$freq)` expression and also reaches zero fallback, but produces
+339573 strands versus Maya's 339574 and has unresolved geometry error. All
+nine active Rabbit runtime plans now lower syntactically; several retain known
 topology/geometry mismatches.
 
 ## Current parity boundary
@@ -127,9 +129,10 @@ Alembic file stores the Maya patch as a plain `PolyMesh`. PTEX density masks
 are bound for RandomGenerator, point-filtered encoded guide maps are bound for
 hierarchical ClumpingFX, and runtime scalar `map()` inputs are pre-sampled into
 float tables. No-argument palette scalar functions are compiled into per-root
-inputs. Position-vector SeExpr noise, the remaining advanced ClumpingFX
-controls, and several strict topology/geometry differentials are the current
-Rabbit-wide parity boundary.
+inputs. The scalar result of `noise($Prefg*constant)` is evaluated once at the
+reference-pose root and joins that table. General vector SeExpr, the remaining
+advanced ClumpingFX controls, and several strict topology/geometry
+differentials are the current Rabbit-wide parity boundary.
 
 Consequently, timings from this path are engineering measurements for the
 native prototype, not an equal-output Maya speedup claim. A valid Maya
