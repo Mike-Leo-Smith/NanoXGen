@@ -219,7 +219,8 @@ int main(int argc, char **argv) try {
         const std::vector<ExpressionAnalysis> expressions =
             analyze_expressions(description);
         const ClassicFloatRuntimePlan runtime_plan =
-            compile_xgen_classic_float_runtime_plan(description);
+            compile_xgen_classic_float_runtime_plan(
+                description, collection.palette_attributes);
         std::cout << "{\"name\":\"" << escape_json(description.name)
                   << "\",\"object_count\":" << description.objects.size()
                   << ",\"objects\":{";

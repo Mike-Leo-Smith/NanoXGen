@@ -540,6 +540,9 @@ private:
         if (name.text == "max") { arity(2u); return emit(XgenScalarOp::maximum, arguments); }
         if (name.text == "clamp") { arity(3u); return emit(XgenScalarOp::clamp, arguments); }
         if (name.text == "fit") { arity(5u); return emit(XgenScalarOp::fit, arguments); }
+        if (name.text == "gamma") { arity(2u); return emit(XgenScalarOp::gamma, arguments); }
+        if (name.text == "contrast") { arity(2u); return emit(XgenScalarOp::contrast, arguments); }
+        if (name.text == "smoothstep") { arity(3u); return emit(XgenScalarOp::smoothstep, arguments); }
         if (name.text == "map") {
             syntax_error(name.offset, "map requires an explicit PTEX binding and is not a scalar intrinsic");
         }
@@ -922,6 +925,28 @@ double evaluate_xgen_scalar_expression(
             value = operand(3u) + (operand(0u) - operand(1u)) *
                 (operand(4u) - operand(3u)) / (operand(2u) - operand(1u));
             break;
+        case XgenScalarOp::gamma:
+            require_arity(2u);
+            value = std::pow(operand(0u), 1.0 / operand(1u));
+            break;
+        case XgenScalarOp::contrast: {
+            require_arity(2u);
+            const double x = operand(0u);
+            const double exponent = -std::log2(
+                x < 0.5 ? 2.0 * x : 2.0 - 2.0 * x);
+            const double shaped = 0.5 * std::pow(1.0 - operand(1u), exponent);
+            value = x < 0.5 ? shaped : 1.0 - shaped;
+            break;
+        }
+        case XgenScalarOp::smoothstep: {
+            require_arity(3u);
+            const double t = std::clamp(
+                (operand(0u) - operand(1u)) /
+                    (operand(2u) - operand(1u)),
+                0.0, 1.0);
+            value = t * t * (3.0 - 2.0 * t);
+            break;
+        }
         case XgenScalarOp::ramp: {
             require_arity(0u);
             if (instruction.auxiliary >= program.ramps.size()) {
@@ -1072,6 +1097,29 @@ float evaluate_xgen_scalar_expression_float(
             value = operand(3u) + (operand(0u) - operand(1u)) *
                 (operand(4u) - operand(3u)) / (operand(2u) - operand(1u));
             break;
+        case XgenScalarOp::gamma:
+            require_arity(2u);
+            value = std::pow(operand(0u), 1.0f / operand(1u));
+            break;
+        case XgenScalarOp::contrast: {
+            require_arity(2u);
+            const float x = operand(0u);
+            const float exponent = -std::log2(
+                x < 0.5f ? 2.0f * x : 2.0f - 2.0f * x);
+            const float shaped =
+                0.5f * std::pow(1.0f - operand(1u), exponent);
+            value = x < 0.5f ? shaped : 1.0f - shaped;
+            break;
+        }
+        case XgenScalarOp::smoothstep: {
+            require_arity(3u);
+            const float t = std::clamp(
+                (operand(0u) - operand(1u)) /
+                    (operand(2u) - operand(1u)),
+                0.0f, 1.0f);
+            value = t * t * (3.0f - 2.0f * t);
+            break;
+        }
         case XgenScalarOp::ramp: {
             require_arity(0u);
             if (instruction.auxiliary >= program.ramps.size()) {

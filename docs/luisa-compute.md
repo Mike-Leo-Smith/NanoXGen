@@ -103,10 +103,10 @@ device and that the supported bounded Classic runtime plan is JIT-lowered, not
 interpreted on the host. Authored `rampUI` values are parsed into constant
 control points and lowered with flat, linear, smooth, and spline interpolation.
 This is not yet a claim that every Classic XGen description is natively
-evaluable. Runtime PTEX `map()` attributes are pre-sampled into float buffers;
-unsupported custom/vector SeExpr, modules, and topology operations remain
-checked errors and select the Autodesk fallback until their
-CPU oracle and Luisa differential tests pass.
+evaluable. Runtime PTEX `map()` attributes and no-argument palette scalar
+functions are pre-evaluated into float buffers. Unsupported vector SeExpr,
+modules, and topology operations remain checked errors and select the Autodesk
+fallback until their CPU oracle and Luisa differential tests pass.
 
 ## Rabbit cold/no-cache benchmark
 
@@ -153,10 +153,11 @@ and JIT, and 10.78 ms warm median. HIP differed from the native CPU path by at
 most `1.78e-3`; both reached about `3.16e-3` maximum position error against the
 Maya oracle because of the same subdivision-boundary outlier. Thus `head_A`
 still fails the strict `1e-3` maximum-error gate even though the CPU RMS error is
-about `4.13e-6`. Full Rabbit remains incomplete: PTEX lowering has since reduced
-the syntactic fallback set to `erduo` and `nose`, while several descriptions
-with zero fallback still fail topology or geometry parity. A zero
-lowering-fallback count is reported separately from `oracle_within_tolerance`.
+about `4.13e-6`. Full Rabbit remains incomplete: PTEX and palette-scalar
+lowering have since reduced the syntactic fallback set to `erduo`, while
+several descriptions with zero fallback still fail topology or geometry
+parity. A zero lowering-fallback count is reported separately from
+`oracle_within_tolerance`.
 
 The Luisa `fallback` backend built against system LLVM 22/Embree 4.4.1 on this
 Arch host but crashed in its generated worker code even for the small parity
@@ -191,3 +192,12 @@ execution was 38.17 ms. That full result differs from CPU by `3.07e-2` and its
 native topology differs from the Maya cache (330101 versus 330038 strands), so
 it is diagnostic evidence for PTEX transport, not an accepted end-to-end
 speedup or parity result.
+
+Rabbit `nose` exercises the palette `long()->gamma(2)->contrast(0.9)` path.
+After lowering it without fallback, a fresh HIP process took 10745.2 ms cold,
+of which 10499.1 ms was allocation/JIT; first dispatch/download/packing took
+10.40 ms and the one measured warm iteration took 3.14 ms. It produced 67337
+strands / 1144729 points versus Maya's 67231 / 1142927, and its maximum HIP/CPU
+position difference was `6.01e-3`. These measurements diagnose the working
+GPU transport and the cost of per-effect JIT, but fail both topology and
+strict geometry parity and therefore are not a Maya speedup claim.

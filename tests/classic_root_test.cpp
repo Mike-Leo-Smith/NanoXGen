@@ -5,6 +5,7 @@
 
 #include <Ptexture.h>
 
+#include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -120,21 +121,28 @@ void test_full_mask_and_generation() {
     nanoxgen::ClassicDescription runtime_description = description();
     runtime_description.objects.push_back({"SplinePrimitive", {
         {"fxCVCount", "4", 4u},
-        {"length", "0.5+map('${DESC}/paintmaps/density')", 5u}}, 4u});
+        {"length", "0.5+map('${DESC}/paintmaps/density')+long()", 5u}}, 4u});
+    const std::array<nanoxgen::ClassicAttribute, 1u> palette{{
+        {"custom_float_long", "hash($id)<.5?1:0", 6u}}};
     const nanoxgen::ClassicFloatRuntimePlan runtime =
         nanoxgen::compile_xgen_classic_float_runtime_plan(
-            runtime_description);
-    require(runtime.lowering_complete() && runtime.ptex_paths.size() == 1u,
+            runtime_description, palette);
+    require(runtime.lowering_complete() && runtime.ptex_paths.size() == 1u &&
+                runtime.custom_inputs.size() == 1u,
             "runtime map expression did not lower");
-    const nanoxgen::ClassicPtexRuntimeData runtime_data =
-        nanoxgen::build_xgen_classic_ptex_runtime_data(
+    const nanoxgen::ClassicRuntimeInputData runtime_data =
+        nanoxgen::build_xgen_classic_runtime_input_data(
             runtime, fixture.path, "testPatch", first);
     require(runtime_data.strand_count == first.roots.size() &&
-                runtime_data.values_per_strand == 1u &&
-                runtime_data.values.size() == first.roots.size(),
+                runtime_data.values_per_strand == 2u &&
+                runtime_data.values.size() == first.roots.size() * 2u,
             "runtime PTEX table dimensions mismatch");
-    for (const float value : runtime_data.values) {
-        require(value == 1.0f, "runtime PTEX sample mismatch");
+    for (std::size_t strand = 0u; strand < first.roots.size(); ++strand) {
+        require(runtime_data.values[strand * 2u] == 1.0f,
+                "runtime PTEX sample mismatch");
+        const float custom = runtime_data.values[strand * 2u + 1u];
+        require(custom == 0.0f || custom == 1.0f,
+                "runtime custom sample mismatch");
     }
 
     const nanoxgen::Asset asset = nanoxgen::build_asset(input.asset);

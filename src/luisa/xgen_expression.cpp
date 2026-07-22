@@ -229,6 +229,26 @@ Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
                 (operand(4u) - operand(3u)) /
                 (operand(2u) - operand(1u));
             break;
+        case XgenScalarOp::gamma:
+            value = pow(operand(0u), 1.0f / operand(1u));
+            break;
+        case XgenScalarOp::contrast: {
+            const Float x = operand(0u);
+            const Float edge = ite(x < 0.5f, 2.0f * x, 2.0f - 2.0f * x);
+            const Float exponent = -log2(edge);
+            const Float shaped =
+                0.5f * pow(1.0f - operand(1u), exponent);
+            value = ite(x < 0.5f, shaped, 1.0f - shaped);
+            break;
+        }
+        case XgenScalarOp::smoothstep: {
+            const Float t = clamp(
+                (operand(0u) - operand(1u)) /
+                    (operand(2u) - operand(1u)),
+                0.0f, 1.0f);
+            value = t * t * (3.0f - 2.0f * t);
+            break;
+        }
         case XgenScalarOp::ramp: {
             const XgenRamp ramp = program.ramps[instruction.auxiliary];
             value = lower_ramp(

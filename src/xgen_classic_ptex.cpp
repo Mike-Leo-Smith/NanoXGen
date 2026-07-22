@@ -2,6 +2,8 @@
 
 #include "nanoxgen/xgen_ptex.h"
 
+#include <algorithm>
+#include <array>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -35,26 +37,28 @@ std::filesystem::path resolve_map(
 
 } // namespace
 
-ClassicPtexRuntimeData build_xgen_classic_ptex_runtime_data(
+ClassicRuntimeInputData build_xgen_classic_runtime_input_data(
     const ClassicFloatRuntimePlan &plan,
     const std::filesystem::path &description_directory,
     std::string_view patch_name,
     const ClassicRootPlan &roots) {
-    if (plan.ptex_paths.size() >
+    const std::size_t value_count =
+        plan.ptex_paths.size() + plan.custom_inputs.size();
+    if (value_count >
         std::numeric_limits<std::uint32_t>::max()) {
-        throw std::overflow_error("Classic runtime PTEX map count exceeds ABI");
+        throw std::overflow_error("Classic runtime input count exceeds ABI");
     }
     if (roots.roots.size() > std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error("Classic runtime PTEX strand count exceeds ABI");
     }
-    ClassicPtexRuntimeData result{};
+    ClassicRuntimeInputData result{};
     result.strand_count = static_cast<std::uint32_t>(roots.roots.size());
     result.values_per_strand =
-        static_cast<std::uint32_t>(plan.ptex_paths.size());
-    if (plan.ptex_paths.empty()) { return result; }
+        static_cast<std::uint32_t>(value_count);
+    if (value_count == 0u) { return result; }
     if (roots.roots.size() >
-        std::numeric_limits<std::size_t>::max() / plan.ptex_paths.size()) {
-        throw std::overflow_error("Classic runtime PTEX table is too large");
+        std::numeric_limits<std::size_t>::max() / value_count) {
+        throw std::overflow_error("Classic runtime input table is too large");
     }
     std::vector<std::unique_ptr<XgenPtexMap>> maps;
     maps.reserve(plan.ptex_paths.size());
@@ -62,7 +66,26 @@ ClassicPtexRuntimeData build_xgen_classic_ptex_runtime_data(
         maps.push_back(std::make_unique<XgenPtexMap>(
             resolve_map(path, description_directory, patch_name)));
     }
-    result.values.resize(roots.roots.size() * maps.size());
+    if (!plan.custom_inputs.empty() &&
+        (roots.primitive_ids.size() != roots.roots.size() ||
+         roots.random_prefixes.size() != roots.roots.size())) {
+        throw std::runtime_error(
+            "Classic custom inputs need primitive IDs and random prefixes");
+    }
+    std::size_t custom_scratch_size = 0u;
+    for (const ClassicFloatCustomInput &custom : plan.custom_inputs) {
+        custom_scratch_size = std::max(
+            custom_scratch_size, custom.program.instructions.size());
+        for (const std::string &input : custom.program.inputs) {
+            if (input != "id") {
+                throw std::runtime_error(
+                    "Classic palette custom input uses unsupported variable $" +
+                    input);
+            }
+        }
+    }
+    std::vector<float> custom_scratch(custom_scratch_size);
+    result.values.resize(roots.roots.size() * value_count);
     XgenPtexSampleOptions options{};
     options.filter = XgenPtexFilter::Point;
     for (std::size_t strand = 0u; strand < roots.roots.size(); ++strand) {
@@ -74,8 +97,25 @@ ClassicPtexRuntimeData build_xgen_classic_ptex_runtime_data(
                 throw std::runtime_error(
                     "Classic runtime PTEX map has fewer faces than the patch");
             }
-            result.values[strand * maps.size() + map] = maps[map]->sample(
+            result.values[strand * value_count + map] = maps[map]->sample(
                 face, root.uv.x, root.uv.y, 0u, options);
+        }
+        for (std::size_t custom = 0u;
+             custom < plan.custom_inputs.size(); ++custom) {
+            const ClassicFloatCustomInput &input = plan.custom_inputs[custom];
+            const std::array<float, 1u> id{
+                static_cast<float>(roots.primitive_ids[strand])};
+            const std::span<const float> values = input.program.inputs.empty()
+                ? std::span<const float>{}
+                : std::span<const float>{id};
+            result.values[strand * value_count + maps.size() + custom] =
+                evaluate_xgen_scalar_expression_float(
+                    input.program,
+                    {values, root.uv.x, root.uv.y,
+                     xgen_runtime_face_seed(
+                         plan.description_id, plan.description_name, face),
+                     0.0f, roots.random_prefixes[strand], true},
+                    custom_scratch);
         }
     }
     return result;

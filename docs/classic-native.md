@@ -82,7 +82,12 @@ strand's coarse-face `(face,u,v)` identity, and produces a row-major float
 table shared by CPU and Luisa. PTEX objects and paths never enter the core or
 the GPU kernel. Width evaluation stores half the final diameter in renderer
 `float4.radius`, and the renderer output adds XGen's two extrapolated endpoint
-CVs. Unsupported variables, custom expression functions, keep-param cuts, and
+CVs. Palette `custom_float_NAME` functions used without arguments are compiled
+once and evaluated into the same per-root float table; the Rabbit `nose`
+`long()->gamma(2)->contrast(0.9)` chain is covered. XGen clamps a negative
+authored width/profile result to zero before renderer output, while the typed
+bridge continues to reject a negative width received from Autodesk as a
+corrupt cache. Unsupported variables, vector expressions, keep-param cuts, and
 other active FX modules produce `fallback_reasons`; an unknown binding is
 never silently replaced by zero.
 
@@ -106,11 +111,13 @@ NoiseFX module, and CutFX with zero CPU fallback and matches Maya's complete
 cache, the full result has `2.62e-3` maximum and `1.23e-4` RMS position error;
 the two-clump intermediate has `1.53e-3` maximum and `1.09e-4` RMS error.
 Rabbit `body` and `head` now lower their PTEX-backed primitive/FX expressions
-without fallback. This is not yet a parity claim: `body` produced 330101 native
-strands versus 330038 in the current Maya cache, and the deeper multi-effect
-Luisa differential still has a `3.07e-2` maximum position error. The other
-incomplete descriptions retain custom/unsupported expression fallbacks or
-known topology/geometry mismatches.
+without fallback. Rabbit `nose` also lowers its palette scalar function, but
+produces 67337 native strands versus 67231 in the Maya cache. These are not yet
+parity claims: `body` produces 330101 native strands versus 330038 in the
+current Maya cache, and the deeper multi-effect Luisa differential still has a
+`3.07e-2` maximum position error. `erduo` retains a position-vector `noise`
+expression fallback; several zero-fallback descriptions retain known
+topology/geometry mismatches.
 
 ## Current parity boundary
 
@@ -119,9 +126,10 @@ stable coarse-face identities, but boundary/crease metadata is absent when an
 Alembic file stores the Maya patch as a plain `PolyMesh`. PTEX density masks
 are bound for RandomGenerator, point-filtered encoded guide maps are bound for
 hierarchical ClumpingFX, and runtime scalar `map()` inputs are pre-sampled into
-float tables. Palette custom functions, position-vector SeExpr noise, the
-remaining advanced ClumpingFX controls, and several strict topology/geometry
-differentials are the current Rabbit-wide parity boundary.
+float tables. No-argument palette scalar functions are compiled into per-root
+inputs. Position-vector SeExpr noise, the remaining advanced ClumpingFX
+controls, and several strict topology/geometry differentials are the current
+Rabbit-wide parity boundary.
 
 Consequently, timings from this path are engineering measurements for the
 native prototype, not an equal-output Maya speedup claim. A valid Maya

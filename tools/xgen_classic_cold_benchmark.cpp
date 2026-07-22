@@ -241,7 +241,7 @@ int main(int argc, char **argv) try {
             if (!probe_roots.influences.empty()) {
                 const std::uint32_t probe_cvs = options.cvs == 0u
                     ? nanoxgen::compile_xgen_classic_float_runtime_plan(
-                          description).fx_cv_count
+                          description, collection.palette_attributes).fx_cv_count
                     : options.cvs;
                 const nanoxgen::PackedGeneratedCurves curve =
                     nanoxgen::generate_xgen_classic_base_curves_cpu(
@@ -267,13 +267,14 @@ int main(int argc, char **argv) try {
         const nanoxgen::Asset asset = nanoxgen::build_asset(imported.asset);
         const Clock::time_point asset_end = Clock::now();
         nanoxgen::ClassicFloatRuntimePlan runtime =
-            nanoxgen::compile_xgen_classic_float_runtime_plan(description);
+            nanoxgen::compile_xgen_classic_float_runtime_plan(
+                description, collection.palette_attributes);
         if (description.patches.empty()) {
             throw std::runtime_error(
                 "Classic runtime PTEX binding needs one patch");
         }
-        const nanoxgen::ClassicPtexRuntimeData ptex_runtime =
-            nanoxgen::build_xgen_classic_ptex_runtime_data(
+        const nanoxgen::ClassicRuntimeInputData runtime_inputs =
+            nanoxgen::build_xgen_classic_runtime_input_data(
                 runtime, description_directory,
                 description.patches.front().name, roots);
         if (options.effect_count) {
@@ -313,11 +314,13 @@ int main(int argc, char **argv) try {
             context.c_length = 1.0f;
             context.random_prefix = roots.random_prefixes[strand];
             context.has_random_prefix = true;
-            if (ptex_runtime.values_per_strand != 0u) {
-                context.ptex_values = std::span{ptex_runtime.values}.subspan(
+            if (runtime_inputs.values_per_strand != 0u) {
+                const auto row = std::span{runtime_inputs.values}.subspan(
                     static_cast<std::size_t>(strand) *
-                        ptex_runtime.values_per_strand,
-                    ptex_runtime.values_per_strand);
+                        runtime_inputs.values_per_strand,
+                    runtime_inputs.values_per_strand);
+                context.ptex_values = row.first(runtime.ptex_paths.size());
+                context.custom_values = row.subspan(runtime.ptex_paths.size());
             }
             const std::array<float, 1u> runtime_hash_input{
                 static_cast<float>(context.id)};
@@ -470,7 +473,7 @@ int main(int argc, char **argv) try {
                 nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
                     curves, runtime, 1.0f, roots.surface_tangents,
                     roots.random_prefixes, roots.primitive_ids, clump_data,
-                    ptex_runtime.values);
+                    runtime_inputs.values);
             }
             nanoxgen::add_xgen_classic_renderer_endpoints(curves);
             if (options.output_nxc) {

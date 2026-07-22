@@ -83,7 +83,9 @@ const ClassicAttribute &required_attribute(
 
 ClassicFloatRuntimeExpression compile_expression(
     const ClassicObject &object, const ClassicAttribute &attribute,
-    std::vector<std::string> &ptex_paths) {
+    std::vector<std::string> &ptex_paths,
+    std::span<const ClassicAttribute> palette_attributes,
+    std::vector<ClassicFloatCustomInput> &custom_inputs) {
     std::string source;
     source.reserve(attribute.value.size());
     bool quoted = false;
@@ -177,6 +179,82 @@ ClassicFloatRuntimeExpression compile_expression(
         rewritten += "$__nxg_map_" + std::to_string(map_index);
         index = cursor;
     }
+    constexpr std::string_view custom_prefix{"custom_float_"};
+    const auto identifier_character = [](char c) noexcept {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') || c == '_';
+    };
+    for (const ClassicAttribute &custom_attribute : palette_attributes) {
+        if (!custom_attribute.name.starts_with(custom_prefix) ||
+            custom_attribute.name.size() == custom_prefix.size()) {
+            continue;
+        }
+        const std::string name = custom_attribute.name.substr(
+            custom_prefix.size());
+        for (std::size_t index = 0u;;) {
+            index = rewritten.find(name, index);
+            if (index == std::string::npos) { break; }
+            if ((index != 0u && identifier_character(rewritten[index - 1u])) ||
+                (index + name.size() < rewritten.size() &&
+                 identifier_character(rewritten[index + name.size()]))) {
+                index += name.size();
+                continue;
+            }
+            std::size_t cursor = index + name.size();
+            while (cursor < rewritten.size() &&
+                   (rewritten[cursor] == ' ' || rewritten[cursor] == '\t')) {
+                ++cursor;
+            }
+            if (cursor >= rewritten.size() || rewritten[cursor++] != '(') {
+                index += name.size();
+                continue;
+            }
+            while (cursor < rewritten.size() &&
+                   (rewritten[cursor] == ' ' || rewritten[cursor] == '\t')) {
+                ++cursor;
+            }
+            if (cursor >= rewritten.size() || rewritten[cursor++] != ')') {
+                throw std::runtime_error(
+                    "palette custom function " + name +
+                    " must be called without arguments");
+            }
+            auto found = std::find_if(
+                custom_inputs.begin(), custom_inputs.end(),
+                [&name](const ClassicFloatCustomInput &input) {
+                    return input.name == name;
+                });
+            std::size_t custom_index{};
+            if (found == custom_inputs.end()) {
+                if (ptex_paths.size() + custom_inputs.size() >= 61u) {
+                    throw std::runtime_error(
+                        "runtime external input limit exceeded");
+                }
+                XgenExpressionCompileOptions custom_options{};
+                custom_options.expression_name = name;
+                custom_options.object_type = "Palette";
+                XgenFloatExpressionProgram program =
+                    make_xgen_float_expression_program(
+                        compile_xgen_scalar_expression(
+                            custom_attribute.value, custom_options));
+                for (const std::string &input : program.inputs) {
+                    if (input != "id") {
+                        throw std::runtime_error(
+                            "palette custom function " + name +
+                            " uses unsupported variable $" + input);
+                    }
+                }
+                custom_index = custom_inputs.size();
+                custom_inputs.push_back({name, std::move(program)});
+            } else {
+                custom_index = static_cast<std::size_t>(
+                    found - custom_inputs.begin());
+            }
+            const std::string input =
+                "$__nxg_custom_" + std::to_string(custom_index);
+            rewritten.replace(index, cursor - index, input);
+            index += input.size();
+        }
+    }
     XgenExpressionCompileOptions options{};
     options.expression_name = attribute.name;
     options.object_type = object.type;
@@ -188,15 +266,20 @@ ClassicFloatRuntimeExpression compile_expression(
 void compile_optional(const ClassicObject &object, std::string_view attribute_name,
                       std::optional<ClassicFloatRuntimeExpression> &destination,
                       std::vector<std::string> &fallback_reasons,
-                      std::vector<std::string> &ptex_paths) {
+                      std::vector<std::string> &ptex_paths,
+                      std::span<const ClassicAttribute> palette_attributes,
+                      std::vector<ClassicFloatCustomInput> &custom_inputs) {
     const ClassicAttribute *attribute = find_classic_attribute(
         object.attributes, attribute_name);
     if (attribute == nullptr || attribute->value.empty()) { return; }
     const std::size_t map_count = ptex_paths.size();
+    const std::size_t custom_count = custom_inputs.size();
     try {
-        destination = compile_expression(object, *attribute, ptex_paths);
+        destination = compile_expression(
+            object, *attribute, ptex_paths, palette_attributes, custom_inputs);
     } catch (const std::exception &error) {
         ptex_paths.resize(map_count);
+        custom_inputs.resize(custom_count);
         fallback_reasons.push_back(
             object.type + "." + std::string{attribute_name} + ": " +
             error.what());
@@ -210,9 +293,15 @@ bool supported_runtime_input(std::string_view input) {
     if (input == "id" || input == "cLength" || input == "cWidth") {
         return true;
     }
-    constexpr std::string_view prefix{"__nxg_map_"};
-    if (!input.starts_with(prefix)) { return false; }
-    input.remove_prefix(prefix.size());
+    constexpr std::string_view map_prefix{"__nxg_map_"};
+    constexpr std::string_view custom_prefix{"__nxg_custom_"};
+    if (input.starts_with(map_prefix)) {
+        input.remove_prefix(map_prefix.size());
+    } else if (input.starts_with(custom_prefix)) {
+        input.remove_prefix(custom_prefix.size());
+    } else {
+        return false;
+    }
     std::uint32_t index{};
     const auto converted = std::from_chars(
         input.data(), input.data() + input.size(), index);
@@ -260,6 +349,20 @@ float input_value(std::string_view name,
                 "Classic runtime PTEX input is not bound");
         }
         return context.ptex_values[index];
+    }
+    constexpr std::string_view custom_prefix{"__nxg_custom_"};
+    if (name.starts_with(custom_prefix)) {
+        name.remove_prefix(custom_prefix.size());
+        std::uint32_t index{};
+        const auto converted = std::from_chars(
+            name.data(), name.data() + name.size(), index);
+        if (name.empty() || converted.ec != std::errc{} ||
+            converted.ptr != name.data() + name.size() ||
+            index >= context.custom_values.size()) {
+            throw std::runtime_error(
+                "Classic runtime custom input is not bound");
+        }
+        return context.custom_values[index];
     }
     throw std::runtime_error(
         "Classic runtime variable is not bound: $" + std::string{name});
@@ -796,8 +899,15 @@ void build_clump_noise_axis(
 } // namespace
 
 ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
-    const ClassicDescription &description) {
+    const ClassicDescription &description,
+    std::span<const ClassicAttribute> palette_attributes) {
     ClassicFloatRuntimePlan result{};
+    const auto compile_bound = [&](const ClassicObject &object,
+                                   const ClassicAttribute &attribute) {
+        return compile_expression(
+            object, attribute, result.ptex_paths, palette_attributes,
+            result.custom_inputs);
+    };
     result.description_name = description.name;
     result.description_id = parse_uint_attribute(
         find_classic_attribute(description.attributes, "descriptionId"), 0u,
@@ -811,15 +921,20 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
         find_classic_attribute(primitive->attributes, "fxCVCount"), 0u,
         "fxCVCount");
     compile_optional(*primitive, "length", result.length,
-                     result.fallback_reasons, result.ptex_paths);
+                     result.fallback_reasons, result.ptex_paths,
+                     palette_attributes, result.custom_inputs);
     compile_optional(*primitive, "width", result.width,
-                     result.fallback_reasons, result.ptex_paths);
+                     result.fallback_reasons, result.ptex_paths,
+                     palette_attributes, result.custom_inputs);
     compile_optional(*primitive, "taper", result.taper,
-                     result.fallback_reasons, result.ptex_paths);
+                     result.fallback_reasons, result.ptex_paths,
+                     palette_attributes, result.custom_inputs);
     compile_optional(*primitive, "taperStart", result.taper_start,
-                     result.fallback_reasons, result.ptex_paths);
+                     result.fallback_reasons, result.ptex_paths,
+                     palette_attributes, result.custom_inputs);
     compile_optional(*primitive, "widthRamp", result.width_ramp,
-                     result.fallback_reasons, result.ptex_paths);
+                     result.fallback_reasons, result.ptex_paths,
+                     palette_attributes, result.custom_inputs);
     validate_optional_inputs(result.length, result.fallback_reasons);
     validate_optional_inputs(result.width, result.fallback_reasons);
     validate_optional_inputs(result.taper, result.fallback_reasons);
@@ -851,18 +966,12 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
             };
             try {
                 ClassicFloatNoiseModule noise{
-                    compile_expression(object, *attribute("mask"),
-                                       result.ptex_paths),
-                    compile_expression(object, *attribute("magnitude"),
-                                       result.ptex_paths),
-                    compile_expression(object, *attribute("magnitudeScale"),
-                                       result.ptex_paths),
-                    compile_expression(object, *attribute("frequency"),
-                                       result.ptex_paths),
-                    compile_expression(object, *attribute("correlation"),
-                                       result.ptex_paths),
-                    compile_expression(object, *attribute("preserveLength"),
-                                       result.ptex_paths),
+                    compile_bound(object, *attribute("mask")),
+                    compile_bound(object, *attribute("magnitude")),
+                    compile_bound(object, *attribute("magnitudeScale")),
+                    compile_bound(object, *attribute("frequency")),
+                    compile_bound(object, *attribute("correlation")),
+                    compile_bound(object, *attribute("preserveLength")),
                     mode};
                 bool valid = true;
                 valid &= validate_inputs(noise.mask, result.fallback_reasons);
@@ -926,27 +1035,20 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
             try {
                 ClassicFloatClumpModule clump{
                     name,
-                    compile_expression(
-                        object, required_attribute(object, "mask"),
-                        result.ptex_paths),
-                    compile_expression(
-                        object, required_attribute(object, "clump"),
-                        result.ptex_paths),
-                    compile_expression(
-                        object, required_attribute(object, "clumpScale"),
-                        result.ptex_paths),
-                    compile_expression(
-                        object, required_attribute(object, "noise"),
-                        result.ptex_paths),
-                    compile_expression(
-                        object, required_attribute(object, "noiseScale"),
-                        result.ptex_paths),
-                    compile_expression(
-                        object, required_attribute(object, "noiseFrequency"),
-                        result.ptex_paths),
-                    compile_expression(
-                        object, required_attribute(object, "noiseCorrelation"),
-                        result.ptex_paths),
+                    compile_bound(
+                        object, required_attribute(object, "mask")),
+                    compile_bound(
+                        object, required_attribute(object, "clump")),
+                    compile_bound(
+                        object, required_attribute(object, "clumpScale")),
+                    compile_bound(
+                        object, required_attribute(object, "noise")),
+                    compile_bound(
+                        object, required_attribute(object, "noiseScale")),
+                    compile_bound(
+                        object, required_attribute(object, "noiseFrequency")),
+                    compile_bound(
+                        object, required_attribute(object, "noiseCorrelation")),
                     use_control_maps != 0u};
                 bool valid = true;
                 valid &= validate_inputs(clump.mask, result.fallback_reasons);
@@ -997,8 +1099,7 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
             continue;
         }
         try {
-            ClassicFloatCutModule cut{compile_expression(
-                                          object, *amount, result.ptex_paths),
+            ClassicFloatCutModule cut{compile_bound(object, *amount),
                                       rebuild_type};
             if (validate_inputs(cut.amount, result.fallback_reasons)) {
                 const std::uint32_t index = static_cast<std::uint32_t>(
@@ -1031,7 +1132,7 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     std::span<const std::uint32_t> random_prefixes,
     std::span<const std::uint32_t> primitive_ids,
     std::span<const ClassicClumpRuntimeData> clump_data,
-    std::span<const float> ptex_values) {
+    std::span<const float> runtime_inputs) {
     if (curves.strand_count == 0u || curves.cvs_per_strand < 2u ||
         curves.point_counts.size() != curves.strand_count ||
         curves.roots.size() != curves.strand_count ||
@@ -1089,19 +1190,21 @@ void apply_xgen_classic_float_runtime_plan_cpu(
         throw std::invalid_argument(
             "Classic runtime needs one primitive ID per strand");
     }
-    const std::size_t ptex_stride = plan.ptex_paths.size();
-    if (ptex_stride == 0u) {
-        if (!ptex_values.empty()) {
+    const std::size_t ptex_count = plan.ptex_paths.size();
+    const std::size_t custom_count = plan.custom_inputs.size();
+    const std::size_t input_stride = ptex_count + custom_count;
+    if (input_stride == 0u) {
+        if (!runtime_inputs.empty()) {
             throw std::invalid_argument(
-                "Classic runtime received an unexpected PTEX table");
+                "Classic runtime received an unexpected input table");
         }
     } else if (curves.strand_count >
-                   std::numeric_limits<std::size_t>::max() / ptex_stride ||
-               ptex_values.size() !=
+                   std::numeric_limits<std::size_t>::max() / input_stride ||
+               runtime_inputs.size() !=
                    static_cast<std::size_t>(curves.strand_count) *
-                       ptex_stride) {
+                       input_stride) {
         throw std::invalid_argument(
-            "Classic runtime needs one PTEX input row per strand");
+            "Classic runtime needs one input row per strand");
     }
     if (clump_data.size() != plan.clumps.size()) {
         throw std::invalid_argument(
@@ -1205,10 +1308,12 @@ void apply_xgen_classic_float_runtime_plan_cpu(
         context.random_prefix = random_prefixes.empty()
             ? 0u : random_prefixes[strand];
         context.has_random_prefix = !random_prefixes.empty();
-        if (ptex_stride != 0u) {
-            context.ptex_values = ptex_values.subspan(
-                static_cast<std::size_t>(strand) * ptex_stride,
-                ptex_stride);
+        if (input_stride != 0u) {
+            const std::span<const float> row = runtime_inputs.subspan(
+                static_cast<std::size_t>(strand) * input_stride,
+                input_stride);
+            context.ptex_values = row.first(ptex_count);
+            context.custom_values = row.subspan(ptex_count, custom_count);
         }
         context.c_length = curve_spline_length(points);
         if (plan.length) {
@@ -1220,15 +1325,19 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             scale_curve(points, length_scale);
             context.c_length *= length_scale;
         }
-        context.c_width = plan.width
+        const float raw_width = plan.width
             ? evaluate(*plan.width, context)
             : (radius_scale > 0.0f
                   ? 2.0f * points.front().radius / radius_scale
                   : 0.0f);
-        if (!std::isfinite(context.c_width) || context.c_width < 0.0f) {
+        if (!std::isfinite(raw_width)) {
             throw std::runtime_error(
-                "Classic width expression produced a negative value");
+                "Classic width expression produced a non-finite value");
         }
+        // XGen accepts extrapolating fit() expressions and clamps the final
+        // authored diameter to zero before exposing PrimitiveCache::Widths.
+        // The typed bridge still rejects a negative cache value as corrupt.
+        context.c_width = std::max(raw_width, 0.0f);
         for (const ClassicFloatEffect effect : plan.effects) {
             if (effect.type == ClassicFloatEffectType::Clump) {
                 if (effect.module_index >= plan.clumps.size()) {
@@ -1370,12 +1479,13 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             if (plan.width_ramp) {
                 scale *= evaluate(*plan.width_ramp, context);
             }
-            const float diameter = context.c_width * scale;
-            if (!std::isfinite(diameter) || diameter < 0.0f) {
+            const float raw_diameter = context.c_width * scale;
+            if (!std::isfinite(raw_diameter)) {
                 throw std::runtime_error(
-                    "Classic width profile produced a negative value");
+                    "Classic width profile produced a non-finite value");
             }
-            points[cv].radius = 0.5f * diameter * radius_scale;
+            points[cv].radius =
+                0.5f * std::max(raw_diameter, 0.0f) * radius_scale;
         }
     }
     std::uint32_t write = 0u;

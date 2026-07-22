@@ -105,6 +105,11 @@ void test_comments_operators_and_validation() {
     require_near(evaluate_xgen_scalar_expression(bare_local, {{}}), 1.0,
                  "bare local assignment compatibility mismatch");
 
+    const XgenExpressionProgram methods = compile_xgen_scalar_expression(
+        ".25->gamma(2)->contrast(.9)+smoothstep(.5,1,.34)");
+    require_near(evaluate_xgen_scalar_expression(methods, {{}}),
+                 0.5 + 0.8521857695411413, "SeExpr method parity mismatch");
+
     require_fails("map('${DESC}/paintmaps/mask')", "PTEX binding");
     require_fails("noise($u)", "unsupported function");
 }

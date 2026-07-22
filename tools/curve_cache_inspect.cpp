@@ -78,6 +78,15 @@ int main(int argc, char **argv) try {
     std::map<std::uint32_t, std::uint32_t> counts;
     std::set<Identity> identities;
     std::uint64_t duplicate_identities{};
+    float minimum_radius = std::numeric_limits<float>::infinity();
+    float maximum_radius{};
+    std::uint64_t zero_radius_points{};
+    for (std::uint32_t point = 0u; point < header.point_count; ++point) {
+        const float radius = view.points()[point].radius;
+        minimum_radius = std::min(minimum_radius, radius);
+        maximum_radius = std::max(maximum_radius, radius);
+        zero_radius_points += radius == 0.0f;
+    }
     if (view.face_ids() && view.face_uvs()) {
         for (std::uint32_t strand = 0u; strand < header.strand_count; ++strand) {
             ++counts[view.face_ids()[strand]];
@@ -93,7 +102,11 @@ int main(int argc, char **argv) try {
               << ",\"points\":" << header.point_count
               << ",\"faces\":" << counts.size()
               << ",\"duplicate_face_uv_identities\":"
-              << duplicate_identities << "}\n";
+              << duplicate_identities
+              << ",\"minimum_radius\":" << minimum_radius
+              << ",\"maximum_radius\":" << maximum_radius
+              << ",\"zero_radius_points\":" << zero_radius_points
+              << "}\n";
     if (compare_path) {
         const nanoxgen::CurveCache other_cache =
             nanoxgen::load_curve_cache(*compare_path);

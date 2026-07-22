@@ -78,6 +78,11 @@ struct ClassicFloatEffect {
     std::uint32_t module_index{};
 };
 
+struct ClassicFloatCustomInput {
+    std::string name;
+    XgenFloatExpressionProgram program;
+};
+
 // Runtime subset of one Classic SplinePrimitive. Authoring values are parsed
 // losslessly elsewhere; this retained/JIT form contains float/uint data only.
 struct ClassicFloatRuntimePlan {
@@ -98,6 +103,10 @@ struct ClassicFloatRuntimePlan {
     // optional native layer samples them once at strand roots and supplies a
     // dense float table to CPU/GPU execution.
     std::vector<std::string> ptex_paths;
+    // Palette custom_float_NAME expressions referenced as NAME(). They are
+    // evaluated once per root by the optional native input stage, then become
+    // ordinary float inputs in both CPU and Luisa execution.
+    std::vector<ClassicFloatCustomInput> custom_inputs;
     // Requirements outside this plan (for example a custom expression or an
     // authored FX module) are preserved as explicit fallback diagnostics.
     // Classic random root sampling is planned separately by xgen_classic_roots.
@@ -122,10 +131,12 @@ struct ClassicFloatRuntimeContext {
     std::uint32_t random_prefix{};
     bool has_random_prefix{};
     std::span<const float> ptex_values;
+    std::span<const float> custom_values;
 };
 
 [[nodiscard]] ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
-    const ClassicDescription &description);
+    const ClassicDescription &description,
+    std::span<const ClassicAttribute> palette_attributes = {});
 
 // Bind the supported public XGen scalar variables and evaluate the exact same
 // float IR accepted by the LuisaCompute lowering.
@@ -144,9 +155,9 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     std::span<const std::uint32_t> random_prefixes = {},
     std::span<const std::uint32_t> primitive_ids = {},
     std::span<const ClassicClumpRuntimeData> clump_data = {},
-    // Row-major [strand][plan.ptex_paths] values. Kept as plain float data so
-    // the same table can be uploaded to GPU backends without PTEX support.
-    std::span<const float> ptex_values = {});
+    // Row-major [strand][ptex paths followed by custom inputs]. Kept as plain
+    // float data so the same table can be uploaded to GPU backends.
+    std::span<const float> runtime_inputs = {});
 
 // Match the Classic renderer cache convention by adding one extrapolated
 // endpoint before and after every fixed-CV spline. Call after all FX modules

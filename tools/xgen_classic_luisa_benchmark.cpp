@@ -245,7 +245,8 @@ int main(int argc, char **argv) try {
             *description, imported,
             options.descriptions_root / description->name);
     nanoxgen::ClassicFloatRuntimePlan runtime =
-        nanoxgen::compile_xgen_classic_float_runtime_plan(*description);
+        nanoxgen::compile_xgen_classic_float_runtime_plan(
+            *description, collection.palette_attributes);
     if (!runtime.lowering_complete()) {
         throw std::runtime_error(
             "description needs fallback: " + runtime.fallback_reasons.front());
@@ -256,8 +257,8 @@ int main(int argc, char **argv) try {
     if (description->patches.empty()) {
         throw std::runtime_error("Classic PTEX runtime needs one patch");
     }
-    const nanoxgen::ClassicPtexRuntimeData ptex_runtime =
-        nanoxgen::build_xgen_classic_ptex_runtime_data(
+    const nanoxgen::ClassicRuntimeInputData runtime_inputs =
+        nanoxgen::build_xgen_classic_runtime_input_data(
             runtime, options.descriptions_root / description->name,
             description->patches.front().name, root_plan);
     if (root_plan.primitive_ids.size() != root_plan.roots.size() ||
@@ -334,7 +335,7 @@ int main(int argc, char **argv) try {
         device.create_buffer<luisa::float3>(rebuilt_gpu.size());
     Buffer<std::uint32_t> runtime_data =
         device.create_buffer<std::uint32_t>(root_runtime.size());
-    std::vector<float> ptex_upload = ptex_runtime.values;
+    std::vector<float> ptex_upload = runtime_inputs.values;
     if (ptex_upload.empty()) { ptex_upload.push_back(0.0f); }
     Buffer<float> ptex_buffer =
         device.create_buffer<float>(ptex_upload.size());
@@ -522,7 +523,7 @@ int main(int argc, char **argv) try {
         nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
             cpu, runtime, 1.0f, root_plan.surface_tangents,
             root_plan.random_prefixes, root_plan.primitive_ids, clump_data,
-            ptex_runtime.values);
+            runtime_inputs.values);
     }
     nanoxgen::add_xgen_classic_renderer_endpoints(cpu);
     const Clock::time_point cpu_end = Clock::now();

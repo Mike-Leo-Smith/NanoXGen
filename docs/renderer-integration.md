@@ -171,7 +171,7 @@ BLOB from the renderer-relevant curve view.
 | Cut and width taper parity | CPU/Luisa implemented; exact Rabbit eyelash topology verified |
 | XGen noise core | CPU/Luisa implemented and oracle-verified for supported mode-0 bindings |
 | XGen clump/coil/collision | not implemented |
-| XGen expressions and PTEX | float runtime plan and CPU/Luisa lowering include root-sampled PTEX `map()` inputs; custom/vector SeExpr and remaining FX passes remain |
+| XGen expressions and PTEX | float runtime plan and CPU/Luisa lowering include root-sampled PTEX `map()` and palette scalar inputs; vector SeExpr and remaining FX passes remain |
 | Camera-frustum generation culling | not implemented |
 | Classic archive/card/sphere primitives | outside the current curve-only scope |
 

@@ -224,13 +224,13 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
                 description, surface, description_directory, guide_roots,
                 runtime_plan, previous, cvs_per_guide));
         }
-        const ClassicPtexRuntimeData guide_ptex =
-            build_xgen_classic_ptex_runtime_data(
+        const ClassicRuntimeInputData guide_inputs =
+            build_xgen_classic_runtime_input_data(
                 prefix, description_directory, patch.name, guide_roots);
         apply_xgen_classic_float_runtime_plan_cpu(
             axes, prefix, 1.0f, guide_roots.surface_tangents,
             guide_roots.random_prefixes, guide_roots.primitive_ids, upstream,
-            guide_ptex.values);
+            guide_inputs.values);
     }
     ClassicClumpRuntimeData result{};
     result.module_name = module.name;

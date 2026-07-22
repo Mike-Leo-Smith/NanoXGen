@@ -173,7 +173,7 @@ struct RuntimeCase {
                       "description not found: " + spec.description);
               }
               return nanoxgen::compile_xgen_classic_float_runtime_plan(
-                  *description);
+                  *description, collection.palette_attributes);
           }()} {
         params.strand_count = spec.strands;
         params.cvs_per_strand = spec.cvs;

@@ -265,14 +265,10 @@ void test_float_runtime_fallbacks_and_validation() {
     curves.points = {{0.0f, 0.0f, 0.0f, 0.1f},
                      {0.0f, 1.0f, 0.0f, 0.1f}};
     curves.roots.resize(1u);
-    try {
-        apply_xgen_classic_float_runtime_plan_cpu(curves, plan);
-    } catch (const std::runtime_error &error) {
-        require(std::string{error.what()}.find("negative") != std::string::npos,
-                "negative width diagnostic mismatch");
-        return;
-    }
-    throw std::runtime_error("negative Classic width was accepted");
+    apply_xgen_classic_float_runtime_plan_cpu(curves, plan);
+    require(curves.points[0u].radius == 0.0f &&
+                curves.points[1u].radius == 0.0f,
+            "negative authored Classic width was not clamped like XGen");
 }
 
 void test_float_runtime_cut_culling() {

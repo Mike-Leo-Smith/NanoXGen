@@ -49,8 +49,10 @@ ClassicFloatRuntimeLuisaContext make_context(
     return {root_runtime.read(strand * 2u), uv.x, uv.y,
             runtime_hash(seed_arguments), c_length, c_width, t,
             root_runtime.read(strand * 2u + 1u), true, ptex_values,
-            strand * static_cast<uint>(plan.ptex_paths.size()),
-            static_cast<std::uint32_t>(plan.ptex_paths.size())};
+            strand * static_cast<uint>(
+                plan.ptex_paths.size() + plan.custom_inputs.size()),
+            static_cast<std::uint32_t>(plan.ptex_paths.size()),
+            static_cast<std::uint32_t>(plan.custom_inputs.size())};
 }
 
 Float3 xgen_curve_eval(const BufferFloat4 &points, Expr<uint> first,
@@ -254,6 +256,21 @@ Expr<float> lower_classic_runtime_expression(
             }
             inputs.emplace_back(context.ptex_values->read(
                 context.ptex_offset + index));
+        } else if (input.starts_with("__nxg_custom_")) {
+            std::string_view suffix{input};
+            suffix.remove_prefix(std::string_view{"__nxg_custom_"}.size());
+            std::uint32_t index{};
+            const auto converted = std::from_chars(
+                suffix.data(), suffix.data() + suffix.size(), index);
+            if (suffix.empty() || converted.ec != std::errc{} ||
+                converted.ptr != suffix.data() + suffix.size() ||
+                context.ptex_values == nullptr ||
+                index >= context.custom_count) {
+                throw std::runtime_error(
+                    "Classic Luisa custom input is not bound");
+            }
+            inputs.emplace_back(context.ptex_values->read(
+                context.ptex_offset + context.ptex_stride + index));
         } else {
             throw std::runtime_error(
                 "Classic Luisa runtime variable is not bound: $" + input);
@@ -302,9 +319,10 @@ ClassicRuntimePrimitiveKernel make_classic_runtime_primitive_kernel(
         const Float c_width = plan.width
             ? lower_classic_runtime_expression(*plan.width, length_context)
             : length_context.c_width;
+        const Float clamped_width = max(c_width, 0.0f);
         const auto width_context = make_context(
             plan, strand, roots, root_runtime, &ptex_values,
-            c_length, c_width, 0.0f);
+            c_length, clamped_width, 0.0f);
         Float taper{0.0f};
         if (plan.taper) {
             taper = lower_classic_runtime_expression(*plan.taper, width_context);
@@ -315,7 +333,7 @@ ClassicRuntimePrimitiveKernel make_classic_runtime_primitive_kernel(
                 *plan.taper_start, width_context);
         }
         states.write(strand, make_float4(
-            c_length, c_width, taper, taper_start));
+            c_length, clamped_width, taper, taper_start));
         for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
             const Float4 source_point = source.read(first + cv);
             const Float3 position = root_point.xyz() +
@@ -454,7 +472,7 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
             context.id, frame_nu.w, frame_tv.w,
             runtime_hash(guide_seed_arguments), input_length, state.y,
             0.0f, guide_prefix, true, context.ptex_values,
-            context.ptex_offset, context.ptex_stride};
+            context.ptex_offset, context.ptex_stride, context.custom_count};
         const Float noise = max(
             lower_classic_runtime_expression(clump.noise, guide_context),
             0.0f);
@@ -558,7 +576,7 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
                     static_cast<float>(cvs_per_strand - 1u),
                 guide_context.random_prefix, true,
                 guide_context.ptex_values, guide_context.ptex_offset,
-                guide_context.ptex_stride};
+                guide_context.ptex_stride, guide_context.custom_count};
             const Float scale = max(
                 lower_classic_runtime_expression(
                     clump.noise_scale, guide_cv_context),
@@ -850,7 +868,7 @@ ClassicRuntimeWidthKernel make_classic_runtime_width_kernel(
             }
             const Float4 point = points.read(first + cv);
             points.write(first + cv, make_float4(
-                point.xyz(), 0.5f * state.y * scale * radius_scale));
+                point.xyz(), 0.5f * max(state.y * scale, 0.0f) * radius_scale));
         }
     }};
 }

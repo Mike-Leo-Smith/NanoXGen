@@ -33,6 +33,9 @@ enum class XgenScalarOp : std::uint8_t {
     maximum,
     clamp,
     fit,
+    gamma,
+    contrast,
+    smoothstep,
     ramp,
 };
 

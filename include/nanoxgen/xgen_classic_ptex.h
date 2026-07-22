@@ -10,16 +10,17 @@
 
 namespace nanoxgen {
 
-struct ClassicPtexRuntimeData {
+struct ClassicRuntimeInputData {
     std::uint32_t strand_count{};
     std::uint32_t values_per_strand{};
     std::vector<float> values;
 };
 
-// Resolve ${DESC}, open each map retained by the runtime plan, and point-sample
-// it at every stable root identity. This is an optional host preprocessing
-// stage; the retained runtime and all GPU kernels consume only the float table.
-[[nodiscard]] ClassicPtexRuntimeData build_xgen_classic_ptex_runtime_data(
+// Resolve and point-sample each retained PTEX map, then evaluate retained
+// palette scalar functions at every stable root identity. This is an optional
+// host preprocessing stage; the retained runtime and all GPU kernels consume
+// only the resulting float table.
+[[nodiscard]] ClassicRuntimeInputData build_xgen_classic_runtime_input_data(
     const ClassicFloatRuntimePlan &plan,
     const std::filesystem::path &description_directory,
     std::string_view patch_name,
