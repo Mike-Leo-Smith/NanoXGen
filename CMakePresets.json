@@ -83,6 +83,18 @@
       }
     },
     {
+      "name": "classic-alembic-native-release",
+      "displayName": "Native Classic Alembic release",
+      "description": "Host-tuned LTO build with the optional system Alembic and Ptex Classic inputs",
+      "inherits": "classic-alembic-release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "NANOXGEN_ENABLE_IPO": "ON",
+        "NANOXGEN_NATIVE_ARCH": "ON",
+        "NANOXGEN_SIMD_WIDTH": "256"
+      }
+    },
+    {
       "name": "calibration-release",
       "displayName": "XGen calibration release",
       "description": "Optional Autodesk-backed oracle and conversion tools",
@@ -135,6 +147,11 @@
       "jobs": 2
     },
     {
+      "name": "classic-alembic-native-release",
+      "configurePreset": "classic-alembic-native-release",
+      "jobs": 2
+    },
+    {
       "name": "calibration-release",
       "configurePreset": "calibration-release",
       "jobs": 2
@@ -184,6 +201,13 @@
     {
       "name": "classic-alembic-release",
       "configurePreset": "classic-alembic-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "classic-alembic-native-release",
+      "configurePreset": "classic-alembic-native-release",
       "output": {
         "outputOnFailure": true
       }
