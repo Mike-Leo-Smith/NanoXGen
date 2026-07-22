@@ -3,6 +3,7 @@
 #include "nanoxgen/luisa/xgen_classic_runtime.h"
 #include "nanoxgen/xgen_classic.h"
 #include "nanoxgen/xgen_classic_alembic.h"
+#include "nanoxgen/xgen_classic_clump.h"
 #include "nanoxgen/xgen_classic_roots.h"
 #include "nanoxgen/xgen_classic_runtime.h"
 
@@ -163,6 +164,14 @@ struct ErrorStats {
     std::uint64_t bit_mismatches{};
 };
 
+struct ClumpHostData {
+    std::vector<luisa::float4> axes;
+    std::vector<luisa::float4> frames;
+    std::vector<std::uint32_t> runtime;
+    std::vector<std::uint32_t> strand_guides;
+    std::uint32_t guide_count{};
+};
+
 ErrorStats compare(const nanoxgen::PackedGeneratedCurves &a,
                    const nanoxgen::PackedGeneratedCurves &b) {
     if (a.strand_count != b.strand_count ||
@@ -253,6 +262,15 @@ int main(int argc, char **argv) try {
         throw std::runtime_error("Classic root plan metadata is inconsistent");
     }
     const std::uint32_t cvs = runtime.fx_cv_count;
+    std::vector<nanoxgen::ClassicClumpRuntimeData> clump_data;
+    clump_data.reserve(runtime.clumps.size());
+    for (std::size_t module = 0u; module < runtime.clumps.size(); ++module) {
+        clump_data.push_back(
+            nanoxgen::build_xgen_classic_clump_runtime_data(
+                *description, imported,
+                options.descriptions_root / description->name,
+                root_plan, runtime, module, cvs));
+    }
     const std::vector<nanoxgen::Vec3> rebuilt =
         nanoxgen::rebuild_xgen_classic_guides_for_device(imported.asset, cvs);
     std::vector<luisa::float3> rebuilt_gpu;
@@ -269,6 +287,30 @@ int main(int argc, char **argv) try {
     for (std::size_t strand = 0u; strand < root_plan.roots.size(); ++strand) {
         root_runtime[strand * 2u] = root_plan.primitive_ids[strand];
         root_runtime[strand * 2u + 1u] = root_plan.random_prefixes[strand];
+    }
+    std::vector<ClumpHostData> clump_host;
+    clump_host.reserve(clump_data.size());
+    for (const nanoxgen::ClassicClumpRuntimeData &binding : clump_data) {
+        ClumpHostData host{};
+        host.guide_count = static_cast<std::uint32_t>(
+            binding.guide_axes.size() / cvs);
+        host.axes.reserve(binding.guide_axes.size());
+        for (const nanoxgen::Vec3 value : binding.guide_axes) {
+            host.axes.emplace_back(value.x, value.y, value.z, 0.0f);
+        }
+        host.frames.reserve(static_cast<std::size_t>(host.guide_count) * 2u);
+        host.runtime.reserve(static_cast<std::size_t>(host.guide_count) * 2u);
+        for (std::uint32_t guide = 0u; guide < host.guide_count; ++guide) {
+            const nanoxgen::Vec3 normal = binding.guide_normals[guide];
+            const nanoxgen::Vec3 tangent = binding.guide_tangents[guide];
+            const nanoxgen::Vec2 uv = binding.guide_uvs[guide];
+            host.frames.emplace_back(normal.x, normal.y, normal.z, uv.x);
+            host.frames.emplace_back(tangent.x, tangent.y, tangent.z, uv.y);
+            host.runtime.push_back(binding.guide_face_ids[guide]);
+            host.runtime.push_back(binding.guide_random_prefixes[guide]);
+        }
+        host.strand_guides = binding.strand_guide_indices;
+        clump_host.emplace_back(std::move(host));
     }
     const Clock::time_point native_prepare_end = Clock::now();
 
@@ -290,6 +332,24 @@ int main(int argc, char **argv) try {
     Buffer<luisa::float4> b = device.create_buffer<luisa::float4>(point_count);
     Buffer<luisa::float4> states =
         device.create_buffer<luisa::float4>(strand_count);
+    std::vector<Buffer<luisa::float4>> clump_axes;
+    std::vector<Buffer<luisa::float4>> clump_frames;
+    std::vector<Buffer<std::uint32_t>> clump_runtime;
+    std::vector<Buffer<std::uint32_t>> clump_strand_guides;
+    clump_axes.reserve(clump_host.size());
+    clump_frames.reserve(clump_host.size());
+    clump_runtime.reserve(clump_host.size());
+    clump_strand_guides.reserve(clump_host.size());
+    for (const ClumpHostData &host : clump_host) {
+        clump_axes.emplace_back(
+            device.create_buffer<luisa::float4>(host.axes.size()));
+        clump_frames.emplace_back(
+            device.create_buffer<luisa::float4>(host.frames.size()));
+        clump_runtime.emplace_back(
+            device.create_buffer<std::uint32_t>(host.runtime.size()));
+        clump_strand_guides.emplace_back(
+            device.create_buffer<std::uint32_t>(host.strand_guides.size()));
+    }
 
     ShaderOption shader_option{};
     shader_option.enable_cache = false;
@@ -306,6 +366,11 @@ int main(int argc, char **argv) try {
         Buffer<luisa::float4>>;
     using CutShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
         ByteBuffer, Buffer<std::uint32_t>, Buffer<luisa::float4>>;
+    using ClumpShader = Shader1D<
+        Buffer<luisa::float4>, Buffer<luisa::float4>, ByteBuffer,
+        Buffer<std::uint32_t>, Buffer<luisa::float4>, Buffer<luisa::float4>,
+        Buffer<luisa::float4>, Buffer<std::uint32_t>,
+        Buffer<std::uint32_t>>;
     std::vector<NoiseShader> noises;
     for (const auto &noise : runtime.noises) {
         noises.emplace_back(device.compile(
@@ -320,6 +385,14 @@ int main(int argc, char **argv) try {
                 runtime, cut, cvs),
             shader_option));
     }
+    std::vector<ClumpShader> clumps;
+    for (std::size_t module = 0u; module < runtime.clumps.size(); ++module) {
+        clumps.emplace_back(device.compile(
+            nanoxgen::luisa_backend::make_classic_runtime_clump_kernel(
+                runtime, runtime.clumps[module], cvs,
+                clump_host[module].guide_count),
+            shader_option));
+    }
     auto width = device.compile(
         nanoxgen::luisa_backend::make_classic_runtime_width_kernel(runtime, cvs),
         shader_option);
@@ -330,8 +403,17 @@ int main(int argc, char **argv) try {
            << influences.copy_from(root_plan.influences.data())
            << guides.copy_from(rebuilt_gpu.data())
            << runtime_data.copy_from(root_runtime.data())
-           << tangent_buffer.copy_from(tangents.data())
-           << synchronize();
+           << tangent_buffer.copy_from(tangents.data());
+    for (std::size_t module = 0u; module < clump_host.size(); ++module) {
+        stream << clump_axes[module].copy_from(clump_host[module].axes.data())
+               << clump_frames[module].copy_from(
+                      clump_host[module].frames.data())
+               << clump_runtime[module].copy_from(
+                      clump_host[module].runtime.data())
+               << clump_strand_guides[module].copy_from(
+                      clump_host[module].strand_guides.data());
+    }
+    stream << synchronize();
     const Clock::time_point upload_end = Clock::now();
 
     bool final_is_a = (runtime.effects.size() % 2u) != 0u;
@@ -343,7 +425,21 @@ int main(int argc, char **argv) try {
                       .dispatch(static_cast<std::uint32_t>(strand_count));
         bool source_is_b = true;
         for (const nanoxgen::ClassicFloatEffect effect : runtime.effects) {
-            if (effect.type == nanoxgen::ClassicFloatEffectType::Noise) {
+            if (effect.type == nanoxgen::ClassicFloatEffectType::Clump) {
+                auto &shader = clumps.at(effect.module_index);
+                stream << (source_is_b
+                    ? shader(b, a, roots, runtime_data, states,
+                             clump_axes[effect.module_index],
+                             clump_frames[effect.module_index],
+                             clump_runtime[effect.module_index],
+                             clump_strand_guides[effect.module_index])
+                    : shader(a, b, roots, runtime_data, states,
+                             clump_axes[effect.module_index],
+                             clump_frames[effect.module_index],
+                             clump_runtime[effect.module_index],
+                             clump_strand_guides[effect.module_index]))
+                    .dispatch(static_cast<std::uint32_t>(strand_count));
+            } else if (effect.type == nanoxgen::ClassicFloatEffectType::Noise) {
                 auto &shader = noises.at(effect.module_index);
                 stream << (source_is_b
                     ? shader(b, a, roots, runtime_data, tangent_buffer, states)
@@ -397,7 +493,7 @@ int main(int argc, char **argv) try {
     if (!options.base_only) {
         nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
             cpu, runtime, 1.0f, root_plan.surface_tangents,
-            root_plan.random_prefixes, root_plan.primitive_ids);
+            root_plan.random_prefixes, root_plan.primitive_ids, clump_data);
     }
     nanoxgen::add_xgen_classic_renderer_endpoints(cpu);
     const Clock::time_point cpu_end = Clock::now();

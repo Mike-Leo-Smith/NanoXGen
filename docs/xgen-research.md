@@ -53,7 +53,7 @@ influence represented by sweep angles and radii. For a generated primitive:
 | Noise modifier | 3D gradient field, transported frame, correlation and length preservation | scalar/length model oracle-verified |
 | XGen expressions/PTEX | compiled expression IR and texture sampling | planned |
 | Geodesic guide neighborhoods | surface graph / UV-space acceleration | planned |
-| Clump/collision/coil/wind | hierarchical clump CPU path; remaining GPU/modifiers | partial |
+| Clump/collision/coil/wind | hierarchical clump CPU/Luisa path; remaining modifiers | partial |
 | Interactive Groom BLOB import/export | independent v1 parser/writer plus canonical `.nxc` cache | bit-exact oracle-validated with Maya 2027.1 |
 
 The guide stencil deliberately moves expensive guide selection to asset
@@ -363,10 +363,10 @@ actual renderer-buffer copy.
 4. Extend the implemented float runtime plan and Luisa lowering with PTEX
    sampling through a texture indirection table.
 5. Implement remaining modifier passes in authored dependency order. Primitive
-   length/width/taper/ramp, reparameterized Cut, NoiseFX, and hierarchical CPU
-   clumping are represented; add the Luisa clump path, coil, collision, and
-   wind. Fuse passes where locality permits and use explicit intermediate curve
-   buffers where modifiers need neighborhoods.
+   length/width/taper/ramp, reparameterized Cut, NoiseFX, and hierarchical
+   CPU/Luisa clumping are represented; add coil, collision, and wind. Fuse
+   passes where locality permits and use explicit intermediate curve buffers
+   where modifiers need neighborhoods.
 6. Expand Luisa HIP/Vulkan device coverage beyond the tested RX 9070 XT and
    compare throughput, memory, determinism, and strict/float-mode error
    against the XGen CPU baseline.

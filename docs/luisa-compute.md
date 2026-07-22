@@ -161,3 +161,19 @@ Arch host but crashed in its generated worker code even for the small parity
 test, including with `LUISA_SINGLE_THREADING=1`. HIP and Vulkan are the tested
 working backends; the fallback crash occurs below NanoXGen and remains an
 upstream/runtime compatibility issue.
+
+Rabbit `mm` now exercises the Luisa hierarchical ClumpingFX kernel as well as
+NoiseFX, CutFX, and width. A fresh no-cache run produced 3526 curves / 59942
+renderer points with `fallback_count=0`. HIP differed from the CPU float path
+by at most `1.72e-5`; Vulkan differed by at most `1.49e-4`. Their Maya-oracle
+maximum remained `2.62e-3`, inherited from the CPU clump approximation, so the
+strict `1e-3` oracle gate correctly remains false.
+
+Cold startup is currently the wrong tradeoff for this small description. HIP
+took 6728.7 ms end to end, including 6489.4 ms for allocation/JIT, and Vulkan
+took 5601.2 ms, including 5385.4 ms for allocation/JIT. Warm execution was
+0.380 ms and 0.752 ms respectively. The matching portable CPU cold path took
+223.6 ms, while Maya typed evaluation/copy took 334.6 ms. Thus CPU was about
+1.50x faster than Maya, but no-cache HIP and Vulkan were about 20.1x and 16.7x
+slower. These results make shader fusion/precompiled backend artifacts—not
+curve dispatch throughput—the next cold-start optimization target.

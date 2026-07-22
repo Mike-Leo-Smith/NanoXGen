@@ -13,6 +13,16 @@ using ClassicRuntimePrimitiveKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::uint>,
     luisa::compute::Buffer<luisa::float4>)>;
 using ClassicRuntimeCutKernel = ClassicRuntimePrimitiveKernel;
+using ClassicRuntimeClumpKernel = luisa::compute::Kernel1D<void(
+    luisa::compute::Buffer<luisa::float4>,
+    luisa::compute::Buffer<luisa::float4>,
+    luisa::compute::ByteBuffer,
+    luisa::compute::Buffer<luisa::uint>,
+    luisa::compute::Buffer<luisa::float4>,
+    luisa::compute::Buffer<luisa::float4>,
+    luisa::compute::Buffer<luisa::float4>,
+    luisa::compute::Buffer<luisa::uint>,
+    luisa::compute::Buffer<luisa::uint>)>;
 using ClassicRuntimeNoiseKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::float4>,
     luisa::compute::Buffer<luisa::float4>,
@@ -57,6 +67,16 @@ struct ClassicFloatRuntimeLuisaContext {
     const ClassicFloatRuntimePlan &plan,
     const ClassicFloatCutModule &cut,
     std::uint32_t cvs_per_strand);
+
+// guide_axes stores float4(position, 0) guide-major; guide_frames stores two
+// float4 records per guide as (normal.xyz, u) and (tangent.xyz, v);
+// guide_runtime stores uint2(faceId, exactSeExprPrefix); strand_guides stores
+// one guide index (or kInvalidIndex) per strand.
+[[nodiscard]] ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
+    const ClassicFloatRuntimePlan &plan,
+    const ClassicFloatClumpModule &clump,
+    std::uint32_t cvs_per_strand,
+    std::uint32_t guide_count);
 
 [[nodiscard]] ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
     const ClassicFloatRuntimePlan &plan,

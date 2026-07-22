@@ -378,6 +378,265 @@ ClassicRuntimeCutKernel make_classic_runtime_cut_kernel(
     }};
 }
 
+ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
+    const ClassicFloatRuntimePlan &plan,
+    const ClassicFloatClumpModule &clump,
+    std::uint32_t cvs_per_strand,
+    std::uint32_t guide_count) {
+    if (cvs_per_strand < 3u || guide_count == 0u) {
+        throw std::invalid_argument(
+            "Classic Luisa Clump needs guides and at least three CVs");
+    }
+    return Kernel1D{[=, &plan, &clump](
+                        BufferFloat4 source, BufferFloat4 destination,
+                        ByteBufferVar roots, BufferUInt root_runtime,
+                        BufferFloat4 states, BufferFloat4 guide_axes,
+                        BufferFloat4 guide_frames, BufferUInt guide_runtime,
+                        BufferUInt strand_guides) noexcept {
+        set_block_size(128u, 1u, 1u);
+        Constant<float> gradients{
+            span<const float>{
+                reinterpret_cast<const float *>(
+                    detail::kSeExprNoiseGradients),
+                256u * 3u}};
+        const UInt strand = dispatch_id().x;
+        const UInt first = strand * cvs_per_strand;
+        const UInt raw_guide = strand_guides.read(strand);
+        const Bool valid_guide = !(
+            raw_guide == static_cast<uint>(kInvalidIndex));
+        const UInt guide = min(raw_guide, guide_count - 1u);
+        const UInt guide_first = guide * cvs_per_strand;
+        const UInt frame_first = guide * 2u;
+        const UInt runtime_first = guide * 2u;
+        const Float4 frame_nu = guide_frames.read(frame_first);
+        const Float4 frame_tv = guide_frames.read(frame_first + 1u);
+        const UInt guide_face = guide_runtime.read(runtime_first);
+        const UInt guide_prefix = guide_runtime.read(runtime_first + 1u);
+        const Float4 state = states.read(strand);
+        const Float input_length = xgen_curve_length(
+            source, first, cvs_per_strand);
+        auto context = make_context(
+            plan, strand, roots, root_runtime,
+            input_length, state.y, 0.0f);
+        const Float mask = clamp(
+            lower_classic_runtime_expression(clump.mask, context),
+            0.0f, 1.0f);
+        const Bool active = valid_guide & (mask > 0.0f);
+
+        const std::array<Expr<float>, 3u> guide_seed_arguments{
+            static_cast<float>(plan.description_id),
+            static_cast<float>(xgen_string_seed(plan.description_name)),
+            cast<float>(guide_face)};
+        ClassicFloatRuntimeLuisaContext guide_context{
+            context.id, frame_nu.w, frame_tv.w,
+            runtime_hash(guide_seed_arguments), input_length, state.y,
+            0.0f, guide_prefix, true};
+        const Float noise = max(
+            lower_classic_runtime_expression(clump.noise, guide_context),
+            0.0f);
+        const Float frequency = max(
+            lower_classic_runtime_expression(
+                clump.noise_frequency, guide_context),
+            0.0f);
+        const Float correlation = clamp(
+            lower_classic_runtime_expression(
+                clump.noise_correlation, guide_context) * 0.01f,
+            0.0f, 1.0f);
+        const Float guide_polyline_length = polyline_length(
+            guide_axes, guide_first, cvs_per_strand);
+        const Float effective_frequency = ite(
+            guide_polyline_length > 0.0f,
+            max(0.5f / max(guide_polyline_length, 1.0e-20f), frequency),
+            frequency);
+        const Float decorrelation = 1.0f - correlation;
+        const Float domain_scale =
+            100.0f * decorrelation * decorrelation;
+        const Float3 guide_root = guide_axes.read(guide_first).xyz();
+        const Float3 domain =
+            (guide_root * 0.1f +
+             make_float3(0.419276f, 0.184247f, 0.805721f)) *
+            domain_scale;
+        const Float3 surface_normal = safe_normalize(
+            frame_nu.xyz(), make_float3(0.0f, 1.0f, 0.0f));
+        const Float3 fallback_axis = ite(
+            (surface_normal.z > -0.999f) & (surface_normal.z < 0.999f),
+            make_float3(0.0f, 0.0f, 1.0f),
+            make_float3(0.0f, 1.0f, 0.0f));
+        const Float3 fallback_u = safe_normalize(
+            cross(surface_normal, fallback_axis),
+            make_float3(1.0f, 0.0f, 0.0f));
+        Float3 transported_u = safe_normalize(frame_tv.xyz(), fallback_u);
+        Float3 current_tangent = safe_normalize(
+            guide_axes.read(guide_first + 1u).xyz() - guide_root,
+            surface_normal);
+        Float3 rotation_axis = cross(surface_normal, current_tangent);
+        Float rotation_axis_length_squared = dot(rotation_axis, rotation_axis);
+        Float3 normalized_axis = safe_normalize(
+            rotation_axis, make_float3(1.0f, 0.0f, 0.0f));
+        Float turn_angle = acos(clamp(
+            dot(surface_normal, current_tangent), -1.0f, 1.0f));
+        transported_u = ite(
+            rotation_axis_length_squared > 1.0e-20f,
+            safe_normalize(
+                rotate_by(transported_u, normalized_axis, turn_angle),
+                transported_u),
+            transported_u);
+        vector<Expr<float3>> noisy_axis;
+        noisy_axis.reserve(cvs_per_strand);
+        noisy_axis.emplace_back(guide_root);
+        Float travelled{0.0f};
+        Float3 previous_axis = guide_root;
+        for (std::uint32_t cv = 1u; cv < cvs_per_strand; ++cv) {
+            const Float3 axis_point = guide_axes.read(guide_first + cv).xyz();
+            const Float3 travelled_delta = axis_point - previous_axis;
+            travelled += sqrt(dot(travelled_delta, travelled_delta));
+            Float3 sample_tangent = current_tangent;
+            Float3 sample_u = transported_u;
+            if (cv + 1u < cvs_per_strand) {
+                const Float3 next_tangent = safe_normalize(
+                    guide_axes.read(guide_first + cv + 1u).xyz() - axis_point,
+                    current_tangent);
+                rotation_axis = cross(current_tangent, next_tangent);
+                rotation_axis_length_squared = dot(rotation_axis, rotation_axis);
+                normalized_axis = safe_normalize(
+                    rotation_axis, make_float3(1.0f, 0.0f, 0.0f));
+                turn_angle = acos(clamp(
+                    dot(current_tangent, next_tangent), -1.0f, 1.0f));
+                const Bool turns = rotation_axis_length_squared > 1.0e-20f;
+                sample_tangent = ite(
+                    turns,
+                    safe_normalize(
+                        rotate_by(current_tangent, normalized_axis,
+                                  0.5f * turn_angle),
+                        current_tangent),
+                    next_tangent);
+                sample_u = ite(
+                    turns,
+                    safe_normalize(
+                        rotate_by(transported_u, normalized_axis,
+                                  0.5f * turn_angle),
+                        transported_u),
+                    transported_u);
+                transported_u = ite(
+                    turns,
+                    safe_normalize(
+                        rotate_by(transported_u, normalized_axis, turn_angle),
+                        transported_u),
+                    transported_u);
+                current_tangent = next_tangent;
+            }
+            const Float3 sample_v = cross(sample_tangent, sample_u);
+            const ClassicFloatRuntimeLuisaContext guide_cv_context{
+                guide_context.id, guide_context.u, guide_context.v,
+                guide_context.face_seed, guide_context.c_length,
+                guide_context.c_width,
+                static_cast<float>(cv) /
+                    static_cast<float>(cvs_per_strand - 1u),
+                guide_context.random_prefix, true};
+            const Float scale = max(
+                lower_classic_runtime_expression(
+                    clump.noise_scale, guide_cv_context),
+                0.0f);
+            const Float magnitude = mask * noise * scale;
+            const Float distance = travelled * effective_frequency;
+            const Float first_noise = xgen_noise(
+                gradients, make_float3(
+                    domain.x + distance, domain.y, domain.z)) - 0.5f;
+            const Float second_noise = xgen_noise(
+                gradients, make_float3(
+                    domain.x, domain.y, domain.z + distance)) - 0.5f;
+            const Float3 displaced = axis_point +
+                (sample_u * first_noise + sample_v * second_noise) *
+                    magnitude;
+            noisy_axis.emplace_back(ite(
+                (noise > 1.0e-5f) & (mask > 1.0e-4f),
+                displaced, axis_point));
+            previous_axis = axis_point;
+        }
+
+        const Float target_length = xgen_curve_length(
+            guide_axes, guide_first, cvs_per_strand);
+        const std::uint32_t interval_count = 2u * cvs_per_strand + 4u;
+        const float search_step = 1.0f / static_cast<float>(interval_count);
+        Float cut_parameter = ite(target_length <= 1.0e-10f, 0.0f, 1.0f);
+        Float previous_parameter{0.0f};
+        Float3 previous = source.read(first).xyz();
+        Float accumulated{0.0f};
+        Bool finished = target_length <= 1.0e-10f;
+        for (std::uint32_t sample = 1u;
+             sample <= interval_count; ++sample) {
+            const float parameter = sample == interval_count
+                ? 1.0f
+                : search_step * static_cast<float>(sample);
+            const Float3 current = sample == interval_count
+                ? source.read(first + cvs_per_strand - 1u).xyz()
+                : xgen_curve_eval(
+                      source, first, parameter, cvs_per_strand);
+            const Float segment_length = sqrt(dot(
+                current - previous, current - previous));
+            const Float next_accumulated = accumulated + segment_length;
+            const Bool hit = !finished &
+                (next_accumulated >= target_length) &
+                (segment_length > 0.0f);
+            cut_parameter = ite(
+                hit,
+                parameter - ((next_accumulated - target_length) /
+                    segment_length) *
+                    (parameter - previous_parameter),
+                cut_parameter);
+            const Bool was_finished = finished;
+            finished = finished | hit;
+            accumulated = ite(was_finished, accumulated, next_accumulated);
+            previous_parameter = ite(
+                was_finished, previous_parameter, parameter);
+            previous = ite(was_finished, previous, current);
+        }
+        vector<Expr<float3>> rebuilt;
+        rebuilt.reserve(cvs_per_strand);
+        for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
+            const Float parameter = cut_parameter *
+                (static_cast<float>(cv) /
+                 static_cast<float>(cvs_per_strand - 1u));
+            rebuilt.emplace_back(xgen_curve_eval(
+                source, first, parameter, cvs_per_strand));
+        }
+        const Float rebuilt_length = xgen_curve_length(rebuilt);
+        const auto rebuilt_context = make_context(
+            plan, strand, roots, root_runtime,
+            rebuilt_length, state.y, 0.0f);
+        const Float amount = clamp(
+            lower_classic_runtime_expression(clump.clump, rebuilt_context),
+            0.0f, 1.0f);
+        vector<Expr<float3>> output;
+        output.reserve(cvs_per_strand);
+        for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
+            const float t = static_cast<float>(cv) /
+                            static_cast<float>(cvs_per_strand - 1u);
+            const auto cv_context = make_context(
+                plan, strand, roots, root_runtime,
+                rebuilt_length, state.y, t);
+            const Float scale = lower_classic_runtime_expression(
+                clump.clump_scale, cv_context);
+            const Float3 goal = xgen_curve_eval(
+                guide_axes, guide_first, t, cvs_per_strand);
+            const Float3 blended = rebuilt[cv] +
+                (goal - rebuilt[cv]) *
+                    (mask * amount * (1.0f - 2.0f * scale));
+            const Float3 axis_point = guide_axes.read(guide_first + cv).xyz();
+            const Float3 clumped = blended + noisy_axis[cv] - axis_point;
+            const Float3 current = source.read(first + cv).xyz();
+            const Float3 selected = ite(active, clumped, current);
+            output.emplace_back(selected);
+            destination.write(first + cv, make_float4(
+                selected, source.read(first + cv).w));
+        }
+        const Float output_length = xgen_curve_length(output);
+        states.write(strand, make_float4(
+            ite(active, output_length, input_length),
+            state.y, state.z, state.w));
+    }};
+}
+
 ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
     const ClassicFloatRuntimePlan &plan,
     const ClassicFloatNoiseModule &noise,

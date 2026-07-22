@@ -119,8 +119,9 @@ native prototype, not an equal-output Maya speedup claim. A valid Maya
 comparison requires the same roots, surface evaluation, expressions, PTEX,
 modules, curve counts, CV counts, and renderer channels.
 
-The optional Luisa path uploads rebuilt float guides and CSR associations,
-generates final packed base points, and runs the same float expression,
-NoiseFX, CutFX, and width kernels through HIP or Vulkan. See
+The optional Luisa path uploads rebuilt float guides, CSR associations, and
+bound clump guide axes/maps, generates final packed base points, and runs the
+same float expression, ClumpingFX, NoiseFX, CutFX, and width kernels through
+HIP or Vulkan. See
 `docs/luisa-compute.md` for the cold/no-cache Rabbit command and its explicit
 parity boundary.

@@ -113,20 +113,35 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
         {"width", "0.02+hash($id)*0.01", 4u},
         {"taper", "0.25", 5u}, {"taperStart", "0.35", 6u},
         {"widthRamp", "rampUI(0,1,1:1,0.8,1)", 7u}}, 2u});
+    description.objects.push_back({"ClumpingFXModule", {
+        {"active", "true", 8u}, {"name", "clump", 9u},
+        {"mask", "0.75", 10u}, {"clump", "0.6", 11u},
+        {"clumpScale", "rampUI(0,0.5,1:1,0,1)", 12u},
+        {"clumpVariance", "0", 13u}, {"cut", "0", 14u},
+        {"copy", "0", 15u}, {"copyVariance", "0", 16u},
+        {"curl", "0", 17u}, {"offset", "0", 18u},
+        {"flatness", "0", 19u}, {"frame", "0", 20u},
+        {"noise", "0.02", 21u},
+        {"noiseScale", "rampUI(0,0,1:1,1,1)", 22u},
+        {"noiseFrequency", "1.7", 23u},
+        {"noiseCorrelation", "20", 24u},
+        {"useControlMaps", "0", 25u},
+        {"clumpVolumize", "false", 26u}}, 8u});
     description.objects.push_back({"NoiseFXModule", {
-        {"active", "true", 8u}, {"name", "noise", 9u},
-        {"mask", "0.8", 10u}, {"magnitude", "0.035", 11u},
-        {"magnitudeScale", "rampUI(0,0,1:1,1,1)", 12u},
-        {"frequency", "2.25", 13u}, {"correlation", "rand(0,100)", 14u},
-        {"preserveLength", "35", 15u}, {"mode", "0", 16u}}, 8u});
+        {"active", "true", 27u}, {"name", "noise", 28u},
+        {"mask", "0.8", 29u}, {"magnitude", "0.035", 30u},
+        {"magnitudeScale", "rampUI(0,0,1:1,1,1)", 31u},
+        {"frequency", "2.25", 32u}, {"correlation", "rand(0,100)", 33u},
+        {"preserveLength", "35", 34u}, {"mode", "0", 35u}}, 27u});
     description.objects.push_back({"CutFXModule", {
-        {"active", "true", 17u}, {"name", "cut", 18u},
-        {"amount", "0.05*$cLength", 19u},
-        {"rebuildType", "1", 20u}}, 17u});
+        {"active", "true", 36u}, {"name", "cut", 37u},
+        {"amount", "0.05*$cLength", 38u},
+        {"rebuildType", "1", 39u}}, 36u});
     const nanoxgen::ClassicFloatRuntimePlan plan =
         nanoxgen::compile_xgen_classic_float_runtime_plan(description);
-    if (!plan.lowering_complete() || plan.noises.size() != 1u ||
-        plan.cuts.size() != 1u || plan.effects.size() != 2u) {
+    if (!plan.lowering_complete() || plan.clumps.size() != 1u ||
+        plan.noises.size() != 1u || plan.cuts.size() != 1u ||
+        plan.effects.size() != 3u) {
         throw std::runtime_error("Luisa Classic effects fixture did not lower");
     }
 
@@ -179,8 +194,33 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
                 point.x, point.y, point.z, point.radius);
         }
     }
+    nanoxgen::ClassicClumpRuntimeData clump_data{};
+    clump_data.module_name = "clump";
+    clump_data.cvs_per_guide = cvs;
+    for (std::uint32_t cv = 0u; cv < cvs; ++cv) {
+        const float t = static_cast<float>(cv) /
+                        static_cast<float>(cvs - 1u);
+        clump_data.guide_axes.push_back({
+            0.12f + 0.025f * t * t,
+            0.72f * t,
+            0.08f + 0.018f * std::sin(t * 1.9f)});
+    }
+    clump_data.guide_normals = {{0.0f, 1.0f, 0.0f}};
+    clump_data.guide_tangents = {{1.0f, 0.0f, 0.0f}};
+    clump_data.guide_uvs = {{0.25f, 0.75f}};
+    clump_data.guide_face_ids = {2u};
+    const std::array<double, 3u> guide_prefix_input{
+        0.25, 0.75,
+        static_cast<double>(nanoxgen::xgen_runtime_face_seed(
+            plan.description_id, plan.description_name, 2u))};
+    clump_data.guide_random_prefixes = {
+        nanoxgen::xgen_seexpr_hash_prefix(guide_prefix_input)};
+    clump_data.strand_guide_indices.assign(strand_count, 0u);
+    clump_data.strand_guide_indices.back() = nanoxgen::kInvalidIndex;
+    const std::array clump_bindings{clump_data};
     nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
-        reference, plan, 1.0f, cpu_tangents, prefixes, primitive_ids);
+        reference, plan, 1.0f, cpu_tangents, prefixes, primitive_ids,
+        clump_bindings);
     if (reference.strand_count != strand_count) {
         throw std::runtime_error("Luisa Classic effects fixture unexpectedly culled");
     }
@@ -189,12 +229,38 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
         reference.roots.size() * sizeof(nanoxgen::RootSample));
     auto runtime = device.create_buffer<std::uint32_t>(root_runtime.size());
     auto tangent_buffer = device.create_buffer<luisa::float3>(tangents.size());
+    std::vector<luisa::float4> clump_axes;
+    for (const nanoxgen::Vec3 value : clump_data.guide_axes) {
+        clump_axes.emplace_back(value.x, value.y, value.z, 0.0f);
+    }
+    const nanoxgen::Vec3 clump_normal = clump_data.guide_normals.front();
+    const nanoxgen::Vec3 clump_tangent = clump_data.guide_tangents.front();
+    const nanoxgen::Vec2 clump_uv = clump_data.guide_uvs.front();
+    const std::array clump_frames{
+        luisa::make_float4(
+            clump_normal.x, clump_normal.y, clump_normal.z, clump_uv.x),
+        luisa::make_float4(
+            clump_tangent.x, clump_tangent.y, clump_tangent.z, clump_uv.y)};
+    const std::array<std::uint32_t, 2u> clump_runtime{
+        clump_data.guide_face_ids.front(),
+        clump_data.guide_random_prefixes.front()};
+    auto clump_axes_buffer =
+        device.create_buffer<luisa::float4>(clump_axes.size());
+    auto clump_frames_buffer =
+        device.create_buffer<luisa::float4>(clump_frames.size());
+    auto clump_runtime_buffer =
+        device.create_buffer<std::uint32_t>(clump_runtime.size());
+    auto clump_guides_buffer = device.create_buffer<std::uint32_t>(
+        clump_data.strand_guide_indices.size());
     auto a = device.create_buffer<luisa::float4>(source.size());
     auto b = device.create_buffer<luisa::float4>(source.size());
     auto states = device.create_buffer<luisa::float4>(strand_count);
     auto primitive = device.compile(
         nanoxgen::luisa_backend::make_classic_runtime_primitive_kernel(
             plan, cvs));
+    auto clump = device.compile(
+        nanoxgen::luisa_backend::make_classic_runtime_clump_kernel(
+            plan, plan.clumps.front(), cvs, 1u));
     auto noise = device.compile(
         nanoxgen::luisa_backend::make_classic_runtime_noise_kernel(
             plan, plan.noises.front(), cvs));
@@ -207,13 +273,22 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
     stream << roots.copy_from(reference.roots.data())
            << runtime.copy_from(root_runtime.data())
            << tangent_buffer.copy_from(tangents.data())
+           << clump_axes_buffer.copy_from(clump_axes.data())
+           << clump_frames_buffer.copy_from(clump_frames.data())
+           << clump_runtime_buffer.copy_from(clump_runtime.data())
+           << clump_guides_buffer.copy_from(
+                  clump_data.strand_guide_indices.data())
            << a.copy_from(source.data())
            << primitive(a, b, roots, runtime, states).dispatch(strand_count)
-           << noise(b, a, roots, runtime, tangent_buffer, states)
+           << clump(b, a, roots, runtime, states,
+                    clump_axes_buffer, clump_frames_buffer,
+                    clump_runtime_buffer, clump_guides_buffer)
                   .dispatch(strand_count)
-           << cut(a, b, roots, runtime, states).dispatch(strand_count)
-           << width(b, roots, runtime, states).dispatch(strand_count)
-           << b.copy_to(luisa::span{actual})
+           << noise(a, b, roots, runtime, tangent_buffer, states)
+                  .dispatch(strand_count)
+           << cut(b, a, roots, runtime, states).dispatch(strand_count)
+           << width(a, roots, runtime, states).dispatch(strand_count)
+           << a.copy_to(luisa::span{actual})
            << synchronize();
     float max_error = 0.0f;
     for (std::size_t index = 0u; index < actual.size(); ++index) {
@@ -226,7 +301,7 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
     }
     if (max_error > 1.0e-4f) {
         throw std::runtime_error(
-            "Luisa Classic Noise/Cut/width mismatch (max=" +
+            "Luisa Classic Clump/Noise/Cut/width mismatch (max=" +
             std::to_string(max_error) + ")");
     }
     return max_error;
