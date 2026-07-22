@@ -121,6 +121,32 @@ cudaError_t launch_generate_packed_cuda(
         asset.asset, deformed.geometry, params, output.output, config.block_size, stream);
 }
 
+cudaError_t launch_generate_motion_cuda(
+    const DeviceAssetDescriptor &asset,
+    const DeviceMotionSampleDescriptor *samples,
+    std::uint32_t sample_count,
+    const GenerationParams &params,
+    const DeviceMotionOutputDescriptor &output,
+    const DeviceLaunchConfig &config,
+    cudaStream_t stream) {
+    if (validate_device_motion_generation_request(
+            asset, samples, sample_count, params, output, config) !=
+        DeviceGenerationError::None) {
+        return cudaErrorInvalidValue;
+    }
+    const std::uint64_t points_per_sample =
+        static_cast<std::uint64_t>(params.strand_count) * params.cvs_per_strand;
+    for (std::uint32_t sample = 0u; sample < sample_count; ++sample) {
+        GeneratedOutputView sample_output{};
+        sample_output.points = output.points + points_per_sample * sample;
+        const cudaError_t error = launch_generate_kernel(
+            asset.asset, samples[sample].deformation.geometry, params, sample_output,
+            config.block_size, stream);
+        if (error != cudaSuccess) { return error; }
+    }
+    return cudaSuccess;
+}
+
 namespace {
 
 cudaError_t launch_generate_kernel(

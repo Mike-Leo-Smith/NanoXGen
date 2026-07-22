@@ -68,6 +68,13 @@ The original raw-pointer overload remains available for tightly controlled
 internal code, but it cannot prove allocation sizes and should not be used at
 the renderer boundary.
 
+`launch_generate_motion_cuda` accepts all shutter overlays together. It first
+validates every deformation descriptor, strictly increasing finite sample
+times, and the complete sample-major output capacity. Only after the whole
+request is valid does it enqueue one position-only kernel per sample on the
+same stream. Every launch reuses the base asset, seed, strand count, and CV
+count, preserving root identity while avoiding widths/UVs in motion buffers.
+
 ## Compiler modes and numerical policy
 
 Release builds use `-O3` by default. `NANOXGEN_NATIVE_ARCH=ON` enables host
@@ -135,7 +142,7 @@ while procedural parity is expanded.
 | Positions and per-CV radius | implemented, including checked CUDA direct output |
 | Fixed or variable point counts in output | implemented; fixed counts are fused into CUDA generation |
 | Root UV, uniform float, uniform color | implemented payload contract |
-| Multiple absolute motion samples | implemented payload contract |
+| Multiple absolute motion samples | implemented payload contract and checked CUDA sample-major output |
 | Deformed mesh/normal/guide overlays | implemented on CPU and shared device math |
 | Object-to-world transform | implemented |
 | 65,536-strand chunking | implemented and boundary-tested |

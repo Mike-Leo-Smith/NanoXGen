@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 
 namespace nanoxgen {
 
@@ -38,6 +39,18 @@ struct DevicePackedCurveOutputDescriptor {
     std::uint64_t point_count_capacity{};
 };
 
+struct DeviceMotionSampleDescriptor {
+    DeviceDeformedGeometryDescriptor deformation;
+    float time{};
+};
+
+// Sample-major absolute positions. Each sample owns strand_count *
+// cvs_per_strand consecutive Vec3 values.
+struct DeviceMotionOutputDescriptor {
+    Vec3 *points{};
+    std::uint64_t point_capacity{};
+};
+
 struct DeviceLaunchConfig {
     std::uint32_t block_size{128u};
 };
@@ -59,6 +72,10 @@ enum class DeviceGenerationError : std::uint32_t {
     RootUvCapacityTooSmall,
     PointCountCapacityTooSmall,
     InvalidRadiusScale,
+    MissingMotionSamples,
+    InvalidMotionTimes,
+    MotionPointCapacityTooSmall,
+    OutputSizeOverflow,
 };
 
 [[nodiscard]] inline const char *device_generation_error_message(
@@ -85,6 +102,12 @@ enum class DeviceGenerationError : std::uint32_t {
             return "device point-count output is too small";
         case DeviceGenerationError::InvalidRadiusScale:
             return "device curve radius scale must be finite and non-negative";
+        case DeviceGenerationError::MissingMotionSamples: return "no motion samples were supplied";
+        case DeviceGenerationError::InvalidMotionTimes:
+            return "motion sample times must be finite and strictly increasing";
+        case DeviceGenerationError::MotionPointCapacityTooSmall:
+            return "device motion-point output is too small";
+        case DeviceGenerationError::OutputSizeOverflow: return "device output size overflows uint64";
     }
     return "unknown device generation error";
 }
@@ -210,6 +233,40 @@ namespace detail {
     if (!detail::optional_capacity_valid(
             output.output.point_counts, output.point_count_capacity, params.strand_count)) {
         return DeviceGenerationError::PointCountCapacityTooSmall;
+    }
+    return DeviceGenerationError::None;
+}
+
+[[nodiscard]] inline DeviceGenerationError validate_device_motion_generation_request(
+    const DeviceAssetDescriptor &asset,
+    const DeviceMotionSampleDescriptor *samples,
+    std::uint32_t sample_count,
+    const GenerationParams &params,
+    const DeviceMotionOutputDescriptor &output,
+    const DeviceLaunchConfig &config = {}) noexcept {
+    if (!samples || sample_count == 0u) {
+        return DeviceGenerationError::MissingMotionSamples;
+    }
+    float previous_time = -std::numeric_limits<float>::infinity();
+    for (std::uint32_t sample = 0u; sample < sample_count; ++sample) {
+        if (!std::isfinite(samples[sample].time) || samples[sample].time <= previous_time) {
+            return DeviceGenerationError::InvalidMotionTimes;
+        }
+        previous_time = samples[sample].time;
+        if (const DeviceGenerationError error = detail::validate_common_device_input(
+                asset, samples[sample].deformation, params, config);
+            error != DeviceGenerationError::None) {
+            return error;
+        }
+    }
+    const std::uint64_t points_per_sample =
+        static_cast<std::uint64_t>(params.strand_count) * params.cvs_per_strand;
+    if (points_per_sample > std::numeric_limits<std::uint64_t>::max() / sample_count) {
+        return DeviceGenerationError::OutputSizeOverflow;
+    }
+    const std::uint64_t required = points_per_sample * sample_count;
+    if (!output.points || output.point_capacity < required) {
+        return DeviceGenerationError::MotionPointCapacityTooSmall;
     }
     return DeviceGenerationError::None;
 }

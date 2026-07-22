@@ -3,6 +3,7 @@
 #include "nanoxgen/curve_payload.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -326,6 +327,31 @@ void test_checked_device_generation_contract() {
                 device_asset, {}, params, output) == DeviceGenerationError::None,
             "valid checked device request");
 
+    const std::array<DeviceMotionSampleDescriptor, 2u> motion_samples = {{
+        {{}, 0.25f},
+        {{}, 0.75f},
+    }};
+    std::vector<Vec3> motion_points(point_count * motion_samples.size());
+    DeviceMotionOutputDescriptor motion_output{motion_points.data(), motion_points.size()};
+    require(validate_device_motion_generation_request(
+                device_asset, motion_samples.data(), motion_samples.size(), params,
+                motion_output) == DeviceGenerationError::None,
+            "valid checked device motion request");
+
+    auto unordered_motion = motion_samples;
+    unordered_motion[1].time = unordered_motion[0].time;
+    require(validate_device_motion_generation_request(
+                device_asset, unordered_motion.data(), unordered_motion.size(), params,
+                motion_output) == DeviceGenerationError::InvalidMotionTimes,
+            "checked device motion times");
+
+    motion_output.point_capacity -= 1u;
+    require(validate_device_motion_generation_request(
+                device_asset, motion_samples.data(), motion_samples.size(), params,
+                motion_output) == DeviceGenerationError::MotionPointCapacityTooSmall,
+            "checked device motion capacity");
+    motion_output.point_capacity += 1u;
+
     output.point_capacity = point_count - 1u;
     require(validate_device_packed_generation_request(
                 device_asset, {}, params, output) ==
@@ -361,6 +387,14 @@ void test_checked_device_generation_contract() {
                 short_asset, {}, params, output) ==
                 DeviceGenerationError::AssetCapacityTooSmall,
             "checked device asset capacity");
+
+    GenerationParams overflowing_params = params;
+    overflowing_params.strand_count = std::numeric_limits<std::uint32_t>::max();
+    overflowing_params.cvs_per_strand = std::numeric_limits<std::uint32_t>::max();
+    require(validate_device_motion_generation_request(
+                device_asset, motion_samples.data(), motion_samples.size(), overflowing_params,
+                motion_output) == DeviceGenerationError::OutputSizeOverflow,
+            "checked device motion output overflow");
 }
 
 void test_renderer_curve_payload_64k_boundary() {

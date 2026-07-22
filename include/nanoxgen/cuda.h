@@ -32,6 +32,18 @@ namespace nanoxgen {
     const DeviceLaunchConfig &config = {},
     cudaStream_t stream = nullptr);
 
+// Validate every shutter sample before enqueueing any work, then write
+// sample-major absolute positions in stream order. Root identity is preserved
+// because every sample uses the same asset, seed, and generation parameters.
+[[nodiscard]] cudaError_t launch_generate_motion_cuda(
+    const DeviceAssetDescriptor &asset,
+    const DeviceMotionSampleDescriptor *samples,
+    std::uint32_t sample_count,
+    const GenerationParams &params,
+    const DeviceMotionOutputDescriptor &output,
+    const DeviceLaunchConfig &config = {},
+    cudaStream_t stream = nullptr);
+
 // Low-level compatibility entry points. The caller owns all allocation-size
 // guarantees; prefer the descriptor overloads above for renderer integration.
 [[nodiscard]] cudaError_t launch_generate_cuda(
