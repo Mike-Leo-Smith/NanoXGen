@@ -309,6 +309,7 @@ public:
     [[nodiscard]] bool enabled() const noexcept { return _enabled; }
 
     void gather(Vec3 position, Vec3 normal,
+                const ClassicAlembicAssetInput::SurfaceFace &face,
                 std::vector<ClassicGuideInfluence> &result) const {
         result.clear();
         if (!_enabled) { return; }
@@ -321,6 +322,26 @@ public:
                     if (found == _cells.end()) { continue; }
                     for (const std::uint32_t index : found->second) {
                         const GuideInput &guide = _guides[index];
+                        const Vec3 guide_root = guide.reference_root_position;
+                        const float guide_radius = guide.support_radii.front();
+                        // setupInterpolation uses the global maximum radius
+                        // only for its coarse KD-tree query. It then performs
+                        // this strict face-box test with each guide's own
+                        // broad radius before retaining the candidate.
+                        if (!(guide_root.x >
+                                  face.reference_bounds_min.x - guide_radius &&
+                              guide_root.x <
+                                  face.reference_bounds_max.x + guide_radius &&
+                              guide_root.y >
+                                  face.reference_bounds_min.y - guide_radius &&
+                              guide_root.y <
+                                  face.reference_bounds_max.y + guide_radius &&
+                              guide_root.z >
+                                  face.reference_bounds_min.z - guide_radius &&
+                              guide_root.z <
+                                  face.reference_bounds_max.z + guide_radius)) {
+                            continue;
+                        }
                         const float weight =
                             guide_weight(guide, position, normal);
                         if (weight > 1.0e-5f) {
@@ -684,7 +705,8 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
             }
             if (guide_support.enabled()) {
                 guide_support.gather(
-                    reference_position, reference_normal, guide_influences);
+                    reference_position, reference_normal, face,
+                    guide_influences);
                 if (guide_influences.empty()) {
                     ++result.guide_rejected_count;
                     continue;
@@ -756,13 +778,26 @@ ClassicRootPlan build_xgen_classic_explicit_root_plan(
         const ClassicReferenceSurfaceSample current =
             surface.reference_surface->evaluate_current(
                 patch_name, sample.face_id, sample.uv.x, sample.uv.y);
+        const auto face = std::find_if(
+            surface.surface_faces.begin(), surface.surface_faces.end(),
+            [&](const ClassicAlembicAssetInput::SurfaceFace &candidate) {
+                return candidate.patch_name == patch_name &&
+                    candidate.face_id == sample.face_id;
+            });
+        if (face == surface.surface_faces.end()) {
+            fail("explicit root face is not present in the imported surface");
+        }
         guide_support.gather(
-            reference.position, reference.normal, influences);
+            reference.position, reference.normal, *face, influences);
         if (influences.empty()) {
             fail("explicit root has no associated guide");
         }
+        // XPD Location xyz records the surface position at the time the point
+        // map was authored. XGen retains face/u/v as the identity and samples
+        // the current patch for evaluation; using the cached xyz here leaves
+        // clump axes in the reference pose when the render patch is deformed.
         result.roots.push_back({
-            sample.position, current.normal, sample.uv, 0u, {},
+            current.position, current.normal, sample.uv, 0u, {},
             sample.face_id});
         result.reference_positions.push_back(reference.position);
         result.surface_tangents.push_back(current.tangent);

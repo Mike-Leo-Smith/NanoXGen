@@ -77,15 +77,24 @@ nanoxgen::ClassicAlembicAssetInput surface() {
                               {0.0f, 0.0f, 1.0f},
                               {1.0f, 0.0f, 1.0f}};
     result.asset.triangles = {{0u, 1u, 3u}, {0u, 3u, 2u}};
+    result.asset.reference_positions = result.asset.positions;
+    result.asset.normals.assign(
+        result.asset.positions.size(), {0.0f, 1.0f, 0.0f});
+    result.asset.reference_normals = result.asset.normals;
     nanoxgen::GuideInput guide{};
     guide.cvs = {{0.5f, 0.0f, 0.5f}, {0.5f, 1.0f, 0.5f}};
     guide.root_uv = {0.5f, 0.5f};
     guide.triangle_index = 0u;
     guide.barycentric = {0.0f, 0.5f};
+    guide.reference_root_position = guide.cvs.front();
+    guide.reference_root_normal = {0.0f, 1.0f, 0.0f};
+    guide.reference_root_tangent = {1.0f, 0.0f, 0.0f};
+    guide.reference_root_binormal = {0.0f, 0.0f, 1.0f};
+    guide.support_radii = {2.0f};
     result.asset.guides.push_back(std::move(guide));
     result.surface_faces.push_back(
         {"testPatch", 0u, 0u, 2u, 1u, 1.0f,
-         1.0f, 1.0f});
+         1.0f, 1.0f, {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 1.0f}});
     return result;
 }
 
@@ -192,6 +201,21 @@ void test_partial_mask_and_limit() {
     throw std::runtime_error("root candidate limit was ignored");
 }
 
+void test_face_umbrella_guide_prefilter() {
+    const TemporaryDescription fixture{1.0f};
+    nanoxgen::ClassicAlembicAssetInput input = surface();
+    // The root/guide distance remains inside the guide radius, but XGen first
+    // discards guides outside the active reference face's expanded umbrella
+    // AABB. This matters on strongly curved subdivision patches.
+    input.surface_faces.front().reference_bounds_min = {-3.0f, -3.0f, -3.0f};
+    input.surface_faces.front().reference_bounds_max = {-2.0f, -2.0f, -2.0f};
+    const nanoxgen::ClassicRootPlan roots =
+        nanoxgen::build_xgen_classic_random_root_plan(
+            description(), input, fixture.path);
+    require(roots.roots.empty() && roots.guide_rejected_count == 64u,
+            "face umbrella guide prefilter was not applied");
+}
+
 void test_maya_2027_sample_pattern() {
     const nanoxgen::Vec2 base = nanoxgen::xgen_random_sample(0u, 0u, 0u);
     require(std::bit_cast<std::uint32_t>(base.x) == 0x3f07d46du &&
@@ -237,6 +261,7 @@ void test_directional_guide_weight() {
 int main() try {
     test_full_mask_and_generation();
     test_partial_mask_and_limit();
+    test_face_umbrella_guide_prefilter();
     test_maya_2027_sample_pattern();
     test_directional_guide_weight();
     std::cout << "Classic root generation tests passed\n";

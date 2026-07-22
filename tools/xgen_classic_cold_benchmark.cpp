@@ -39,6 +39,7 @@ struct Options {
     std::uint32_t dump_roots{};
     std::optional<std::uint32_t> dump_face;
     std::optional<std::filesystem::path> output_nxc;
+    std::optional<std::string> generator_mask;
     std::uint32_t dump_guides{};
     std::optional<std::uint32_t> dump_runtime;
     std::optional<std::uint32_t> effect_count;
@@ -66,7 +67,8 @@ Options parse_options(int argc, char **argv) {
             "ARCHIVE_DIRECTORY DESCRIPTIONS_ROOT [--description NAME] "
             "[--generate] [--base-only] [--cvs N] [--face-counts] [--dump-roots N] "
             "[--dump-face ID] [--dump-guides N] [--probe FACE,U,V] "
-            "[--effect-count N] [--nxc OUTPUT]");
+            "[--dump-runtime N] [--effect-count N] [--generator-mask EXPR] "
+            "[--nxc OUTPUT]");
     }
     Options result{};
     result.collection = argv[1];
@@ -86,6 +88,7 @@ Options parse_options(int argc, char **argv) {
                    argument == "--dump-guides" ||
                    argument == "--dump-runtime" ||
                    argument == "--effect-count" ||
+                   argument == "--generator-mask" ||
                    argument == "--probe" || argument == "--nxc") {
             if (++index >= argc) {
                 throw std::invalid_argument(
@@ -93,6 +96,8 @@ Options parse_options(int argc, char **argv) {
             }
             if (argument == "--description") {
                 result.description = argv[index];
+            } else if (argument == "--generator-mask") {
+                result.generator_mask = argv[index];
             } else if (argument == "--nxc") {
                 result.output_nxc = std::filesystem::path{argv[index]};
             } else if (argument == "--cvs") {
@@ -168,11 +173,34 @@ int main(int argc, char **argv) try {
     std::uint64_t aggregate_checksum{};
     std::uint32_t processed{};
     std::cout << std::setprecision(9);
-    for (const nanoxgen::ClassicDescription &description :
+    for (const nanoxgen::ClassicDescription &source_description :
          collection.descriptions) {
         if (!options.description.empty() &&
-            description.name != options.description) {
+            source_description.name != options.description) {
             continue;
+        }
+        nanoxgen::ClassicDescription description = source_description;
+        if (options.generator_mask) {
+            auto generator = std::find_if(
+                description.objects.begin(), description.objects.end(),
+                [](const nanoxgen::ClassicObject &object) {
+                    return object.type == "RandomGenerator";
+                });
+            if (generator == description.objects.end()) {
+                throw std::runtime_error(
+                    "generator mask override needs a RandomGenerator");
+            }
+            auto mask = std::find_if(
+                generator->attributes.begin(), generator->attributes.end(),
+                [](const nanoxgen::ClassicAttribute &attribute) {
+                    return attribute.name == "mask";
+                });
+            if (mask == generator->attributes.end()) {
+                generator->attributes.push_back(
+                    {"mask", *options.generator_mask});
+            } else {
+                mask->value = *options.generator_mask;
+            }
         }
         ++processed;
         const std::filesystem::path archive =
@@ -277,13 +305,6 @@ int main(int argc, char **argv) try {
             nanoxgen::build_xgen_classic_runtime_input_data(
                 runtime, description_directory,
                 description.patches.front().name, roots);
-        if (options.effect_count) {
-            if (*options.effect_count > runtime.effects.size()) {
-                throw std::runtime_error(
-                    "effect count exceeds the compiled runtime plan");
-            }
-            runtime.effects.resize(*options.effect_count);
-        }
         std::vector<nanoxgen::ClassicClumpRuntimeData> clump_data;
         clump_data.reserve(runtime.clumps.size());
         const std::uint32_t runtime_cvs = options.cvs != 0u
@@ -295,14 +316,23 @@ int main(int argc, char **argv) try {
                     description, imported, description_directory, roots,
                     runtime, module, runtime_cvs));
         }
+        if (options.effect_count) {
+            if (*options.effect_count > runtime.effects.size()) {
+                throw std::runtime_error(
+                    "effect count exceeds the compiled runtime plan");
+            }
+            runtime.effects.resize(*options.effect_count);
+        }
         if (options.dump_runtime) {
             if (*options.dump_runtime >= roots.roots.size()) {
                 throw std::runtime_error("runtime strand is out of range");
             }
             const std::uint32_t strand = *options.dump_runtime;
             const nanoxgen::RootSample &root = roots.roots[strand];
+            const nanoxgen::Vec3 reference_position =
+                roots.reference_positions[strand];
             const nanoxgen::Vec3 noise_domain =
-                (root.position * 0.1f +
+                (reference_position +
                  nanoxgen::Vec3{0.419276f, 0.184247f, 0.805721f}) * 100.0f;
             nanoxgen::ClassicFloatRuntimeContext context{};
             context.id = roots.primitive_ids[strand];
@@ -477,7 +507,7 @@ int main(int argc, char **argv) try {
                 nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
                     curves, runtime, 1.0f, roots.surface_tangents,
                     roots.random_prefixes, roots.primitive_ids, clump_data,
-                    runtime_inputs.values);
+                    runtime_inputs.values, roots.reference_positions);
             }
             nanoxgen::add_xgen_classic_renderer_endpoints(curves);
             if (options.output_nxc) {
@@ -543,7 +573,14 @@ int main(int argc, char **argv) try {
                 if (metadata != imported.surface_faces.end()) {
                     std::cout << " area " << metadata->surface_area
                               << " ulen " << metadata->center_u_length
-                              << " vlen " << metadata->center_v_length;
+                              << " vlen " << metadata->center_v_length
+                              << " reference_bounds "
+                              << metadata->reference_bounds_min.x << ' '
+                              << metadata->reference_bounds_min.y << ' '
+                              << metadata->reference_bounds_min.z << ' '
+                              << metadata->reference_bounds_max.x << ' '
+                              << metadata->reference_bounds_max.y << ' '
+                              << metadata->reference_bounds_max.z;
                 }
                 std::cout << '\n';
             }
@@ -562,6 +599,7 @@ int main(int argc, char **argv) try {
                       << ' ' << root.uv.x << ' ' << root.uv.y
                       << " bits " << std::bit_cast<std::uint32_t>(root.uv.x)
                       << ' ' << std::bit_cast<std::uint32_t>(root.uv.y)
+                      << " primitive_id " << roots.primitive_ids[index]
                       << '\n';
             ++dumped_roots;
         }

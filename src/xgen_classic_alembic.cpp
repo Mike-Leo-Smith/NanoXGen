@@ -761,6 +761,23 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
         result.source_face_count += mesh.face_counts.size();
         const std::vector<std::size_t> offsets = face_offsets(mesh);
         const bool subdivide = patch.type == "Subd";
+        std::vector<std::vector<std::uint32_t>> vertex_faces(
+            mesh.positions.size());
+        for (std::uint32_t face_id = 0u;
+             face_id < mesh.face_counts.size(); ++face_id) {
+            const std::size_t offset = offsets[face_id];
+            const std::size_t count = static_cast<std::size_t>(
+                mesh.face_counts[face_id]);
+            for (std::size_t corner = 0u; corner < count; ++corner) {
+                const std::int32_t raw = mesh.face_indices[offset + corner];
+                if (raw < 0 ||
+                    static_cast<std::size_t>(raw) >= mesh.positions.size()) {
+                    fail("mesh contains an invalid face vertex index");
+                }
+                vertex_faces[static_cast<std::uint32_t>(raw)].push_back(
+                    face_id);
+            }
+        }
         const LimitVertexApproximation limit_vertices = subdivide
             ? xgen_limit_vertices(mesh)
             : LimitVertexApproximation{};
@@ -942,11 +959,69 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
                 center_u_length <= 0.0 || center_v_length <= 0.0) {
                 fail("selected face has invalid surface-compensation lengths");
             }
+            Vec3 reference_bounds_min{
+                std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity(),
+                std::numeric_limits<float>::infinity()};
+            Vec3 reference_bounds_max{
+                -std::numeric_limits<float>::infinity(),
+                -std::numeric_limits<float>::infinity(),
+                -std::numeric_limits<float>::infinity()};
+            const auto include_reference_vertex = [&](std::uint32_t vertex) {
+                const Vec3 value = reference_position(mesh, vertex);
+                reference_bounds_min.x = std::min(reference_bounds_min.x, value.x);
+                reference_bounds_min.y = std::min(reference_bounds_min.y, value.y);
+                reference_bounds_min.z = std::min(reference_bounds_min.z, value.z);
+                reference_bounds_max.x = std::max(reference_bounds_max.x, value.x);
+                reference_bounds_max.y = std::max(reference_bounds_max.y, value.y);
+                reference_bounds_max.z = std::max(reference_bounds_max.z, value.z);
+            };
+            if (subdivide) {
+                // SESubdImpl::faceBoundingBox starts with the active cage face,
+                // then visits getFaceUmbrella for every corner and includes all
+                // vertices of every incident face.
+                for (std::size_t corner = 0u; corner < count; ++corner) {
+                    const std::uint32_t vertex = static_cast<std::uint32_t>(
+                        mesh.face_indices[offset + corner]);
+                    for (const std::uint32_t incident_face :
+                         vertex_faces[vertex]) {
+                        const std::size_t incident_offset =
+                            offsets[incident_face];
+                        const std::size_t incident_count =
+                            static_cast<std::size_t>(
+                                mesh.face_counts[incident_face]);
+                        for (std::size_t incident_corner = 0u;
+                             incident_corner < incident_count;
+                             ++incident_corner) {
+                            include_reference_vertex(
+                                static_cast<std::uint32_t>(mesh.face_indices[
+                                    incident_offset + incident_corner]));
+                        }
+                    }
+                }
+            } else {
+                for (std::size_t corner = 0u; corner < count; ++corner) {
+                    include_reference_vertex(static_cast<std::uint32_t>(
+                        mesh.face_indices[offset + corner]));
+                }
+            }
+            if (!std::isfinite(reference_bounds_min.x) ||
+                !std::isfinite(reference_bounds_min.y) ||
+                !std::isfinite(reference_bounds_min.z) ||
+                !std::isfinite(reference_bounds_max.x) ||
+                !std::isfinite(reference_bounds_max.y) ||
+                !std::isfinite(reference_bounds_max.z) ||
+                reference_bounds_min.x > reference_bounds_max.x ||
+                reference_bounds_min.y > reference_bounds_max.y ||
+                reference_bounds_min.z > reference_bounds_max.z) {
+                fail("selected face has invalid reference bounds");
+            }
             result.surface_faces.push_back({
                 patch.name, face_id, first_triangle,
                 static_cast<std::uint32_t>(triangle_count),
                 subdivide ? limits.subd_face_resolution : 0u, surface_area,
-                center_u_length, center_v_length});
+                center_u_length, center_v_length, reference_bounds_min,
+                reference_bounds_max});
             selected.emplace(face_id, FaceRange{
                 offset, count, first_triangle, first_vertex});
             ++result.selected_face_count;

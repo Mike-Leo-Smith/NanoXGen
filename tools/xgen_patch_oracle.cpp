@@ -641,9 +641,19 @@ int main(int argc, char **argv) try {
         const double length_v = matched_patch->lengthV(0.5, face);
         total_area += area;
         if (faces) {
+            const SgBox3d reference_bounds =
+                matched_patch->boundingBox(face, true);
+            SgVec3d bounds_min;
+            SgVec3d bounds_max;
+            reference_bounds.getMin(bounds_min);
+            reference_bounds.getMax(bounds_max);
             std::cout << "face " << face << " area " << area
                       << " length_u " << length_u
-                      << " length_v " << length_v << '\n';
+                      << " length_v " << length_v
+                      << " reference_bounds " << bounds_min[0] << ' '
+                      << bounds_min[1] << ' ' << bounds_min[2] << ' '
+                      << bounds_max[0] << ' ' << bounds_max[1] << ' '
+                      << bounds_max[2] << '\n';
         }
     }
     std::cout << "{\"palette\":\"" << matched_palette->name()

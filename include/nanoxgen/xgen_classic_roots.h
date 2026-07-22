@@ -86,8 +86,9 @@ struct ClassicExplicitRoot {
     const ClassicRootGenerationLimits &limits = {});
 
 // Associate caller-provided patch locations with the description's authored
-// guides. This is used by XPD clump points, whose world-space roots and
-// face-local primitive IDs are already fixed by the authoring cache.
+// guides. XPD clump points retain face/u/v identity and face-local primitive
+// IDs; their cached authoring-position xyz is validated, while the evaluated
+// root is sampled from the current render patch.
 [[nodiscard]] ClassicRootPlan build_xgen_classic_explicit_root_plan(
     const ClassicDescription &description,
     const ClassicAlembicAssetInput &surface,

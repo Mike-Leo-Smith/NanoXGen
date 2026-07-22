@@ -55,6 +55,11 @@ struct ClassicAlembicAssetInput {
         double surface_area{};
         double center_u_length{};
         double center_v_length{};
+        // Reference control-cage bounds used by XGen before evaluating guide
+        // weights. For Subd faces this includes every face incident to any
+        // corner of the active face (the SESubd face umbrella).
+        Vec3 reference_bounds_min{};
+        Vec3 reference_bounds_max{};
     };
 
     AssetBuildInput asset;
