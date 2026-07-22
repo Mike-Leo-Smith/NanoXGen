@@ -659,6 +659,91 @@ void test_self_contained_xgen_round_trip() {
                 packed.points.size() == source_curves.positions.size() &&
                 packed.points.front().radius == 0.5f * source_curves.widths.front(),
             "minimal packed XGen path must preserve topology and convert width to radius");
+    const auto require_packed_equal = [&](const XGenPackedCurves &actual,
+                                          const XGenPackedCurves &expected,
+                                          const char *message) {
+        require(actual.point_counts == expected.point_counts &&
+                    actual.points.size() == expected.points.size() &&
+                    std::memcmp(actual.points.data(), expected.points.data(),
+                                expected.points.size() * sizeof(PackedCurvePoint)) == 0,
+                message);
+    };
+    XGenPackedCurves full_source{};
+    full_source.point_counts = source_curves.point_counts;
+    for (std::size_t point = 0u; point < source_curves.positions.size(); ++point) {
+        full_source.points.push_back({
+            source_curves.positions[point].x, source_curves.positions[point].y,
+            source_curves.positions[point].z, 0.5f * source_curves.widths[point]});
+    }
+    XGenPackedCurves full_canonical{};
+    full_canonical.point_counts = curves.point_counts;
+    for (std::size_t point = 0u; point < curves.positions.size(); ++point) {
+        full_canonical.points.push_back({
+            curves.positions[point].x, curves.positions[point].y,
+            curves.positions[point].z, 0.5f * curves.widths[point]});
+    }
+    require_packed_equal(
+        packed, full_source,
+        "document packed source path must be bit-exact with full materialization");
+    require_packed_equal(
+        materialize_xgen_packed_curves(parsed, XGenCurveOrder::Canonical),
+        full_canonical,
+        "document packed canonical path must be bit-exact with full materialization");
+    require_packed_equal(
+        parse_xgen_packed_curves(encoded, XGenCurveOrder::Source), full_source,
+        "resident fused source path must be bit-exact with full materialization");
+    require_packed_equal(
+        parse_xgen_packed_curves(encoded, XGenCurveOrder::Canonical), full_canonical,
+        "resident fused canonical path must be bit-exact with full materialization");
+
+    XGenDocument invalid_channels = parsed;
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    std::memcpy(invalid_channels.groups[0].arrays[2].bytes.data(), &nan, sizeof(nan));
+    const std::vector<std::byte> invalid_patch_uv =
+        serialize_xgen_document(invalid_channels);
+    require_packed_equal(
+        parse_xgen_packed_curves(invalid_patch_uv, XGenCurveOrder::Source),
+        full_source,
+        "fused source path must not read a non-renderer PatchUV channel");
+    bool rejected_invalid_channel = false;
+    try {
+        (void)parse_xgen_packed_curves(
+            invalid_patch_uv, XGenCurveOrder::Canonical);
+    } catch (const std::runtime_error &) {
+        rejected_invalid_channel = true;
+    }
+    require(rejected_invalid_channel,
+            "fused canonical path must validate identity UVs");
+
+    invalid_channels = parsed;
+    const float negative_width = -0.01f;
+    std::memcpy(
+        invalid_channels.groups[1].arrays[2].bytes.data(),
+        &negative_width, sizeof(negative_width));
+    rejected_invalid_channel = false;
+    try {
+        (void)parse_xgen_packed_curves(
+            serialize_xgen_document(invalid_channels), XGenCurveOrder::Source);
+    } catch (const std::runtime_error &) {
+        rejected_invalid_channel = true;
+    }
+    require(rejected_invalid_channel,
+            "fused source path must reject negative renderer widths");
+
+    invalid_channels = parsed;
+    const float infinity = std::numeric_limits<float>::infinity();
+    std::memcpy(
+        invalid_channels.groups[0].arrays[1].bytes.data(), &infinity,
+        sizeof(infinity));
+    rejected_invalid_channel = false;
+    try {
+        (void)parse_xgen_packed_curves(
+            serialize_xgen_document(invalid_channels), XGenCurveOrder::Source);
+    } catch (const std::runtime_error &) {
+        rejected_invalid_channel = true;
+    }
+    require(rejected_invalid_channel,
+            "fused source path must reject non-finite renderer positions");
 
     XGenDocument identity_document = parsed;
     process_xgen_document(identity_document, {});
@@ -725,6 +810,14 @@ void test_self_contained_xgen_round_trip() {
             rejected = true;
         }
         require(rejected, "XGen parser must reject every truncated prefix");
+        rejected = false;
+        try {
+            (void)parse_xgen_packed_curves(
+                std::span<const std::byte>{encoded}.first(length));
+        } catch (const std::runtime_error &) {
+            rejected = true;
+        }
+        require(rejected, "fused XGen parser must reject every truncated prefix");
     }
 
     corrupt = encoded;
@@ -736,6 +829,40 @@ void test_self_contained_xgen_round_trip() {
         rejected = true;
     }
     require(rejected, "XGen parser must reject a corrupt compressed group");
+    rejected = false;
+    try {
+        (void)parse_xgen_packed_curves(corrupt);
+    } catch (const std::runtime_error &) {
+        rejected = true;
+    }
+    require(rejected, "fused XGen parser must reject a corrupt compressed group");
+
+    XGenEvaluatedCurves duplicate_curves = source_curves;
+    duplicate_curves.face_ids[1] = duplicate_curves.face_ids[0];
+    duplicate_curves.face_uvs[1] = duplicate_curves.face_uvs[0];
+    duplicate_curves.patch_uvs[1] = duplicate_curves.patch_uvs[0];
+    const XGenDocument duplicate_document = build_xgen_document(duplicate_curves);
+    const std::vector<std::byte> duplicate_encoded =
+        serialize_xgen_document(duplicate_document);
+    require(parse_xgen_packed_curves(
+                duplicate_encoded, XGenCurveOrder::Source).point_counts.size() == 2u,
+            "source-order fused parsing must not require canonical identities");
+    rejected = false;
+    try {
+        (void)parse_xgen_packed_curves(
+            duplicate_encoded, XGenCurveOrder::Canonical);
+    } catch (const std::runtime_error &) {
+        rejected = true;
+    }
+    require(rejected, "fused canonical parsing must reject duplicate identities");
+    rejected = false;
+    try {
+        (void)materialize_xgen_curves(
+            duplicate_document, XGenCurveOrder::Canonical);
+    } catch (const std::runtime_error &) {
+        rejected = true;
+    }
+    require(rejected, "full canonical materialization must reject duplicate identities");
 }
 
 void test_classic_typed_batch_validation() {

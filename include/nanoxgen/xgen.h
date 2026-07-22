@@ -64,7 +64,8 @@ enum class XGenCurveOrder {
 };
 
 // Minimal renderer payload. Widths are converted from XGen diameters to
-// radii while the data is packed.
+// radii while the data is packed. The resident-byte parse API uses a fused
+// selective reader and does not construct a lossless XGenDocument.
 struct XGenPackedCurves {
     std::vector<std::uint32_t> point_counts;
     std::vector<PackedCurvePoint> points;

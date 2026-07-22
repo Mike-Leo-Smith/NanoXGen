@@ -33,9 +33,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using nanoxgen::CurveCache;
 using nanoxgen::CurveCacheHeader;
-using nanoxgen::PackedCurvePoint;
 using nanoxgen::XGenCurveOrder;
-using nanoxgen::XGenEvaluatedCurves;
 using nanoxgen::XGenPackedCurves;
 
 double elapsed_ms(Clock::time_point begin, Clock::time_point end) {
@@ -64,21 +62,6 @@ protected:
 private:
     std::vector<char> _bytes;
 };
-
-XGenPackedCurves pack_canonical(const XGenEvaluatedCurves &curves) {
-    nanoxgen::maya_xgen_cache::validate_unique_canonical_identities(curves);
-    XGenPackedCurves packed{};
-    packed.point_counts = curves.point_counts;
-    packed.points.resize(curves.positions.size());
-    for (std::size_t point = 0u; point < curves.positions.size(); ++point) {
-        packed.points[point] = {
-            curves.positions[point].x,
-            curves.positions[point].y,
-            curves.positions[point].z,
-            0.5f * curves.widths[point]};
-    }
-    return packed;
-}
 
 class XGenCacheCommand final : public MPxCommand {
 public:
@@ -141,15 +124,9 @@ public:
                 std::span<const char>{output_buffer.bytes()});
 
             begin = Clock::now();
-            XGenPackedCurves packed{};
-            if (mode == "source-order") {
-                packed = nanoxgen::parse_xgen_packed_curves(
-                    blob, XGenCurveOrder::Source);
-            } else {
-                const XGenEvaluatedCurves curves = nanoxgen::materialize_xgen_curves(
-                    nanoxgen::parse_xgen_document(blob), XGenCurveOrder::Canonical);
-                packed = pack_canonical(curves);
-            }
+            const XGenPackedCurves packed = nanoxgen::parse_xgen_packed_curves(
+                blob, mode == "source-order"
+                    ? XGenCurveOrder::Source : XGenCurveOrder::Canonical);
             const CurveCache cache = nanoxgen::build_curve_cache(
                 {packed.point_counts, packed.points, {}, {}, {}, {}, {}, {}});
             const double decode_cache_ms = elapsed_ms(begin, Clock::now());

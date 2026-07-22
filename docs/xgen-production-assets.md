@@ -75,6 +75,13 @@ canonical materialization, and end-to-end hot-file ingestion. Do not compare a
 full-channel result with an Autodesk benchmark that only copies point counts and
 `float4(position, radius)`.
 
+The resident renderer-minimal stages are fused BLOB readers, not a full parse
+followed by channel deletion. Source mode never selects or constructs face,
+patch-UV, or texcoord data. Canonical mode selects only the three identity
+channels in addition to topology, position, and width; duplicate exact
+identities are an error. Both paths directly fill the final packed arrays and
+are differentially tested bit-for-bit against the full materializer.
+
 ## Production architecture
 
 1. Scan the package and resolve its dependency closure.

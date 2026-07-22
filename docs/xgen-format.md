@@ -52,6 +52,20 @@ materializer canonicalizes curves by the bit patterns of
 `faceId + faceUV + patchUV`, matching the motion/cache identity contract. A
 source-order renderer-minimal path skips that sort for one-shot static work.
 
+`parse_xgen_packed_curves` is a fused resident-byte path. It parses metadata and
+all group framing, validates and decompresses independent groups with at most
+eight workers, but copies only `PrimitiveInfos`, `Positions`, and `WIDTH_CV` in
+source mode. It writes final point counts and `float4(position, radius)` storage
+without constructing an `XGenDocument`, full-channel arrays, or a vector per
+curve. Version-1 source mode uses the Maya 2027/NanoXGen writer's verified
+three-word primitive-info layout `(offset, count, flags)`.
+
+Canonical mode additionally selects `FaceId`, `FaceUV`, and `PatchUV`, sorts
+compact curve ranges by their exact integer/float-bit identity, rejects
+duplicate identities, and writes the reordered packed buffer. The full
+`XGenDocument` parser remains unchanged and preserves every known or unknown
+array for lossless round trips and editing.
+
 The generic `XGenDocument` retains the original metadata string, unknown type
 tags, unknown arrays, group flags, and compression settings. A parse/serialize
 round-trip therefore does not discard data it cannot interpret.
@@ -71,6 +85,12 @@ nanoxgen_xgen_cache input.xgen output.nxc
 nanoxgen_xgen_cache --renderer-minimal --source-order input.xgen output.nxc
 nanoxgen_xgen_read_benchmark input.xgen
 ```
+
+The read benchmark reports resident fused source/canonical packing separately
+from hot-file calls that include file I/O. Full canonical parsing is reported as
+a distinct full-channel case. Its JSON records warm-up/iteration counts, median,
+p90, checksum, channel scope, and whether Autodesk serialization or file I/O is
+included.
 
 The default CMake targets above link only NanoXGen, Threads, and zlib. The
 optional Autodesk calibration targets generate fixtures and compare canonical

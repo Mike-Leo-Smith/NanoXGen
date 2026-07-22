@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <set>
@@ -573,6 +574,467 @@ auto curve_key(const MaterializedCurve &curve) noexcept {
                       float_bits(curve.patch_uv.y)};
 }
 
+struct PackedItemRefs {
+    std::uint64_t primitive_infos{};
+    std::uint64_t positions{};
+    std::uint64_t widths{};
+    std::uint64_t patch_uvs{};
+    std::uint64_t face_uvs{};
+    std::uint64_t face_ids{};
+};
+
+std::vector<PackedItemRefs> packed_item_refs(
+    const MetadataHeader &metadata, XGenCurveOrder order) {
+    const std::vector<JsonValue> &items = as_array(
+        member(metadata.root, "Items"), "Items");
+    if (items.empty()) { invalid("metadata contains no Items"); }
+    std::vector<PackedItemRefs> result;
+    result.reserve(items.size());
+    for (const JsonValue &item : items) {
+        PackedItemRefs refs{};
+        refs.primitive_infos = as_u64(
+            member(item, "PrimitiveInfos"), "PrimitiveInfos");
+        refs.positions = as_u64(member(item, "Positions"), "Positions");
+        refs.widths = as_u64(member(item, "WIDTH_CV"), "WIDTH_CV");
+        if (order == XGenCurveOrder::Canonical) {
+            refs.patch_uvs = as_u64(member(item, "PatchUVs"), "PatchUVs");
+            refs.face_uvs = as_u64(member(item, "FaceUV"), "FaceUV");
+            refs.face_ids = as_u64(member(item, "FaceId"), "FaceId");
+        }
+        result.push_back(refs);
+    }
+    return result;
+}
+
+struct PackedArrayView {
+    std::uint64_t type_tag{};
+    std::span<const std::byte> bytes;
+};
+
+template<typename T>
+std::size_t packed_array_size(
+    const PackedArrayView &array, std::uint64_t expected_tag,
+    std::string_view name) {
+    if (array.type_tag != expected_tag) {
+        invalid("array '" + std::string{name} + "' has an unexpected type tag");
+    }
+    if (array.bytes.size() % sizeof(T) != 0u) {
+        invalid("array '" + std::string{name} + "' has a partial element");
+    }
+    return array.bytes.size() / sizeof(T);
+}
+
+template<typename T>
+T packed_array_value(
+    const PackedArrayView &array, std::size_t index,
+    std::string_view name) {
+    if (index >= array.bytes.size() / sizeof(T)) {
+        invalid("array '" + std::string{name} + "' index is out of bounds");
+    }
+    T result{};
+    std::memcpy(&result, array.bytes.data() + index * sizeof(T), sizeof(T));
+    return result;
+}
+
+struct PackedItemViews {
+    PackedArrayView primitive_infos;
+    PackedArrayView positions;
+    PackedArrayView widths;
+    PackedArrayView patch_uvs;
+    PackedArrayView face_uvs;
+    PackedArrayView face_ids;
+    std::size_t primitive_count{};
+    std::size_t primitive_stride{};
+    std::size_t position_count{};
+};
+
+using PackedCurveKey = std::tuple<
+    std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t>;
+
+struct PackedCurveRange {
+    PackedCurveKey key;
+    std::size_t item{};
+    std::uint32_t first{};
+    std::uint32_t count{};
+};
+
+template<typename Lookup>
+XGenPackedCurves pack_referenced_arrays(
+    const std::vector<PackedItemRefs> &refs, XGenCurveOrder order,
+    Lookup &&lookup) {
+    constexpr std::size_t source_primitive_stride = 3u;
+    std::vector<PackedItemViews> items;
+    items.reserve(refs.size());
+    std::uint64_t curve_total = 0u;
+    for (const PackedItemRefs &item_refs : refs) {
+        PackedItemViews item{};
+        item.primitive_infos = lookup(item_refs.primitive_infos);
+        item.positions = lookup(item_refs.positions);
+        item.widths = lookup(item_refs.widths);
+        const std::size_t info_count = packed_array_size<std::uint32_t>(
+            item.primitive_infos, kXGenUInt32ArrayTag, "PrimitiveInfos");
+        item.position_count = packed_array_size<Vec3>(
+            item.positions, kXGenVec3ArrayTag, "Positions");
+        const std::size_t width_count = packed_array_size<float>(
+            item.widths, kXGenFloatArrayTag, "WIDTH_CV");
+        if (item.position_count != width_count) {
+            invalid("Item Positions and WIDTH_CV sizes do not agree");
+        }
+        if (order == XGenCurveOrder::Source) {
+            // Version-1 XgSplineData stores PrimitiveInfos as
+            // (offset, count, flags). This is the public iterator's observed
+            // stride in Maya 2027 and the layout emitted by NanoXGen's writer.
+            if (info_count == 0u || info_count % source_primitive_stride != 0u) {
+                invalid("source-order PrimitiveInfos does not use the v1 three-word stride");
+            }
+            item.primitive_stride = source_primitive_stride;
+            item.primitive_count = info_count / source_primitive_stride;
+        } else {
+            item.patch_uvs = lookup(item_refs.patch_uvs);
+            item.face_uvs = lookup(item_refs.face_uvs);
+            item.face_ids = lookup(item_refs.face_ids);
+            const std::size_t patch_uv_count = packed_array_size<Vec2>(
+                item.patch_uvs, kXGenVec2ArrayTag, "PatchUVs");
+            const std::size_t face_uv_count = packed_array_size<Vec2>(
+                item.face_uvs, kXGenVec2ArrayTag, "FaceUV");
+            item.primitive_count = packed_array_size<std::uint32_t>(
+                item.face_ids, kXGenUInt32ArrayTag, "FaceId");
+            if (item.primitive_count == 0u ||
+                face_uv_count != item.primitive_count ||
+                info_count % item.primitive_count != 0u ||
+                patch_uv_count != item.position_count) {
+                invalid("Item canonical metadata sizes do not agree");
+            }
+            item.primitive_stride = info_count / item.primitive_count;
+            if (item.primitive_stride < 2u) {
+                invalid("Item primitive info stride is too small");
+            }
+        }
+        curve_total = checked_add(curve_total, item.primitive_count, "curve");
+        items.push_back(item);
+    }
+    if (curve_total == 0u || curve_total > std::numeric_limits<std::size_t>::max()) {
+        invalid("Items contain no curves or exceed size_t");
+    }
+
+    std::vector<PackedCurveRange> canonical_ranges;
+    if (order == XGenCurveOrder::Canonical) {
+        canonical_ranges.reserve(static_cast<std::size_t>(curve_total));
+    }
+    std::uint64_t point_total = 0u;
+    for (std::size_t item_index = 0u; item_index < items.size(); ++item_index) {
+        const PackedItemViews &item = items[item_index];
+        for (std::size_t primitive = 0u;
+             primitive < item.primitive_count; ++primitive) {
+            const std::size_t info = primitive * item.primitive_stride;
+            const std::uint32_t first = packed_array_value<std::uint32_t>(
+                item.primitive_infos, info, "PrimitiveInfos");
+            const std::uint32_t count = packed_array_value<std::uint32_t>(
+                item.primitive_infos, info + 1u, "PrimitiveInfos");
+            if (count < 2u || first > item.position_count ||
+                count > item.position_count - first) {
+                invalid("Item primitive range is out of bounds");
+            }
+            point_total = checked_add(point_total, count, "curve point");
+            if (order == XGenCurveOrder::Canonical) {
+                const Vec2 face_uv = packed_array_value<Vec2>(
+                    item.face_uvs, primitive, "FaceUV");
+                const Vec2 patch_uv = packed_array_value<Vec2>(
+                    item.patch_uvs, first, "PatchUVs");
+                if (!finite(face_uv) || !finite(patch_uv)) {
+                    invalid("Item contains a non-finite curve UV");
+                }
+                canonical_ranges.push_back({
+                    {packed_array_value<std::uint32_t>(
+                         item.face_ids, primitive, "FaceId"),
+                     float_bits(face_uv.x), float_bits(face_uv.y),
+                     float_bits(patch_uv.x), float_bits(patch_uv.y)},
+                    item_index, first, count});
+            }
+        }
+    }
+    if (point_total > std::numeric_limits<std::size_t>::max()) {
+        invalid("packed point count exceeds size_t");
+    }
+    if (order == XGenCurveOrder::Canonical) {
+        std::stable_sort(
+            canonical_ranges.begin(), canonical_ranges.end(),
+            [](const PackedCurveRange &a, const PackedCurveRange &b) {
+                return a.key < b.key;
+            });
+        for (std::size_t curve = 1u; curve < canonical_ranges.size(); ++curve) {
+            if (canonical_ranges[curve - 1u].key == canonical_ranges[curve].key) {
+                invalid("duplicate canonical curve identity");
+            }
+        }
+    }
+
+    XGenPackedCurves output{};
+    output.point_counts.resize(static_cast<std::size_t>(curve_total));
+    output.points.resize(static_cast<std::size_t>(point_total));
+    std::size_t output_curve = 0u;
+    std::size_t output_point = 0u;
+    const auto emit = [&](const PackedItemViews &item, std::uint32_t first,
+                          std::uint32_t count, bool validate_patch_uvs) {
+        output.point_counts[output_curve++] = count;
+        for (std::uint32_t cv = 0u; cv < count; ++cv) {
+            const std::size_t index = static_cast<std::size_t>(first) + cv;
+            const Vec3 position = packed_array_value<Vec3>(
+                item.positions, index, "Positions");
+            const float width = packed_array_value<float>(
+                item.widths, index, "WIDTH_CV");
+            if (!finite(position) || !std::isfinite(width) || width < 0.0f) {
+                invalid("Item contains an invalid renderer value");
+            }
+            if (validate_patch_uvs && !finite(packed_array_value<Vec2>(
+                    item.patch_uvs, index, "PatchUVs"))) {
+                invalid("Item contains a non-finite patch UV");
+            }
+            output.points[output_point++] = {
+                position.x, position.y, position.z, 0.5f * width};
+        }
+    };
+    if (order == XGenCurveOrder::Source) {
+        for (const PackedItemViews &item : items) {
+            for (std::size_t primitive = 0u;
+                 primitive < item.primitive_count; ++primitive) {
+                const std::size_t info = primitive * item.primitive_stride;
+                emit(item,
+                     packed_array_value<std::uint32_t>(
+                         item.primitive_infos, info, "PrimitiveInfos"),
+                     packed_array_value<std::uint32_t>(
+                         item.primitive_infos, info + 1u, "PrimitiveInfos"),
+                     false);
+            }
+        }
+    } else {
+        for (const PackedCurveRange &range : canonical_ranges) {
+            emit(items[range.item], range.first, range.count, true);
+        }
+    }
+    if (output_curve != output.point_counts.size() ||
+        output_point != output.points.size()) {
+        invalid("packed output counts do not match validated topology");
+    }
+    return output;
+}
+
+XGenPackedCurves pack_document_arrays(
+    const XGenDocument &document, XGenCurveOrder order) {
+    const MetadataHeader metadata = parse_metadata(document.metadata_json);
+    const std::vector<PackedItemRefs> refs = packed_item_refs(metadata, order);
+    return pack_referenced_arrays(refs, order, [&](std::uint64_t id) {
+        const XGenArray &array = array_by_id(document, id);
+        return PackedArrayView{array.type_tag, array.bytes};
+    });
+}
+
+struct SelectedPackedArray {
+    std::uint64_t id{};
+    std::uint64_t expected_tag{};
+    std::string name;
+    std::vector<std::byte> bytes;
+    bool loaded{};
+};
+
+XGenPackedCurves parse_fused_packed_curves(
+    std::span<const std::byte> bytes, XGenCurveOrder order) {
+    if (bytes.size() < kFileHeaderBytes) { invalid("file header is truncated"); }
+    if (read_u64(bytes, 0u) != kXGenFileMagic) { invalid("file magic does not match"); }
+    const std::uint64_t metadata_size = read_u64(bytes, 8u);
+    if (metadata_size > bytes.size() - kFileHeaderBytes) {
+        invalid("metadata length exceeds the file");
+    }
+    const std::size_t metadata_bytes = static_cast<std::size_t>(metadata_size);
+    const std::string_view metadata_json{
+        reinterpret_cast<const char *>(bytes.data() + kFileHeaderBytes),
+        metadata_bytes};
+    const MetadataHeader metadata = parse_metadata(metadata_json);
+    const std::vector<PackedItemRefs> refs = packed_item_refs(metadata, order);
+
+    std::vector<SelectedPackedArray> selected;
+    std::map<std::uint64_t, std::size_t> selected_slots;
+    const auto select = [&](std::uint64_t id, std::uint64_t tag,
+                            const char *name) {
+        const auto existing = selected_slots.find(id);
+        if (existing != selected_slots.end()) {
+            if (selected[existing->second].expected_tag != tag) {
+                invalid("one array is referenced with conflicting renderer types");
+            }
+            return;
+        }
+        selected_slots.emplace(id, selected.size());
+        selected.push_back({id, tag, name, {}, false});
+    };
+    for (const PackedItemRefs &item : refs) {
+        select(item.primitive_infos, kXGenUInt32ArrayTag, "PrimitiveInfos");
+        select(item.positions, kXGenVec3ArrayTag, "Positions");
+        select(item.widths, kXGenFloatArrayTag, "WIDTH_CV");
+        if (order == XGenCurveOrder::Canonical) {
+            select(item.patch_uvs, kXGenVec2ArrayTag, "PatchUVs");
+            select(item.face_uvs, kXGenVec2ArrayTag, "FaceUV");
+            select(item.face_ids, kXGenUInt32ArrayTag, "FaceId");
+        }
+    }
+
+    struct PackedStoredGroup {
+        std::uint32_t index{};
+        std::uint64_t array_count{};
+        std::uint64_t raw_data_size{};
+        std::size_t payload_offset{};
+        std::size_t payload_size{};
+    };
+    std::vector<PackedStoredGroup> stored_groups;
+    stored_groups.reserve(metadata.group_count);
+    std::size_t offset = kFileHeaderBytes + metadata_bytes;
+    if (metadata.group_count > (bytes.size() - offset) / kGroupHeaderBytes) {
+        invalid("group count exceeds the remaining file");
+    }
+    for (std::uint32_t ordinal = 0u; ordinal < metadata.group_count; ++ordinal) {
+        if (offset > bytes.size() || bytes.size() - offset < kGroupHeaderBytes) {
+            invalid("group header is truncated");
+        }
+        if (read_u64(bytes, offset) != kXGenGroupMagic) {
+            invalid("group magic does not match");
+        }
+        const std::uint64_t stored_size = read_u64(bytes, offset + 8u);
+        const std::uint64_t group_index_u64 = read_u64(bytes, offset + 16u);
+        const std::uint64_t array_count = read_u64(bytes, offset + 24u);
+        const std::uint64_t raw_data_size = read_u64(bytes, offset + 32u);
+        if (stored_size < 32u) { invalid("group stored size is out of bounds"); }
+        if (group_index_u64 != ordinal || group_index_u64 >= metadata.group_count) {
+            invalid("groups are not stored in index order");
+        }
+        if (array_count > (std::numeric_limits<std::uint64_t>::max() - raw_data_size) /
+                              kArrayHeaderBytes) {
+            invalid("group expanded size overflows uint64");
+        }
+        const std::uint64_t payload_size_u64 = stored_size - 32u;
+        if (payload_size_u64 > bytes.size() - offset - kGroupHeaderBytes) {
+            invalid("group stored size is out of bounds");
+        }
+        stored_groups.push_back({
+            ordinal, array_count, raw_data_size, offset + kGroupHeaderBytes,
+            static_cast<std::size_t>(payload_size_u64)});
+        offset += kGroupHeaderBytes + static_cast<std::size_t>(payload_size_u64);
+    }
+    if (offset != bytes.size()) { invalid("file has trailing bytes after its groups"); }
+
+    std::vector<std::vector<std::pair<std::uint32_t, std::size_t>>> group_selections(
+        metadata.group_count);
+    for (std::size_t slot = 0u; slot < selected.size(); ++slot) {
+        const std::uint32_t group = static_cast<std::uint32_t>(selected[slot].id >> 32u);
+        const std::uint32_t array = static_cast<std::uint32_t>(selected[slot].id);
+        if (group >= stored_groups.size() ||
+            array >= stored_groups[group].array_count) {
+            invalid("metadata renderer array reference is out of bounds");
+        }
+        group_selections[group].emplace_back(array, slot);
+    }
+    for (auto &selection : group_selections) {
+        std::sort(selection.begin(), selection.end());
+    }
+
+    const auto decode_group = [&](const PackedStoredGroup &stored_group) {
+        const std::span<const std::byte> stored = bytes.subspan(
+            stored_group.payload_offset, stored_group.payload_size);
+        const std::uint64_t expanded_size = checked_add(
+            stored_group.raw_data_size,
+            stored_group.array_count * kArrayHeaderBytes,
+            "group expanded");
+        std::vector<std::byte> inflated;
+        std::span<const std::byte> raw;
+        if (metadata.group_deflate) {
+            inflated = inflate_group(stored, expanded_size);
+            raw = inflated;
+        } else {
+            if (stored.size() != expanded_size) {
+                invalid("uncompressed group size does not match its header");
+            }
+            raw = stored;
+        }
+        const auto &selection = group_selections[stored_group.index];
+        std::size_t selected_index = 0u;
+        std::size_t array_offset = 0u;
+        std::uint64_t data_sum = 0u;
+        for (std::uint64_t array_index = 0u;
+             array_index < stored_group.array_count; ++array_index) {
+            if (array_offset > raw.size() || raw.size() - array_offset < kArrayHeaderBytes) {
+                invalid("array record header is truncated");
+            }
+            const std::uint64_t tag = read_u64(raw, array_offset);
+            const std::uint64_t array_size = read_u64(raw, array_offset + 8u);
+            array_offset += kArrayHeaderBytes;
+            if (array_size > raw.size() - array_offset) {
+                invalid("array record data is truncated");
+            }
+            const std::size_t size = static_cast<std::size_t>(array_size);
+            if (selected_index < selection.size() &&
+                selection[selected_index].first == array_index) {
+                SelectedPackedArray &target = selected[selection[selected_index].second];
+                if (tag != target.expected_tag) {
+                    invalid("array '" + target.name + "' has an unexpected type tag");
+                }
+                target.bytes.assign(
+                    raw.begin() + static_cast<std::ptrdiff_t>(array_offset),
+                    raw.begin() + static_cast<std::ptrdiff_t>(array_offset + size));
+                target.loaded = true;
+                ++selected_index;
+            }
+            array_offset += size;
+            data_sum = checked_add(data_sum, array_size, "group raw data");
+        }
+        if (array_offset != raw.size() || data_sum != stored_group.raw_data_size ||
+            selected_index != selection.size()) {
+            invalid("group array sizes do not consume the declared payload");
+        }
+    };
+
+    const std::size_t worker_count = std::min<std::size_t>(
+        stored_groups.size(), std::max<std::size_t>(
+            1u, std::min<std::size_t>(8u, std::thread::hardware_concurrency())));
+    if (worker_count <= 1u) {
+        for (const PackedStoredGroup &group : stored_groups) { decode_group(group); }
+    } else {
+        std::atomic_size_t next_group{0u};
+        std::atomic_bool failed{false};
+        std::exception_ptr first_error;
+        std::mutex error_mutex;
+        std::vector<std::jthread> workers;
+        workers.reserve(worker_count);
+        for (std::size_t worker = 0u; worker < worker_count; ++worker) {
+            workers.emplace_back([&] {
+                while (!failed.load(std::memory_order_relaxed)) {
+                    const std::size_t ordinal = next_group.fetch_add(
+                        1u, std::memory_order_relaxed);
+                    if (ordinal >= stored_groups.size()) { return; }
+                    try {
+                        decode_group(stored_groups[ordinal]);
+                    } catch (...) {
+                        std::lock_guard lock{error_mutex};
+                        if (!first_error) { first_error = std::current_exception(); }
+                        failed.store(true, std::memory_order_relaxed);
+                        return;
+                    }
+                }
+            });
+        }
+        workers.clear();
+        if (first_error) { std::rethrow_exception(first_error); }
+    }
+    for (const SelectedPackedArray &array : selected) {
+        if (!array.loaded) { invalid("referenced renderer array was not decoded"); }
+    }
+    return pack_referenced_arrays(refs, order, [&](std::uint64_t id) {
+        const auto slot = selected_slots.find(id);
+        if (slot == selected_slots.end()) {
+            invalid("renderer array was not selected");
+        }
+        const SelectedPackedArray &array = selected[slot->second];
+        return PackedArrayView{array.expected_tag, array.bytes};
+    });
+}
+
 } // namespace
 
 XGenDocument parse_xgen_document(std::span<const std::byte> bytes) {
@@ -886,6 +1348,11 @@ XGenEvaluatedCurves materialize_xgen_curves(
         std::stable_sort(curves.begin(), curves.end(), [](const auto &a, const auto &b) {
             return curve_key(a) < curve_key(b);
         });
+        for (std::size_t curve = 1u; curve < curves.size(); ++curve) {
+            if (curve_key(curves[curve - 1u]) == curve_key(curves[curve])) {
+                invalid("duplicate canonical curve identity");
+            }
+        }
     }
 
     XGenEvaluatedCurves result{};
@@ -908,28 +1375,35 @@ XGenEvaluatedCurves materialize_xgen_curves(
 
 XGenPackedCurves materialize_xgen_packed_curves(
     const XGenDocument &document, XGenCurveOrder order) {
-    const XGenEvaluatedCurves curves = materialize_xgen_curves(document, order);
-    XGenPackedCurves packed{};
-    packed.point_counts = curves.point_counts;
-    packed.points.resize(curves.positions.size());
-    for (std::size_t point = 0u; point < curves.positions.size(); ++point) {
-        packed.points[point] = {
-            curves.positions[point].x,
-            curves.positions[point].y,
-            curves.positions[point].z,
-            0.5f * curves.widths[point]};
-    }
-    return packed;
+    return pack_document_arrays(document, order);
 }
 
 XGenPackedCurves parse_xgen_packed_curves(
     std::span<const std::byte> bytes, XGenCurveOrder order) {
-    return materialize_xgen_packed_curves(parse_xgen_document(bytes), order);
+    return parse_fused_packed_curves(bytes, order);
 }
 
 XGenPackedCurves load_xgen_packed_curves(
     const std::filesystem::path &path, XGenCurveOrder order) {
-    return materialize_xgen_packed_curves(load_xgen_document(path), order);
+    std::ifstream stream(path, std::ios::binary | std::ios::ate);
+    if (!stream) { throw std::runtime_error("failed to open XGen BLOB: " + path.string()); }
+    const std::streamoff end = stream.tellg();
+    if (end < 0 || static_cast<std::uintmax_t>(end) >
+                       std::numeric_limits<std::size_t>::max()) {
+        throw std::runtime_error("failed to query XGen BLOB size");
+    }
+    std::vector<std::byte> bytes(static_cast<std::size_t>(end));
+    if (bytes.size() > static_cast<std::size_t>(
+                           std::numeric_limits<std::streamsize>::max())) {
+        throw std::runtime_error("XGen BLOB exceeds streamsize");
+    }
+    stream.seekg(0);
+    if (!bytes.empty()) {
+        stream.read(reinterpret_cast<char *>(bytes.data()),
+                    static_cast<std::streamsize>(bytes.size()));
+    }
+    if (!stream) { throw std::runtime_error("failed to read XGen BLOB: " + path.string()); }
+    return parse_fused_packed_curves(bytes, order);
 }
 
 XGenEvaluatedCurves make_xgen_curves(const GeneratedCurves &curves) {

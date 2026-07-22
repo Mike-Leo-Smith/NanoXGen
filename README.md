@@ -47,8 +47,8 @@ The current prototype provides:
 - an optional Interactive Maya command that serializes `outRenderData` to
   memory once, then builds source-order or exact-identity canonical `.nxc`
   without a temporary BLOB or `XgFnSpline` reload;
-- source-order and canonical renderer-minimal ingestion plus a staged direct-read
-  benchmark for evaluated snapshots;
+- fused source-order and canonical renderer-minimal ingestion that selectively
+  retains only required arrays, plus a staged resident/hot-file benchmark;
 - optional native ISA, SIMD-width, IPO/LTO, and precision-gated fast-math modes.
 
 ## Build and test
