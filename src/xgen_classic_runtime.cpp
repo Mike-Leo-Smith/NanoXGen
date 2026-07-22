@@ -839,6 +839,7 @@ void apply_noise(
     std::span<PackedCurvePoint> points,
     const ClassicFloatNoiseModule &noise,
     ClassicFloatRuntimeContext &context,
+    Vec3 domain_position,
     Vec3 surface_normal,
     Vec3 surface_tangent,
     std::span<float> scratch) {
@@ -865,7 +866,8 @@ void apply_noise(
     const float domain_scale = 100.0f * decorrelation * decorrelation;
     const Vec3 root{points.front().x, points.front().y, points.front().z};
     const Vec3 domain =
-        (root * 0.1f + Vec3{0.419276f, 0.184247f, 0.805721f}) * domain_scale;
+        (domain_position + Vec3{0.419276f, 0.184247f, 0.805721f}) *
+        domain_scale;
     if (!(length_squared(surface_tangent) > 1.0e-20f)) {
         surface_tangent = fallback_surface_u(surface_normal);
     } else {
@@ -954,6 +956,7 @@ void build_clump_noise_axis(
     std::span<const Vec3> axis,
     const ClassicFloatClumpModule &clump,
     ClassicFloatRuntimeContext context,
+    Vec3 domain_position,
     Vec3 surface_normal,
     Vec3 surface_tangent,
     std::uint32_t guide_random_prefix,
@@ -996,8 +999,8 @@ void build_clump_noise_axis(
     const float decorrelation = 1.0f - correlation;
     const float domain_scale = 100.0f * decorrelation * decorrelation;
     const Vec3 domain =
-        (axis.front() * 0.1f +
-         Vec3{0.419276f, 0.184247f, 0.805721f}) * domain_scale;
+        (domain_position + Vec3{0.419276f, 0.184247f, 0.805721f}) *
+        domain_scale;
     if (!(length_squared(surface_normal) > 1.0e-20f)) {
         surface_normal = Vec3{0.0f, 1.0f, 0.0f};
     } else {
@@ -1318,7 +1321,8 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     std::span<const std::uint32_t> random_prefixes,
     std::span<const std::uint32_t> primitive_ids,
     std::span<const ClassicClumpRuntimeData> clump_data,
-    std::span<const float> runtime_inputs) {
+    std::span<const float> runtime_inputs,
+    std::span<const Vec3> noise_domain_positions) {
     if (curves.strand_count == 0u || curves.cvs_per_strand < 2u ||
         curves.point_counts.size() != curves.strand_count ||
         curves.roots.size() != curves.strand_count ||
@@ -1335,6 +1339,11 @@ void apply_xgen_classic_float_runtime_plan_cpu(
         surface_tangents.size() != curves.strand_count) {
         throw std::invalid_argument(
             "Classic NoiseFX needs one surface tangent per strand");
+    }
+    if (!noise_domain_positions.empty() &&
+        noise_domain_positions.size() != curves.strand_count) {
+        throw std::invalid_argument(
+            "Classic NoiseFX needs one domain position per strand");
     }
     bool needs_random_prefix = false;
     const auto expression_needs_prefix = [&](
@@ -1406,7 +1415,10 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             data.guide_axes.size() % curves.cvs_per_strand != 0u ||
             data.guide_normals.size() !=
                 data.guide_axes.size() / curves.cvs_per_strand ||
-            data.guide_tangents.size() != data.guide_normals.size()) {
+            data.guide_tangents.size() != data.guide_normals.size() ||
+            (!data.guide_reference_positions.empty() &&
+             data.guide_reference_positions.size() !=
+                 data.guide_normals.size())) {
             throw std::invalid_argument(
                 "Classic ClumpingFX geometry binding is inconsistent");
         }
@@ -1568,6 +1580,9 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                         data.guide_face_ids[guide_index]);
                     build_clump_noise_axis(
                         axis, clump, guide_context,
+                        data.guide_reference_positions.empty()
+                            ? axis.front()
+                            : data.guide_reference_positions[guide_index],
                         data.guide_normals[guide_index],
                         data.guide_tangents[guide_index],
                         data.guide_random_prefixes[guide_index], mask, scratch,
@@ -1622,6 +1637,10 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                         "Classic NoiseFX operation index is invalid");
                 }
                 apply_noise(points, plan.noises[effect.module_index], context,
+                            noise_domain_positions.empty()
+                                ? Vec3{points.front().x, points.front().y,
+                                       points.front().z}
+                                : noise_domain_positions[strand],
                             root.normal, surface_tangents[strand], scratch);
                 context.c_length = curve_spline_length(points);
             } else if (effect.type == ClassicFloatEffectType::Cut) {

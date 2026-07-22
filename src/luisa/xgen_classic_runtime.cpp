@@ -466,10 +466,12 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
             raw_guide == static_cast<uint>(kInvalidIndex));
         const UInt guide = min(raw_guide, guide_count - 1u);
         const UInt guide_first = guide * cvs_per_strand;
-        const UInt frame_first = guide * 2u;
+        const UInt frame_first = guide * 3u;
         const UInt runtime_first = guide * 2u;
         const Float4 frame_nu = guide_frames.read(frame_first);
         const Float4 frame_tv = guide_frames.read(frame_first + 1u);
+        const Float3 guide_domain_position =
+            guide_frames.read(frame_first + 2u).xyz();
         const UInt guide_face = guide_runtime.read(runtime_first);
         const UInt guide_prefix = guide_runtime.read(runtime_first + 1u);
         const Float4 state = states.read(strand);
@@ -515,7 +517,7 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
             100.0f * decorrelation * decorrelation;
         const Float3 guide_root = guide_axes.read(guide_first).xyz();
         const Float3 domain =
-            (guide_root * 0.1f +
+            (guide_domain_position +
              make_float3(0.419276f, 0.184247f, 0.805721f)) *
             domain_scale;
         const Float3 surface_normal = safe_normalize(
@@ -715,6 +717,7 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
                         ByteBufferVar roots, BufferUInt root_runtime,
                         BufferFloat ptex_values,
                         BufferFloat3 surface_tangents,
+                        BufferFloat3 noise_domain_positions,
                         BufferFloat4 states) noexcept {
         set_block_size(128u, 1u, 1u);
         Constant<float> gradients{
@@ -755,10 +758,10 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
         const Float domain_scale =
             100.0f * decorrelation * decorrelation;
         const Float3 root = source.read(first).xyz();
+        const Float3 domain_position = noise_domain_positions.read(strand);
         const Float3 domain =
-            (root * 0.1f +
-             make_float3(0.419276f, 0.184247f, 0.805721f)) *
-            domain_scale;
+            (domain_position +
+             make_float3(0.419276f, 0.184247f, 0.805721f)) * domain_scale;
         const Float3 normalized_surface_normal = safe_normalize(
             surface_normal, make_float3(0.0f, 1.0f, 0.0f));
         const Float3 fallback_axis = ite(

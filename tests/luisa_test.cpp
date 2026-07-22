@@ -155,7 +155,9 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
     reference.root_uvs.resize(strand_count);
     std::vector<luisa::float4> source(reference.points.size());
     std::vector<luisa::float3> tangents(strand_count);
+    std::vector<luisa::float3> noise_domains(strand_count);
     std::vector<nanoxgen::Vec3> cpu_tangents(strand_count);
+    std::vector<nanoxgen::Vec3> cpu_noise_domains(strand_count);
     std::vector<std::uint32_t> primitive_ids(strand_count);
     std::vector<std::uint32_t> prefixes(strand_count);
     std::vector<std::uint32_t> root_runtime(strand_count * 2u);
@@ -172,6 +174,10 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
         reference.root_uvs[strand] = root.uv;
         cpu_tangents[strand] = {1.0f, 0.0f, 0.0f};
         tangents[strand] = luisa::make_float3(1.0f, 0.0f, 0.0f);
+        cpu_noise_domains[strand] = root.position;
+        noise_domains[strand] =
+            luisa::make_float3(root.position.x, root.position.y,
+                               root.position.z);
         primitive_ids[strand] = strand + 1u;
         const std::array<double, 3u> prefix_input{
             static_cast<double>(root.uv.x), static_cast<double>(root.uv.y),
@@ -210,6 +216,7 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
     }
     clump_data.guide_normals = {{0.0f, 1.0f, 0.0f}};
     clump_data.guide_tangents = {{1.0f, 0.0f, 0.0f}};
+    clump_data.guide_reference_positions = {clump_data.guide_axes.front()};
     clump_data.guide_uvs = {{0.25f, 0.75f}};
     clump_data.guide_face_ids = {2u};
     const std::array<double, 3u> guide_prefix_input{
@@ -223,7 +230,7 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
     const std::array clump_bindings{clump_data};
     nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
         reference, plan, 1.0f, cpu_tangents, prefixes, primitive_ids,
-        clump_bindings, ptex_values);
+        clump_bindings, ptex_values, cpu_noise_domains);
     if (reference.strand_count != strand_count) {
         throw std::runtime_error("Luisa Classic effects fixture unexpectedly culled");
     }
@@ -233,6 +240,8 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
     auto runtime = device.create_buffer<std::uint32_t>(root_runtime.size());
     auto ptex = device.create_buffer<float>(ptex_values.size());
     auto tangent_buffer = device.create_buffer<luisa::float3>(tangents.size());
+    auto noise_domain_buffer =
+        device.create_buffer<luisa::float3>(noise_domains.size());
     std::vector<luisa::float4> clump_axes;
     for (const nanoxgen::Vec3 value : clump_data.guide_axes) {
         clump_axes.emplace_back(value.x, value.y, value.z, 0.0f);
@@ -244,7 +253,11 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
         luisa::make_float4(
             clump_normal.x, clump_normal.y, clump_normal.z, clump_uv.x),
         luisa::make_float4(
-            clump_tangent.x, clump_tangent.y, clump_tangent.z, clump_uv.y)};
+            clump_tangent.x, clump_tangent.y, clump_tangent.z, clump_uv.y),
+        luisa::make_float4(
+            clump_data.guide_reference_positions.front().x,
+            clump_data.guide_reference_positions.front().y,
+            clump_data.guide_reference_positions.front().z, 0.0f)};
     const std::array<std::uint32_t, 2u> clump_runtime{
         clump_data.guide_face_ids.front(),
         clump_data.guide_random_prefixes.front()};
@@ -278,6 +291,7 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
            << runtime.copy_from(root_runtime.data())
            << ptex.copy_from(ptex_values.data())
            << tangent_buffer.copy_from(tangents.data())
+           << noise_domain_buffer.copy_from(noise_domains.data())
            << clump_axes_buffer.copy_from(clump_axes.data())
            << clump_frames_buffer.copy_from(clump_frames.data())
            << clump_runtime_buffer.copy_from(clump_runtime.data())
@@ -290,7 +304,8 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
                     clump_axes_buffer, clump_frames_buffer,
                     clump_runtime_buffer, clump_guides_buffer)
                   .dispatch(strand_count)
-           << noise(a, b, roots, runtime, ptex, tangent_buffer, states)
+           << noise(a, b, roots, runtime, ptex, tangent_buffer,
+                    noise_domain_buffer, states)
                   .dispatch(strand_count)
            << cut(b, a, roots, runtime, ptex, states).dispatch(strand_count)
            << width(a, roots, runtime, ptex, states).dispatch(strand_count)

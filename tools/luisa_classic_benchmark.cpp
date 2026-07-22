@@ -134,11 +134,13 @@ struct RuntimeCase {
     std::vector<nanoxgen::RootSample> roots;
     std::vector<std::uint32_t> root_runtime;
     std::vector<luisa::float3> surface_tangents;
+    std::vector<luisa::float3> noise_domain_positions;
     ByteBuffer asset_buffer;
     ByteBuffer root_buffer;
     Buffer<std::uint32_t> root_runtime_buffer;
     Buffer<float> ptex_buffer;
     Buffer<luisa::float3> surface_tangent_buffer;
+    Buffer<luisa::float3> noise_domain_buffer;
     Buffer<luisa::float4> a;
     Buffer<luisa::float4> b;
     Buffer<luisa::float4> states;
@@ -154,6 +156,7 @@ struct RuntimeCase {
     std::vector<Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
                          ByteBuffer, Buffer<std::uint32_t>,
                          Buffer<float>,
+                         Buffer<luisa::float3>,
                          Buffer<luisa::float3>,
                          Buffer<luisa::float4>>> noises;
     Shader1D<Buffer<luisa::float4>, ByteBuffer, Buffer<std::uint32_t>,
@@ -182,10 +185,13 @@ struct RuntimeCase {
             nanoxgen::generate_packed_cpu(asset, params);
         roots = std::move(sampled.roots);
         surface_tangents.reserve(roots.size());
+        noise_domain_positions.reserve(roots.size());
         for (const nanoxgen::RootSample &root : roots) {
             const nanoxgen::Vec3 tangent = nanoxgen::root_surface_u(
                 asset.view(), {}, root);
             surface_tangents.emplace_back(tangent.x, tangent.y, tangent.z);
+            noise_domain_positions.emplace_back(
+                root.position.x, root.position.y, root.position.z);
         }
         root_runtime.resize(roots.size() * 2u);
         for (std::size_t strand = 0u; strand < roots.size(); ++strand) {
@@ -208,6 +214,8 @@ struct RuntimeCase {
         ptex_buffer = device.create_buffer<float>(1u);
         surface_tangent_buffer = device.create_buffer<luisa::float3>(
             surface_tangents.size());
+        noise_domain_buffer = device.create_buffer<luisa::float3>(
+            noise_domain_positions.size());
         a = device.create_buffer<luisa::float4>(checked_points(spec));
         b = device.create_buffer<luisa::float4>(checked_points(spec));
         states = device.create_buffer<luisa::float4>(spec.strands);
@@ -241,7 +249,8 @@ struct RuntimeCase {
                << root_buffer.copy_from(roots.data())
                << root_runtime_buffer.copy_from(root_runtime.data())
                << ptex_buffer.copy_from(empty_ptex.data())
-               << surface_tangent_buffer.copy_from(surface_tangents.data());
+               << surface_tangent_buffer.copy_from(surface_tangents.data())
+               << noise_domain_buffer.copy_from(noise_domain_positions.data());
     }
 
     void dispatch(Stream &stream) {
@@ -255,11 +264,13 @@ struct RuntimeCase {
                 auto &noise = noises.at(effect.module_index);
                 if (source_is_b) {
                     stream << noise(b, a, root_buffer, root_runtime_buffer,
-                                    ptex_buffer, surface_tangent_buffer, states)
+                                    ptex_buffer, surface_tangent_buffer,
+                                    noise_domain_buffer, states)
                                   .dispatch(spec.strands);
                 } else {
                     stream << noise(a, b, root_buffer, root_runtime_buffer,
-                                    ptex_buffer, surface_tangent_buffer, states)
+                                    ptex_buffer, surface_tangent_buffer,
+                                    noise_domain_buffer, states)
                                   .dispatch(spec.strands);
                 }
             } else {

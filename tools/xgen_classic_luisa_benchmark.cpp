@@ -293,6 +293,11 @@ int main(int argc, char **argv) try {
     for (const nanoxgen::Vec3 value : root_plan.surface_tangents) {
         tangents.emplace_back(value.x, value.y, value.z);
     }
+    std::vector<luisa::float3> noise_domain_positions;
+    noise_domain_positions.reserve(root_plan.reference_positions.size());
+    for (const nanoxgen::Vec3 value : root_plan.reference_positions) {
+        noise_domain_positions.emplace_back(value.x, value.y, value.z);
+    }
     std::vector<std::uint32_t> root_runtime(root_plan.roots.size() * 2u);
     for (std::size_t strand = 0u; strand < root_plan.roots.size(); ++strand) {
         root_runtime[strand * 2u] = root_plan.primitive_ids[strand];
@@ -308,7 +313,7 @@ int main(int argc, char **argv) try {
         for (const nanoxgen::Vec3 value : binding.guide_axes) {
             host.axes.emplace_back(value.x, value.y, value.z, 0.0f);
         }
-        host.frames.reserve(static_cast<std::size_t>(host.guide_count) * 2u);
+        host.frames.reserve(static_cast<std::size_t>(host.guide_count) * 3u);
         host.runtime.reserve(static_cast<std::size_t>(host.guide_count) * 2u);
         for (std::uint32_t guide = 0u; guide < host.guide_count; ++guide) {
             const nanoxgen::Vec3 normal = binding.guide_normals[guide];
@@ -316,6 +321,12 @@ int main(int argc, char **argv) try {
             const nanoxgen::Vec2 uv = binding.guide_uvs[guide];
             host.frames.emplace_back(normal.x, normal.y, normal.z, uv.x);
             host.frames.emplace_back(tangent.x, tangent.y, tangent.z, uv.y);
+            const nanoxgen::Vec3 domain_position =
+                binding.guide_reference_positions.empty()
+                ? binding.guide_axes[static_cast<std::size_t>(guide) * cvs]
+                : binding.guide_reference_positions[guide];
+            host.frames.emplace_back(
+                domain_position.x, domain_position.y, domain_position.z, 0.0f);
             host.runtime.push_back(binding.guide_face_ids[guide]);
             host.runtime.push_back(binding.guide_random_prefixes[guide]);
         }
@@ -342,6 +353,8 @@ int main(int argc, char **argv) try {
         device.create_buffer<float>(ptex_upload.size());
     Buffer<luisa::float3> tangent_buffer =
         device.create_buffer<luisa::float3>(tangents.size());
+    Buffer<luisa::float3> noise_domain_buffer =
+        device.create_buffer<luisa::float3>(noise_domain_positions.size());
     Buffer<luisa::float4> a = device.create_buffer<luisa::float4>(point_count);
     Buffer<luisa::float4> b = device.create_buffer<luisa::float4>(point_count);
     Buffer<luisa::float4> states =
@@ -377,6 +390,7 @@ int main(int argc, char **argv) try {
         shader_option);
     using NoiseShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
         ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
+        Buffer<luisa::float3>,
         Buffer<luisa::float3>,
         Buffer<luisa::float4>>;
     using CutShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
@@ -430,7 +444,8 @@ int main(int argc, char **argv) try {
            << guides.copy_from(rebuilt_gpu.data())
            << runtime_data.copy_from(root_runtime.data())
            << ptex_buffer.copy_from(ptex_upload.data())
-           << tangent_buffer.copy_from(tangents.data());
+           << tangent_buffer.copy_from(tangents.data())
+           << noise_domain_buffer.copy_from(noise_domain_positions.data());
     for (std::size_t module = 0u; module < clump_host.size(); ++module) {
         stream << clump_axes[module].copy_from(clump_host[module].axes.data())
                << clump_frames[module].copy_from(
@@ -470,9 +485,9 @@ int main(int argc, char **argv) try {
                 auto &shader = noises.at(effect.module_index).value();
                 stream << (source_is_b
                     ? shader(b, a, roots, runtime_data, ptex_buffer,
-                             tangent_buffer, states)
+                             tangent_buffer, noise_domain_buffer, states)
                     : shader(a, b, roots, runtime_data, ptex_buffer,
-                             tangent_buffer, states))
+                             tangent_buffer, noise_domain_buffer, states))
                     .dispatch(static_cast<std::uint32_t>(strand_count));
             } else {
                 auto &shader = cuts.at(effect.module_index).value();
@@ -524,7 +539,7 @@ int main(int argc, char **argv) try {
         nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
             cpu, runtime, 1.0f, root_plan.surface_tangents,
             root_plan.random_prefixes, root_plan.primitive_ids, clump_data,
-            runtime_inputs.values);
+            runtime_inputs.values, root_plan.reference_positions);
     }
     nanoxgen::add_xgen_classic_renderer_endpoints(cpu);
     const Clock::time_point cpu_end = Clock::now();

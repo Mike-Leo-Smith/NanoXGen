@@ -56,6 +56,12 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   if(NANOXGEN_FAST_MATH)
     target_compile_options(nanoxgen_build_options INTERFACE
       $<$<COMPILE_LANGUAGE:CXX>:-ffast-math>)
+  else()
+    # GCC enables contraction inside expressions by default when the selected
+    # host ISA has FMA. Root density rounding and CutFX boundary decisions must
+    # not change merely because a native benchmark binary can fuse operations.
+    target_compile_options(nanoxgen_build_options INTERFACE
+      $<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>)
   endif()
   if(NOT NANOXGEN_SIMD_WIDTH STREQUAL "")
     if(NOT NANOXGEN_SIMD_WIDTH MATCHES "^(128|256|512)$")

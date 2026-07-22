@@ -32,6 +32,7 @@ using ClassicRuntimeNoiseKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::uint>,
     luisa::compute::Buffer<float>,
     luisa::compute::Buffer<luisa::float3>,
+    luisa::compute::Buffer<luisa::float3>,
     luisa::compute::Buffer<luisa::float4>)>;
 using ClassicRuntimeWidthKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::float4>,
@@ -77,8 +78,9 @@ struct ClassicFloatRuntimeLuisaContext {
     const ClassicFloatCutModule &cut,
     std::uint32_t cvs_per_strand);
 
-// guide_axes stores float4(position, 0) guide-major; guide_frames stores two
-// float4 records per guide as (normal.xyz, u) and (tangent.xyz, v);
+// guide_axes stores float4(position, 0) guide-major; guide_frames stores three
+// float4 records per guide as (normal.xyz, u), (tangent.xyz, v), and
+// (referencePosition.xyz, 0);
 // guide_runtime stores uint2(faceId, exactSeExprPrefix); strand_guides stores
 // one guide index (or kInvalidIndex) per strand.
 [[nodiscard]] ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(

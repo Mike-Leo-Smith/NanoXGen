@@ -61,6 +61,9 @@ struct ClassicClumpRuntimeData {
     std::vector<Vec3> guide_axes;
     std::vector<Vec3> guide_normals;
     std::vector<Vec3> guide_tangents;
+    // XGen evaluates guide noise in the non-deformed/reference patch space,
+    // which can differ from the rendered guide root position.
+    std::vector<Vec3> guide_reference_positions;
     std::vector<Vec2> guide_uvs;
     std::vector<std::uint32_t> guide_face_ids;
     std::vector<std::uint32_t> guide_random_prefixes;
@@ -166,7 +169,11 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     std::span<const ClassicClumpRuntimeData> clump_data = {},
     // Row-major [strand][PTEX, custom, $Prefg-noise inputs]. Kept as plain
     // float data so the same table can be uploaded to GPU backends.
-    std::span<const float> runtime_inputs = {});
+    std::span<const float> runtime_inputs = {},
+    // NoiseFX uses XGen's cPg/reference patch position for a stable domain.
+    // Leave empty only for callers whose curve roots already occupy that
+    // space (primarily synthetic tests).
+    std::span<const Vec3> noise_domain_positions = {});
 
 // Match the Classic renderer cache convention by adding one extrapolated
 // endpoint before and after every fixed-CV spline. Call after all FX modules
