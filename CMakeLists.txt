@@ -23,6 +23,8 @@ option(NANOXGEN_ENABLE_LUISA
   "Build the optional LuisaCompute next JIT execution bridge" OFF)
 option(NANOXGEN_ENABLE_ALEMBIC
   "Build the optional Classic XGen Alembic patch importer" OFF)
+option(NANOXGEN_ENABLE_PTEX
+  "Build the optional Classic XGen system-Ptex sampler" OFF)
 set(NANOXGEN_LUISA_BACKEND "hip" CACHE STRING
   "LuisaCompute runtime backend used by the optional parity test")
 set_property(CACHE NANOXGEN_LUISA_BACKEND PROPERTY STRINGS hip vk cpu fallback)
@@ -313,6 +315,30 @@ if(NANOXGEN_ENABLE_ALEMBIC)
     add_test(
       NAME nanoxgen_classic_alembic_tests
       COMMAND nanoxgen_classic_alembic_tests)
+  endif()
+endif()
+
+if(NANOXGEN_ENABLE_PTEX)
+  find_package(Ptex CONFIG REQUIRED)
+  add_library(nanoxgen_ptex STATIC src/xgen_ptex.cpp)
+  add_library(NanoXGen::nanoxgen_ptex ALIAS nanoxgen_ptex)
+  target_include_directories(
+    nanoxgen_ptex PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_features(nanoxgen_ptex PUBLIC cxx_std_20)
+  target_link_libraries(
+    nanoxgen_ptex PUBLIC nanoxgen Ptex::Ptex_dynamic)
+  target_link_libraries(nanoxgen_ptex PRIVATE nanoxgen_build_options)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(nanoxgen_ptex PRIVATE -Wall -Wextra -Wpedantic)
+  elseif(MSVC)
+    target_compile_options(nanoxgen_ptex PRIVATE /W4)
+  endif()
+  add_executable(nanoxgen_xgen_ptex_inspect tools/xgen_ptex_inspect.cpp)
+  target_link_libraries(nanoxgen_xgen_ptex_inspect PRIVATE nanoxgen_ptex)
+  if(NANOXGEN_BUILD_TESTS)
+    add_executable(nanoxgen_ptex_tests tests/ptex_test.cpp)
+    target_link_libraries(nanoxgen_ptex_tests PRIVATE nanoxgen_ptex)
+    add_test(NAME nanoxgen_ptex_tests COMMAND nanoxgen_ptex_tests)
   endif()
 endif()
 

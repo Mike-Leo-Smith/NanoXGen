@@ -98,10 +98,10 @@ checkout and build stay outside this repository; see
 [`docs/luisa-compute.md`](docs/luisa-compute.md) for the tested revision, AMD
 HIP build, cache behavior, and explicit `luisa-hip-release` preset.
 
-The Classic Alembic input stage is also explicit and optional. See
+The Classic Alembic/OpenSubdiv/Ptex input stage is also explicit and optional. See
 [`docs/classic-native.md`](docs/classic-native.md) for its
 `classic-alembic-release` preset, external-asset command, and current
-subdivision/PTEX/modifier parity boundary.
+subdivision, PTEX binding, and modifier parity boundary.
 
 The HIP build also provides direct generation and evaluated `.nxc` residency
 benchmarks. The latter accepts multiple caches, so a complete multi-description

@@ -37,9 +37,11 @@ not implemented and proven.
 An explicit `classic-alembic-release` preset additionally imports Classic patch
 sample zero and embedded guides through the system Alembic library, then builds
 a validated `.nxg` asset. `Subd` guide roots use OpenSubdiv limit patches and
-root sampling uses a bounded tessellation. This is a native input milestone,
-not complete Classic evaluation: XGen root sampling, PTEX, and the authored FX
-chain still require fallback. See
+root sampling uses a bounded tessellation. The same optional preset can inspect
+and sample system-Ptex maps as normalized float data without Maya. This is a
+native input milestone, not complete Classic evaluation: XGen root sampling,
+binding PTEX calls to coarse-face identities, and the authored FX chain still
+require fallback. See
 [`classic-native.md`](classic-native.md).
 
 The core does not claim to reproduce arbitrary SeExpr, PTEX lookup, custom

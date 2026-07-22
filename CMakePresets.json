@@ -87,11 +87,12 @@
     {
       "name": "classic-alembic-release",
       "displayName": "Classic Alembic import release",
-      "description": "Release build with the optional system Alembic patch importer",
+      "description": "Release build with the optional system Alembic and Ptex Classic inputs",
       "inherits": "release",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
-        "NANOXGEN_ENABLE_ALEMBIC": "ON"
+        "NANOXGEN_ENABLE_ALEMBIC": "ON",
+        "NANOXGEN_ENABLE_PTEX": "ON"
       }
     },
     {
