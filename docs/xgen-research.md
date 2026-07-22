@@ -54,7 +54,7 @@ influence represented by sweep angles and radii. For a generated primitive:
 | XGen expressions/PTEX | compiled expression IR and texture sampling | planned |
 | Geodesic guide neighborhoods | surface graph / UV-space acceleration | planned |
 | Clump/collision/coil/wind | ordered GPU modifier graph | planned |
-| Interactive Groom BLOB import | canonical, bit-exact `.nxc` evaluated cache | validated with Maya 2027.1 |
+| Interactive Groom BLOB import/export | independent v1 parser/writer plus canonical `.nxc` cache | bit-exact oracle-validated with Maya 2027.1 |
 
 The guide stencil deliberately moves expensive guide selection to asset
 construction. Runtime work is bounded by `strand_count * cvs_per_strand * 8`,
@@ -66,8 +66,8 @@ through an atomic counter.
 
 The harness creates a two-by-two-unit polygon plane and calls Maya's real
 Interactive Grooming generator. It exports `outRenderData` with
-`xgmExportSplineDataInternal`, then parses the result through the public
-`XgFnSpline` API rather than through a NanoXGen approximation.
+`xgmExportSplineDataInternal`, then parses each result both through NanoXGen's
+standalone v1 decoder and the public `XgFnSpline` oracle.
 
 | Fixture | Density | Length | Width | CVs/curve | Curves | Vertices | Canonical hash |
 |---|---:|---:|---:|---:|---:|---:|---|
@@ -249,13 +249,21 @@ the result. The public spline API accepts a BLOB produced through
 provides a typed direct accessor for `outRenderData`. Therefore container tuning
 cannot remove the dominant serialization cost.
 
-For unchanged assets, `nanoxgen_xgen_cache` pays the official evaluation once
-and writes `.nxc`. A 99,929-curve renderer-minimal cache was 19.6 MB, preserved
+For unchanged assets, `nanoxgen_xgen_cache` independently reads the evaluated
+BLOB and writes `.nxc`; Autodesk is not present in this conversion process. A
+99,929-curve renderer-minimal cache was 19.6 MB, preserved
 all public position/radius floats bit-for-bit, and read plus fully validated in
 8.1–9.5 ms. The full 31.2 MB version also preserves texcoords, patch UVs, face
 UVs, and face IDs and validated in about 14.2 ms. Runtime loading has no Autodesk
 dependency. This is exact evaluated-geometry parity, not procedural algorithm
 parity.
+
+The standalone reader was checked on a one-group 244-curve fixture and an
+eight-group 99,929-curve fixture. Curve/CV counts, bounds, and canonical hashes
+matched `XgFnSpline` exactly. NanoXGen then rebuilt those arrays into new
+10-group and seven-group BLOBs respectively; Autodesk loaded both and returned
+the same canonical hashes. A 4,096-curve BLOB generated directly from native
+NanoXGen procedural output passed the same reverse interoperability check.
 
 Repeated official evaluations were also observed to return identical canonical
 geometry in different raw curve orders. Motion samples are therefore matched by

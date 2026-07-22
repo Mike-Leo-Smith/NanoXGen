@@ -1,4 +1,5 @@
 #include "nanoxgen/asset.h"
+#include "nanoxgen/xgen.h"
 
 #include <filesystem>
 #include <iostream>
@@ -50,6 +51,8 @@ int main(int argc, char **argv) try {
     params.noise_frequency = 2.5f;
     const GeneratedCurves curves = generate_cpu(asset, params);
     write_curves_obj(curves, output_dir / "curves.obj");
+    save_xgen_document(build_xgen_document(make_xgen_curves(curves)),
+                       output_dir / "curves.xgen");
 
     const AssetHeader h = asset.view().header();
     std::cout << "NanoXGen demo generated\n"
@@ -57,7 +60,8 @@ int main(int argc, char **argv) try {
               << "  triangles:   " << h.triangle_count << '\n'
               << "  guides:      " << h.guide_count << '\n'
               << "  strands:     " << curves.strand_count << '\n'
-              << "  output:      " << (output_dir / "curves.obj") << '\n';
+              << "  OBJ output:  " << (output_dir / "curves.obj") << '\n'
+              << "  XGen output: " << (output_dir / "curves.xgen") << '\n';
     return 0;
 } catch (const std::exception &e) {
     std::cerr << "error: " << e.what() << '\n';

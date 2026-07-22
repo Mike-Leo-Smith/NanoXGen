@@ -20,7 +20,7 @@ jobs:
       - name: Install build tools
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install --yes cmake ninja-build g++
+          DEBIAN_FRONTEND=noninteractive apt-get install --yes cmake ninja-build g++ zlib1g-dev
           cmake --version
           ninja --version
 

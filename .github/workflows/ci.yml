@@ -19,7 +19,7 @@ jobs:
       - name: Install CMake and Ninja
         run: |
           sudo apt-get update
-          sudo apt-get install --yes cmake ninja-build
+          sudo apt-get install --yes cmake ninja-build zlib1g-dev
           cmake --version
           ninja --version
 
@@ -31,3 +31,11 @@ jobs:
 
       - name: Test
         run: ctest --preset release
+
+      - name: Verify installed CMake package
+        run: |
+          cmake --install build/release --prefix build/install
+          cmake -S tests/cmake-consumer -B build/consumer -G Ninja \
+            -DCMAKE_PREFIX_PATH="$PWD/build/install"
+          cmake --build build/consumer
+          ./build/consumer/nanoxgen_consumer

@@ -8,8 +8,8 @@ through `XGenSplineAPI::XgFnSpline`.
 These Maya/XGen APIs describe calibration and one-time interchange paths, not
 the NanoXGen runtime dependency graph. The core renderer path consumes `.nxg`
 or `.nxc` and does not link Autodesk libraries. Raw Interactive Grooming
-`outRenderData` `.xgen` BLOBs still require the optional calibration converter
-until an independent decoder is implemented.
+`outRenderData` `.xgen` v1 BLOBs are decoded by the standalone NanoXGen core;
+Autodesk's API is retained only as a calibration oracle.
 
 ## Data the renderer actually consumes
 
@@ -157,8 +157,8 @@ The alias table intentionally remains rest-area weighted under deformation.
 Rebuilding it per frame would change discrete triangle choices and cause motion
 correspondence to break.
 
-For static or baked descriptions, `nanoxgen_xgen_cache` converts one official
-XGen BLOB plus optional separately evaluated shutter samples into a pointer-free
+For static or baked descriptions, `nanoxgen_xgen_cache` independently converts
+one evaluated XGen BLOB plus optional separately evaluated shutter samples into a pointer-free
 `.nxc` curve cache. Curves are canonically matched by
 `faceId + faceUV + patchUV` before motion is stored; topology changes or
 duplicate identities fail instead of silently pairing the wrong curves. The
@@ -173,8 +173,11 @@ nanoxgen_xgen_cache --renderer-minimal \
 
 This cache path reproduces evaluated official geometry; it is not a claim that
 NanoXGen procedurally reproduced the underlying XGen modifiers. Its purpose is
-to remove Maya/XGen and `MPxData::writeBinary` from repeated static renders
-while procedural parity is expanded.
+to remove Maya/XGen from BLOB parsing and repeated static renders while
+procedural parity is expanded. `nanoxgen_xgen_process` can also transform and
+rewrite an evaluated BLOB while preserving metadata, reference meshes, unknown
+arrays, and group layout. An explicit `--rebuild` emits a minimal evaluated
+BLOB from the renderer-relevant curve view.
 
 ## Coverage relative to the existing XGen paths
 

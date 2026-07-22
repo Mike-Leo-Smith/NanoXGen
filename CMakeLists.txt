@@ -1,11 +1,16 @@
 cmake_minimum_required(VERSION 3.20)
 project(NanoXGen VERSION 0.2.0 LANGUAGES CXX)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
 if(POLICY CMP0144)
   cmake_policy(SET CMP0144 NEW)
 endif()
 
 find_package(Threads REQUIRED)
+find_package(ZLIB REQUIRED)
 
 option(NANOXGEN_BUILD_TESTS "Build NanoXGen tests" ON)
 option(NANOXGEN_BUILD_CALIBRATION
@@ -67,11 +72,19 @@ if(NANOXGEN_FAST_MATH)
   message(WARNING "NANOXGEN_FAST_MATH changes FP/ULP behavior; do not use it for strict XGen parity")
 endif()
 
-add_library(nanoxgen STATIC src/asset.cpp src/curve_cache.cpp src/curve_payload.cpp)
-target_include_directories(nanoxgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+add_library(nanoxgen STATIC
+  src/asset.cpp
+  src/curve_cache.cpp
+  src/curve_payload.cpp
+  src/xgen.cpp)
+add_library(NanoXGen::nanoxgen ALIAS nanoxgen)
+target_include_directories(nanoxgen PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(nanoxgen PUBLIC cxx_std_20)
-target_link_libraries(nanoxgen PUBLIC Threads::Threads)
-target_link_libraries(nanoxgen PUBLIC nanoxgen_build_options)
+target_link_libraries(nanoxgen PUBLIC Threads::Threads ZLIB::ZLIB)
+target_link_libraries(nanoxgen PRIVATE $<BUILD_INTERFACE:nanoxgen_build_options>)
+set_target_properties(nanoxgen PROPERTIES CXX_EXTENSIONS OFF)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   target_compile_options(nanoxgen PRIVATE -Wall -Wextra -Wpedantic)
 elseif(MSVC)
@@ -89,6 +102,47 @@ target_link_libraries(nanoxgen_cache_benchmark PRIVATE nanoxgen)
 
 add_executable(nanoxgen_precision tools/precision.cpp)
 target_link_libraries(nanoxgen_precision PRIVATE nanoxgen)
+
+add_executable(nanoxgen_xgen_inspect tools/xgen_inspect.cpp)
+target_link_libraries(nanoxgen_xgen_inspect PRIVATE nanoxgen)
+
+add_executable(nanoxgen_xgen_process tools/xgen_process.cpp)
+target_link_libraries(nanoxgen_xgen_process PRIVATE nanoxgen)
+
+add_executable(nanoxgen_xgen_cache tools/xgen_to_nxc.cpp)
+target_link_libraries(nanoxgen_xgen_cache PRIVATE nanoxgen)
+
+install(TARGETS nanoxgen
+  EXPORT NanoXGenTargets
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+install(TARGETS
+  nanoxgen_demo
+  nanoxgen_benchmark
+  nanoxgen_cache_benchmark
+  nanoxgen_precision
+  nanoxgen_xgen_inspect
+  nanoxgen_xgen_process
+  nanoxgen_xgen_cache
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(EXPORT NanoXGenTargets
+  FILE NanoXGenTargets.cmake
+  NAMESPACE NanoXGen::
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/NanoXGen)
+configure_package_config_file(
+  cmake/NanoXGenConfig.cmake.in
+  ${CMAKE_CURRENT_BINARY_DIR}/NanoXGenConfig.cmake
+  INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/NanoXGen)
+write_basic_package_version_file(
+  ${CMAKE_CURRENT_BINARY_DIR}/NanoXGenConfigVersion.cmake
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY SameMajorVersion)
+install(FILES
+  ${CMAKE_CURRENT_BINARY_DIR}/NanoXGenConfig.cmake
+  ${CMAKE_CURRENT_BINARY_DIR}/NanoXGenConfigVersion.cmake
+  DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/NanoXGen)
 
 if(NANOXGEN_BUILD_TESTS)
   enable_testing()
@@ -134,10 +188,17 @@ if(NANOXGEN_BUILD_CALIBRATION)
   add_executable(nanoxgen_xgen_benchmark tools/xgen_benchmark.cpp)
   target_link_libraries(nanoxgen_xgen_benchmark PRIVATE XGen::XGen)
   target_compile_features(nanoxgen_xgen_benchmark PRIVATE cxx_std_17)
-  add_executable(nanoxgen_xgen_cache tools/xgen_cache.cpp)
-  target_link_libraries(nanoxgen_xgen_cache PRIVATE nanoxgen XGen::XGen)
-  target_compile_features(nanoxgen_xgen_cache PRIVATE cxx_std_20)
+  add_executable(nanoxgen_xgen_cache_oracle tools/xgen_cache.cpp)
+  target_link_libraries(nanoxgen_xgen_cache_oracle PRIVATE nanoxgen XGen::XGen)
+  target_compile_features(nanoxgen_xgen_cache_oracle PRIVATE cxx_std_20)
   add_executable(nanoxgen_xgen_modifier_probe tools/xgen_modifier_probe.cpp)
   target_link_libraries(nanoxgen_xgen_modifier_probe PRIVATE nanoxgen XGen::XGen)
   target_compile_features(nanoxgen_xgen_modifier_probe PRIVATE cxx_std_20)
+  set_target_properties(
+    nanoxgen_xgen_probe
+    nanoxgen_xgen_parity
+    nanoxgen_xgen_benchmark
+    nanoxgen_xgen_cache_oracle
+    nanoxgen_xgen_modifier_probe
+    PROPERTIES SKIP_BUILD_RPATH TRUE)
 endif()

@@ -1,13 +1,16 @@
 #include "nanoxgen/asset.h"
 #include "nanoxgen/curve_cache.h"
 #include "nanoxgen/curve_payload.h"
+#include "nanoxgen/xgen.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <span>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 using namespace nanoxgen;
@@ -573,6 +576,154 @@ void test_exact_curve_cache() {
             "curve-cache corruption must be detected");
 }
 
+template<typename T>
+std::vector<std::byte> xgen_array_bytes(std::span<const T> values) {
+    const std::span<const std::byte> bytes = std::as_bytes(values);
+    return {bytes.begin(), bytes.end()};
+}
+
+template<typename T>
+XGenArray xgen_array(std::uint64_t tag, std::initializer_list<T> values) {
+    const std::span<const T> span{values.begin(), values.size()};
+    return {tag, xgen_array_bytes(span)};
+}
+
+void test_self_contained_xgen_round_trip() {
+    XGenDocument empty_group{};
+    empty_group.metadata_json = R"json({"Header":{"Version":1,"Type":"XgSplineData","GroupVersion":1,"GroupCount":1,"GroupBase64":false,"GroupDeflate":true,"GroupDeflateLevel":9},"Items":[],"RefMeshArray":[],"CustomData":{}})json";
+    empty_group.version = 1u;
+    empty_group.group_version = 1u;
+    empty_group.group_deflate = true;
+    empty_group.group_deflate_level = 9u;
+    empty_group.groups = {{0u, 0u, {}}};
+    require(parse_xgen_document(serialize_xgen_document(empty_group)).groups[0].arrays.empty(),
+            "self-contained XGen parser must support an empty generic group");
+
+    XGenDocument source{};
+    source.metadata_json = R"json({
+  "Header":{"Version":1,"Type":"XgSplineData","GroupVersion":1,"GroupCount":2,"GroupBase64":false,"GroupDeflate":true,"GroupDeflateLevel":9},
+  "Items":[{"Name":"groom","Id":"test","Mode":"Density","PrimitiveInfos":0,"Positions":1,"PatchUVs":2,"FaceUV":4294967296,"FaceId":4294967297,"WIDTH_CV":4294967298}],
+  "RefMeshArray":[],"CustomData":{}
+})json";
+    source.version = 1u;
+    source.group_version = 1u;
+    source.group_deflate = true;
+    source.group_deflate_level = 9u;
+    source.groups = {
+        {0u, 0u,
+         {xgen_array<std::uint32_t>(kXGenUInt32ArrayTag,
+                                    {0u, 2u, 0u, 2u, 3u, 0u}),
+          xgen_array<Vec3>(kXGenVec3ArrayTag,
+                           {{9.0f, 0.0f, 0.0f}, {9.0f, 1.0f, 0.0f},
+                            {3.0f, 0.0f, 0.0f}, {3.0f, 0.5f, 0.0f},
+                            {3.0f, 1.0f, 0.0f}}),
+          xgen_array<Vec2>(kXGenVec2ArrayTag,
+                           {{0.9f, 0.8f}, {0.9f, 0.8f}, {0.3f, 0.2f},
+                            {0.3f, 0.2f}, {0.3f, 0.2f}})}},
+        {1u, 17u,
+         {xgen_array<Vec2>(kXGenVec2ArrayTag, {{0.7f, 0.6f}, {0.1f, 0.2f}}),
+          xgen_array<std::uint32_t>(kXGenUInt32ArrayTag, {9u, 3u}),
+          xgen_array<float>(kXGenFloatArrayTag,
+                            {0.09f, 0.04f, 0.03f, 0.02f, 0.01f}),
+          xgen_array<std::uint32_t>(0xdeadbeefull, {11u, 22u})}}
+    };
+
+    const std::vector<std::byte> encoded = serialize_xgen_document(source);
+    const XGenDocument parsed = parse_xgen_document(encoded);
+    require(parsed.groups.size() == 2u && parsed.groups[1].flags == 17u,
+            "self-contained XGen group framing");
+    require(serialize_xgen_document(parsed) == encoded,
+            "self-contained XGen serialization must round-trip exactly");
+
+    const XGenEvaluatedCurves curves = materialize_xgen_curves(parsed);
+    require(curves.point_counts == std::vector<std::uint32_t>({3u, 2u}) &&
+            curves.face_ids == std::vector<std::uint32_t>({3u, 9u}),
+            "XGen curves must canonicalize by face and UV identity");
+    require(curves.positions.size() == 5u && curves.positions.front().x == 3.0f &&
+            curves.positions.back().x == 9.0f,
+            "XGen canonicalization must keep varying arrays aligned");
+    require(curves.texcoords[0].x == 0.0f && curves.texcoords[0].y == 0.0f &&
+            curves.texcoords[1].y == 0.5f && curves.texcoords[2].y == 1.0f,
+            "XGen renderer texcoords must match XgFnSpline (0,t)");
+
+    XGenDocument identity_document = parsed;
+    process_xgen_document(identity_document, {});
+    require(serialize_xgen_document(identity_document) == encoded,
+            "identity XGen document processing must be byte-exact");
+
+    XGenEvaluatedCurves processed = curves;
+    process_xgen_curves(processed, {{1.0f, 2.0f, 3.0f}, 0.5f, 2.0f});
+    require(processed.positions[0].x == 4.0f && processed.positions[0].y == 2.0f &&
+            processed.positions[1].y == 2.25f && processed.widths[0] == 0.06f,
+            "self-contained XGen processing must preserve roots and transform shapes");
+
+    XGenDocument processed_document = parsed;
+    const XGenArray unknown_before = processed_document.groups[1].arrays[3];
+    process_xgen_document(processed_document,
+                          {{1.0f, 2.0f, 3.0f}, 0.5f, 2.0f});
+    const XGenEvaluatedCurves document_curves = materialize_xgen_curves(
+        parse_xgen_document(serialize_xgen_document(processed_document)));
+    require(document_curves.positions[0].x == 4.0f &&
+            processed_document.metadata_json == parsed.metadata_json &&
+            processed_document.groups[1].flags == 17u &&
+            processed_document.groups[1].arrays[3].type_tag == unknown_before.type_tag &&
+            processed_document.groups[1].arrays[3].bytes == unknown_before.bytes,
+            "document processing must preserve metadata, groups, and unknown arrays");
+
+    const XGenDocument generated = build_xgen_document(
+        curves, {"generated", 128u, 9u});
+    const XGenEvaluatedCurves regenerated = materialize_xgen_curves(
+        parse_xgen_document(serialize_xgen_document(generated)));
+    require(regenerated.point_counts == curves.point_counts &&
+            regenerated.face_ids == curves.face_ids &&
+            std::memcmp(regenerated.positions.data(), curves.positions.data(),
+                        curves.positions.size() * sizeof(Vec3)) == 0 &&
+            std::memcmp(regenerated.widths.data(), curves.widths.data(),
+                        curves.widths.size() * sizeof(float)) == 0,
+            "self-contained XGen generator must preserve renderer geometry bitwise");
+
+    GenerationParams generation{};
+    generation.strand_count = 4u;
+    generation.cvs_per_strand = 3u;
+    const GeneratedCurves native = generate_cpu(build_asset(fixture()), generation);
+    const XGenEvaluatedCurves native_xgen = make_xgen_curves(native);
+    require(native_xgen.point_counts == std::vector<std::uint32_t>(4u, 3u) &&
+            std::memcmp(native_xgen.positions.data(), native.points.data(),
+                        native.points.size() * sizeof(Vec3)) == 0 &&
+            native_xgen.widths == native.widths,
+            "native NanoXGen curves must adapt directly to the XGen writer");
+
+    std::vector<std::byte> corrupt = encoded;
+    corrupt.front() ^= std::byte{1};
+    bool rejected = false;
+    try {
+        (void)parse_xgen_document(corrupt);
+    } catch (const std::runtime_error &) {
+        rejected = true;
+    }
+    require(rejected, "XGen parser must reject bad file magic");
+
+    for (std::size_t length = 0u; length < encoded.size(); ++length) {
+        rejected = false;
+        try {
+            (void)parse_xgen_document(std::span<const std::byte>{encoded}.first(length));
+        } catch (const std::runtime_error &) {
+            rejected = true;
+        }
+        require(rejected, "XGen parser must reject every truncated prefix");
+    }
+
+    corrupt = encoded;
+    corrupt.back() ^= std::byte{0x80};
+    rejected = false;
+    try {
+        (void)parse_xgen_document(corrupt);
+    } catch (const std::runtime_error &) {
+        rejected = true;
+    }
+    require(rejected, "XGen parser must reject a corrupt compressed group");
+}
+
 } // namespace
 
 int main() try {
@@ -589,6 +740,7 @@ int main() try {
     test_checked_device_generation_contract();
     test_renderer_curve_payload_64k_boundary();
     test_exact_curve_cache();
+    test_self_contained_xgen_round_trip();
     std::cout << "all NanoXGen tests passed\n";
     return 0;
 } catch (const std::exception &e) {

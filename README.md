@@ -5,7 +5,8 @@
 
 NanoXGen is an experimental, GPU-oriented procedural hair representation and
 generator inspired by the relationship between NanoVDB and OpenVDB. It is not
-an Autodesk product and does not reimplement a proprietary binary layout.
+an Autodesk product. Its Interactive Grooming BLOB support is an independent
+implementation and does not link or redistribute Autodesk code.
 
 The current prototype provides:
 
@@ -34,6 +35,9 @@ The current prototype provides:
 - frame-local deformed mesh/normal/guide overlays with stable root identities;
 - a bit-exact evaluated-curve `.nxc` cache with canonical motion matching, for
   bypassing Maya/XGen on repeated static renders;
+- a self-contained v1 Interactive Grooming `.xgen` BLOB parser, lossless
+  container round-trip, curve processor, writer, inspector, and `.nxc`
+  converter using only C++ and zlib;
 - optional native ISA, SIMD-width, IPO/LTO, and precision-gated fast-math modes.
 
 ## Build and test
@@ -45,7 +49,12 @@ and CI configuration identical:
 cmake --preset release
 cmake --build --preset release
 ctest --preset release
+cmake --install build/release --prefix /desired/prefix
 ```
+
+Installed consumers can use `find_package(NanoXGen CONFIG REQUIRED)` and link
+`NanoXGen::nanoxgen`; CI builds a separate downstream project to verify that
+export on every change.
 
 Use `debug`, `native-release`, or `cuda-release` in place of `release` for the
 corresponding core configuration. CUDA builds require an installed CUDA
@@ -64,10 +73,19 @@ The demo writes `build/demo/demo.nxg` and `build/demo/curves.obj`.
 
 ## Autodesk calibration (optional)
 
-The NanoXGen core loads `.nxg` assets and `.nxc` evaluated-curve caches without
-Maya or any Autodesk library. It does **not yet** independently decode an
-Interactive Grooming `outRenderData` `.xgen` BLOB: the current `.xgen` probes
-and `.xgen`-to-`.nxc` converter call Autodesk's `XgFnSpline` API.
+The NanoXGen core loads, validates, processes, and writes Interactive Grooming
+`outRenderData` `.xgen` BLOBs, `.nxg` assets, and `.nxc` caches without Maya or
+any Autodesk library. This is the binary Interactive Grooming container, not
+the unrelated classic XGen text-description format that also uses `.xgen`.
+
+```bash
+./build/release/nanoxgen_xgen_inspect groom.xgen
+./build/release/nanoxgen_xgen_process groom.xgen scaled.xgen --length-scale 0.8
+./build/release/nanoxgen_xgen_cache groom.xgen groom.nxc
+```
+
+The demo also writes a new `.xgen` directly from NanoXGen procedural output.
+See [`docs/xgen-format.md`](docs/xgen-format.md) for the container contract.
 
 See [`docs/sdk-setup.md`](docs/sdk-setup.md). The official Maya DevKit is
 downloadable without sign-in, but Autodesk ships the actual XGen headers and
@@ -80,13 +98,12 @@ export MAYA_LOCATION=/usr/autodesk/maya2027
 ./scripts/run_xgen_real_tests.sh
 ```
 
-The suite creates deterministic Interactive Grooming scenes with Maya
-Standalone, exports real `outRenderData` BLOBs, loads them through Autodesk's
-`XgFnSpline`, validates all spline ranges and numeric arrays, canonicalizes
-modifier-reordered curves by face/root coordinates, and performs strict
-per-attribute comparisons. The complex case contains 244 nine-CV strands on a
-wave surface with cut and width taper. Maya and its generated BLOBs remain
-external to this repository.
+The suite uses Maya only to create official fixtures and provide an oracle. It
+compares NanoXGen's independent parser hash with `XgFnSpline`, requires the
+standalone `.xgen`-to-`.nxc` cache to be byte-identical to the oracle cache,
+and verifies that Autodesk can load NanoXGen-written BLOBs. The complex case
+contains 244 nine-CV strands on a wave surface with cut and width taper. Maya
+and its generated BLOBs remain external to this repository.
 
 Run the clean-room modifier-identification matrix separately:
 
@@ -113,12 +130,10 @@ linear modifier reference, Maya BLOB export, and `XgFnSpline`
 load/execute/materialization as separate stages. These stages are not collapsed
 into one misleading speedup number.
 
-The optional `calibration-release` preset builds `nanoxgen_xgen_cache`, which
-converts already-evaluated official spline BLOBs to the
-runtime-only `.nxc` cache. `--renderer-minimal` stores only the topology and
-bit-exact renderer points; `--motion` adds separately evaluated shutter samples
-after canonical face/UV matching. The converter is built only when a licensed
-XGen SDK is available; loading `.nxc` does not require Autodesk libraries.
+The default release preset builds `nanoxgen_xgen_cache`. `--renderer-minimal`
+stores only topology and bit-exact renderer points; `--motion` adds separately
+evaluated shutter samples after canonical face/UV matching. The calibration
+preset builds a separate `nanoxgen_xgen_cache_oracle` for differential tests.
 
 For production compiler experiments, run `scripts/run_fast_math_comparison.sh`.
 The test

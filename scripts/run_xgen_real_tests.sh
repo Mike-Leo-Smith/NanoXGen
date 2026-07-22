@@ -14,7 +14,10 @@ MAYAPY="${MAYA_LOCATION}/bin/mayapy"
 CALIBRATION_BIN_DIR="${ROOT}/build/calibration-release"
 PROBE="${CALIBRATION_BIN_DIR}/nanoxgen_xgen_probe"
 PARITY="${CALIBRATION_BIN_DIR}/nanoxgen_xgen_parity"
-CACHE="${CALIBRATION_BIN_DIR}/nanoxgen_xgen_cache"
+CACHE="${ROOT}/build/release/nanoxgen_xgen_cache"
+CACHE_ORACLE="${CALIBRATION_BIN_DIR}/nanoxgen_xgen_cache_oracle"
+INSPECT="${ROOT}/build/release/nanoxgen_xgen_inspect"
+PROCESS="${ROOT}/build/release/nanoxgen_xgen_process"
 
 "${ROOT}/scripts/check_xgen_sdk.sh" "${XGEN_ROOT}"
 if [[ ! -x "${MAYAPY}" ]]; then
@@ -34,7 +37,10 @@ fi
     -DXGEN_ROOT="${XGEN_ROOT}" \
     -DNANOXGEN_COMPAT_LIB_DIR="${COMPAT_LIB_DIR}" && \
   "${CMAKE:-cmake}" --build --preset calibration-release --target \
-    nanoxgen_xgen_probe nanoxgen_xgen_parity nanoxgen_xgen_cache)
+    nanoxgen_xgen_probe nanoxgen_xgen_parity nanoxgen_xgen_cache_oracle && \
+  "${CMAKE:-cmake}" --preset release && \
+  "${CMAKE:-cmake}" --build --preset release --target \
+    nanoxgen_xgen_cache nanoxgen_xgen_inspect nanoxgen_xgen_process)
 
 run_fixture() {
   local name="$1"
@@ -88,11 +94,34 @@ LD_LIBRARY_PATH="${RUNTIME_LIBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
   "${PARITY}" "${BUILD_DIR}/complex-base.xgen" "${BUILD_DIR}/complex-cut-taper.xgen" \
   --length-scale 0.73 --width-taper 0.8 --width-taper-start 0.25 \
   > "${BUILD_DIR}/parity-cut-taper.json"
-LD_LIBRARY_PATH="${RUNTIME_LIBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
-  "${CACHE}" --renderer-minimal \
+"${CACHE}" --renderer-minimal \
   --motion 0.5 "${BUILD_DIR}/complex-base-repeat.xgen" \
   "${BUILD_DIR}/complex-base.xgen" "${BUILD_DIR}/complex-motion.nxc" \
   > "${BUILD_DIR}/complex-motion-cache.json"
+LD_LIBRARY_PATH="${RUNTIME_LIBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "${CACHE_ORACLE}" --renderer-minimal \
+  --motion 0.5 "${BUILD_DIR}/complex-base-repeat.xgen" \
+  "${BUILD_DIR}/complex-base.xgen" "${BUILD_DIR}/complex-motion-oracle.nxc" \
+  > "${BUILD_DIR}/complex-motion-cache-oracle.json"
+cmp "${BUILD_DIR}/complex-motion.nxc" "${BUILD_DIR}/complex-motion-oracle.nxc"
+
+"${INSPECT}" "${BUILD_DIR}/complex-base.xgen" \
+  > "${BUILD_DIR}/complex-base-independent.json"
+"${PROCESS}" "${BUILD_DIR}/complex-base.xgen" "${BUILD_DIR}/complex-rebuilt.xgen" \
+  --group-bytes 4096 > "${BUILD_DIR}/complex-rebuilt-process.json"
+LD_LIBRARY_PATH="${RUNTIME_LIBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "${PROBE}" "${BUILD_DIR}/complex-rebuilt.xgen" \
+  > "${BUILD_DIR}/complex-rebuilt-official.json"
+python3 - "${BUILD_DIR}/complex-base.json" \
+  "${BUILD_DIR}/complex-base-independent.json" \
+  "${BUILD_DIR}/complex-rebuilt-official.json" <<'PY'
+import json
+import sys
+summaries = [json.load(open(path, encoding="utf-8")) for path in sys.argv[1:]]
+expected = summaries[0]["canonical_hash"]
+if any(summary["canonical_hash"] != expected for summary in summaries[1:]):
+    raise SystemExit("standalone XGen parser/writer differs from Autodesk oracle")
+PY
 
 python3 -c 'from pathlib import Path; Path(__import__("sys").argv[1]).write_bytes(b"")' \
   "${BUILD_DIR}/malformed.xgen"

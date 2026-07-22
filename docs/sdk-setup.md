@@ -32,9 +32,10 @@ cmake --build --preset calibration-release
 ```
 
 Only the explicit calibration preset discovers XGen and builds
-`nanoxgen_xgen_probe`, `nanoxgen_xgen_parity`, and the `.xgen`-to-`.nxc`
-converter. The default release/debug/native/CUDA presets never inspect Maya or
-link Autodesk libraries. Create an Interactive Grooming fixture in Maya and
+`nanoxgen_xgen_probe`, `nanoxgen_xgen_parity`, and the independent-converter
+oracle. The default release/debug/native/CUDA presets build the self-contained
+`.xgen` parser/writer/converter and never inspect Maya or link Autodesk
+libraries. Create an Interactive Grooming fixture in Maya and
 export its serialized render data with:
 
 ```mel
@@ -51,8 +52,8 @@ LD_LIBRARY_PATH="$XGEN_ROOT/lib:${MAYA_LOCATION}/lib:$LD_LIBRARY_PATH" \
 The probe reports motion samples, batches, curve and vertex counts, CV ranges,
 widths, position and patch-UV bounds, and a canonical geometry hash. The
 standalone NanoXGen core does not need Maya or XGen at build or runtime. The
-calibration probe still uses `XgFnSpline`; an Autodesk-free decoder for the raw
-Interactive Grooming BLOB is not part of the core yet.
+calibration probe uses `XgFnSpline` only to verify the independent decoder and
+writer against a licensed reference implementation.
 
 For the complete reproducible test, run:
 
@@ -93,12 +94,12 @@ execute, and materialization) inside Maya, run:
 ./scripts/run_xgen_bridge_profile.sh
 ```
 
-With CMake and XGen available, `nanoxgen_xgen_cache` converts evaluated output
-to an Autodesk-free runtime cache. Motion samples are separate official
-evaluations and are canonicalized before storage:
+The default CMake build provides `nanoxgen_xgen_cache`; XGen is not required to
+convert evaluated output to an Autodesk-free runtime cache. Motion samples are
+separate evaluations and are canonicalized before storage:
 
 ```bash
-./build/calibration-release/nanoxgen_xgen_cache --renderer-minimal \
+./build/release/nanoxgen_xgen_cache --renderer-minimal \
   --motion 0.5 /tmp/shutter-close.xgen /tmp/base.xgen /tmp/groom.nxc
 ./build/release/nanoxgen_cache_benchmark --repeats 15 /tmp/groom.nxc
 ```
