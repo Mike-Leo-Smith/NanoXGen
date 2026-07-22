@@ -2,7 +2,7 @@
 
 NanoXGen can consume a separately built LuisaCompute `next` tree as an explicit
 JIT execution backend. It is never downloaded, discovered, or linked by the
-default CPU, CUDA, HIP, or Autodesk presets. LuisaCompute sources, submodules,
+default CPU or Autodesk presets. LuisaCompute sources, submodules,
 shader caches, runtime plug-ins, and build products must remain outside this
 repository.
 
@@ -65,11 +65,10 @@ upload/dispatch/download time, expression dispatch time, error bounds, and a
 stable checksum. A second process also exercises LuisaCompute's shader cache.
 
 When HIP is enabled by `luisa-hip-release`, the same test allocates renderer
-points and root records with HIP, runs the native packed generator, imports
-those exact device pointers with LuisaCompute, and executes primitive length,
-reparameterized Cut, and width/taper/ramp kernels without a host copy between
-stages. It compares every final `float4(position, radius)` against the CPU plan.
-The July 2026 RX 9070 XT fixture's maximum absolute error was `4.76837e-7`.
+points and root records through LuisaCompute and executes generation and the
+Classic float runtime without a host copy between stages. The production
+Classic path additionally uploads exact root identities, SeExpr random
+prefixes, surface tangents, rebuilt guides, and CSR guide associations.
 
 The runtime boundary is deliberately typed: `XgenFloatExpressionProgram`
 contains float immediates and the Luisa lowering accepts only that program
@@ -79,10 +78,11 @@ a separate CPU path that retains `double`, because replacing it would make the
 oracle itself inaccurate. It is converted once to the compact float runtime IR
 and is never captured by a Luisa callable or kernel.
 
-The fast float hash/random sequence is NanoXGen-stable but is not bit-compatible
-with Autodesk's double-based SeExpr sequence. This is an explicit execution
-mode, not an unnoticed precision change. Strict Autodesk acceptance tests keep
-using the CPU calibration mode.
+The device hash reconstructs SeExpr's float-input component with integer
+arithmetic and appends the exact CPU-planned `(u,v,faceSeed)` prefix. It uses
+only `float`, `uint32`, and `uint64`; no FP64 instruction is required. On the
+RX 9070 XT test, HIP and Vulkan expression results stayed within `5.96e-8` of
+the CPU float evaluator.
 
 For a generated-code audit, LuisaCompute's HIP backend can dump its optimized
 LLVM IR outside the repository:
@@ -102,57 +102,54 @@ This proves that the actual LuisaCompute HIP runtime works on the selected AMD
 device and that the supported bounded Classic runtime plan is JIT-lowered, not
 interpreted on the host. Authored `rampUI` values are parsed into constant
 control points and lowered with flat, linear, smooth, and spline interpolation.
-This is not yet a claim that a complete Classic XGen description is natively
-evaluable.
-Unsupported SeExpr, PTEX, modules, and topology operations remain checked errors
-and select the Autodesk fallback until their CPU oracle and Luisa differential
-tests pass.
+This is not yet a claim that every Classic XGen description is natively
+evaluable. Unsupported SeExpr, PTEX-bound attributes, modules, and topology
+operations remain checked errors and select the Autodesk fallback until their
+CPU oracle and Luisa differential tests pass.
 
-## Full Rabbit engineering benchmark
+## Rabbit cold/no-cache benchmark
 
-`nanoxgen_luisa_classic_benchmark` measures native HIP packed generation plus
-the supported authored Classic float plan in one HIP stream. All descriptions
-remain resident for each full-asset sample. File I/O, GPU allocation, asset
-upload, JIT compilation, and the final checksum download are reported or
-excluded explicitly; no intermediate point buffer returns to the CPU. The
-repository contains only the runner and counts, not the production assets or
-benchmark JSON:
+`nanoxgen_xgen_classic_luisa_benchmark` starts from the external Classic
+collection, Alembic patch and PTEX maps. It disables the Luisa shader cache and
+reports device creation, native parse/import/root/rebuild, allocation/JIT,
+upload, first dispatch/download/packing, total cold time, warm median/p90 and a
+checksum separately. No asset or benchmark JSON is written to the repository:
 
 ```bash
-NANOXGEN_CPU_BENCHMARK_REPEATS=3 \
-./scripts/run_rabbit_luisa_benchmark.sh \
-  /external/LuisaCompute-next/build-nanoxgen-hip/bin \
-  /external/rabbit/yxt_rabbit__yxt_test_fur.xgen \
-  /external/generated-rabbit-nxg
+export LUISA_COMPUTE_SOURCE_DIR=/external/LuisaCompute-next
+export LUISA_COMPUTE_BUILD_DIR=/external/LuisaCompute-next/build-nanoxgen-hip
+cmake --preset luisa-classic-hip-release
+cmake --build --preset luisa-classic-hip-release
+
+./build/luisa-classic-hip-release/nanoxgen_xgen_classic_luisa_benchmark \
+  "$LUISA_COMPUTE_BUILD_DIR/bin" hip \
+  /external/rabbit/collection.xgen /external/rabbit/patches.abc \
+  /external/rabbit/xgen/collections/collection eyelash \
+  --warmup 3 --repeats 11 --reference-nxc /external/oracle/eyelash.nxc
 ```
 
-On 2026-07-22, the RX 9070 XT `gfx1201` run covered all 2,456,139 strands and
-47,421,673 points. With three warm-ups, the seven-repeat HIP median/p90 was
-`144.434/153.013 ms` (328.33 million points/s); the same partial plan's CPU
-median was `1103.169 ms`, including output allocation, so HIP was 7.64x faster
-than that CPU implementation. A separate 15-repeat run measured
-`148.203/155.541 ms`, showing the expected run-to-run range. GPU allocation,
-asset upload, and all per-description JIT compiles took 7.14 seconds on the
-warm filesystem/driver run and 16.80 seconds on an earlier cold run.
+On 2026-07-23, Rabbit `eyelash` on the RX 9070 XT (`gfx1201`) produced the same
+1514 curves and 25738 renderer points as Maya, with `fallback_count=0`. A fresh
+no-shader-cache run measured 890.7 ms cold and 0.117 ms warm-median through HIP;
+Vulkan measured 746.5 ms cold and 0.360 ms warm-median. The HIP maximum
+position/radius errors against the Maya `.nxc` oracle were about `1.59e-4` and
+`5.59e-9`. Strict HIP math reduced the CPU differential but increased cold JIT
+to about 3.15 s, so fast-math is the practical GPU mode for this float pipeline.
 
-The optional full CPU/GPU differential checked 189,686,692 final position and
-radius components. Final radius matched within the printed float precision;
-the combined RMS error was about `1e-6`, with 28,060 components above `1e-5`
-and 189 above `1e-4`; the maximum was `0.001430`. The outliers are localized
-in base guide interpolation, principally `erduo`, rather than the Luisa
-postprocess: its root triangle identities were exact and root positions were
-within `8e-6`, but spatial support-weight normalization near a support boundary
-amplified that perturbation to `0.001619` before Cut reduced the maximum. This
-is reported as a precision boundary, not hidden behind the small global RMS;
-stable/scene-relative guide-blend acceptance still needs an Autodesk oracle.
+Eleven measured processes after three warmups gave portable CPU and native+LTO
+end-to-end medians of 92.34 and 90.79 ms (p90 93.39 and 91.49 ms). The matching
+Maya typed evaluation/copy median was 259.81 ms (p90 263.85 ms). Thus portable
+CPU is 2.81x and native+LTO CPU is 2.86x faster than Maya for this description.
+Cold HIP and Vulkan are 3.43x and 2.87x slower than Maya because JIT consumes
+748 and 641 ms respectively. Warm GPU dispatch is intentionally not presented
+as the requested cold speedup. Full Rabbit remains incomplete: seven
+descriptions have explicit ClumpingFX/PTEX/expression fallbacks, while `head_A`
+lowers and matches topology
+but fails its first NoiseFX geometry oracle. A zero lowering-fallback count is
+therefore reported separately from `oracle_within_tolerance`.
 
-These figures are deliberately labeled
-`nanoxgen-native-partial-not-autodesk-equivalent`. Against the measured Maya
-Classic evaluation/copy time of 155.119 seconds, the numerical ratios would be
-about 140.6x for CPU and 1074x for hot HIP, but they are not valid final Maya
-speedups. The native result does not yet reproduce the same positions/radii:
-all nine descriptions retain fallback reasons for Autodesk root sampling and
-authored NoiseFX; the asset also needs description-dependent ClumpingFX, PTEX
-length/width/masks, and the first `erduo` Cut expression. Equality must be
-established by counts, identities, channels, tolerances, and checksums before a
-Maya speedup is claimed.
+The Luisa `fallback` backend built against system LLVM 22/Embree 4.4.1 on this
+Arch host but crashed in its generated worker code even for the small parity
+test, including with `LUISA_SINGLE_THREADING=1`. HIP and Vulkan are the tested
+working backends; the fallback crash occurs below NanoXGen and remains an
+upstream/runtime compatibility issue.

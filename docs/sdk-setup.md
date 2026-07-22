@@ -33,8 +33,8 @@ cmake --build --preset calibration-release
 
 Only the explicit calibration preset discovers XGen and builds
 `nanoxgen_xgen_probe`, `nanoxgen_xgen_parity`, and the independent-converter
-oracle. The default release/debug/native/CUDA presets build the self-contained
-`.xgen` parser/writer/converter and never inspect Maya or link Autodesk
+oracle. The default release/debug/native presets build the self-contained
+`.xgen` parser/writer/converter and never inspect LuisaCompute or Maya, or link Autodesk
 libraries. Create an Interactive Grooming fixture in Maya and
 export its serialized render data with:
 

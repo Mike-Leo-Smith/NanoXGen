@@ -53,42 +53,47 @@ parser and Autodesk/SeExpr calibration oracle keep their higher-precision
 source representation outside the render hot path.
 
 The current plan applies SplinePrimitive `length`, `width`, `taper`,
-`taperStart`, and `widthRamp`, followed by active `CutFXModule` expressions in
-authored order. `rebuildType=1` cuts resample the remaining arc to the original
-fixed CV count. Width evaluation follows the public `SgCurve::calcNormTex`
-contract and stores half the final diameter in renderer `float4.radius`.
-Unsupported variables, unbound PTEX expressions, keep-param cuts, and other active FX
-modules produce `fallback_reasons`; an unknown binding is never silently
-replaced by zero.
+`taperStart`, and `widthRamp`, plus mode-0 `NoiseFXModule` and
+`CutFXModule` in authored order. Noise uses the SeExpr gradient table and
+XGen's transported surface frame. `rebuildType=1` cuts use the cubic
+`SgCurve::cutFromTip` search/rebuild convention, including fully-cut culling.
+Width evaluation stores half the final diameter in renderer
+`float4.radius`, and the renderer output adds XGen's two extrapolated endpoint
+CVs. Unsupported variables, unbound PTEX expressions, keep-param cuts, and
+other active FX modules produce `fallback_reasons`; an unknown binding is
+never silently replaced by zero.
 
-`nanoxgen_xgen_classic_inspect` reports the compiled plan for each description.
-On the local Rabbit collection, all nine primitive profiles compile partially;
-the supported Cut count is 1/1/2/1/2/1/0/2/2 in collection order. Every
-description still reports fallback because Autodesk-equivalent root sampling
-and one or more authored clump/noise/PTEX operations are not complete. The
-Ptex files themselves are now decoded natively; binding each `map()` call to
-the correct coarse-face identity and generator/FX evaluation is the remaining
-semantic work.
+The root planner reproduces RandomGenerator face counts, the fixed XGen sample
+table, surface compensation, mask ramp, current/reference OpenSubdiv samples,
+per-face primitive IDs, exact SeExpr random prefixes, and directional guide
+association. Classic guide CVs are interpreted in XGen's local
+`(tangent, normal, binormal)` patch frame and uniformly rebuilt before blending.
+
+On the local Rabbit eyelash description this produces 1519 roots and, after
+NoiseFX/CutFX culling and renderer endpoints, exactly 1514 curves and 25738
+points like Maya, with no fallback, and stays within the recorded geometry
+tolerance. Seven other descriptions retain explicit ClumpingFX,
+PTEX-backed primitive length/width, or unsupported-expression fallbacks.
+`head_A` currently lowers all of its scalar/Noise/Cut passes and matches Maya's
+307791-curve/5232447-point topology, but its first NoiseFX stage fails the
+geometry oracle; it is therefore not treated as native-compatible.
 
 ## Current parity boundary
 
-The OpenSubdiv path removes the earlier bilinear-cage guide-root approximation,
-but its root sampling still uses a finite limit-surface tessellation (two
-segments per coarse-face edge by default), not XGen's own adaptive patch
-sampler. Boundary/crease metadata is also absent when an Alembic file stores
-the Maya patch as a plain `PolyMesh`. The current `.nxg` generator still uses
-NanoXGen root RNG and guide neighborhoods. The supported primitive and Cut
-scalar/ramp subset is wired into a float runtime plan and directly JIT-bindable
-by LuisaCompute. Ptex input is available, but generator face identity, `map()`
-bindings, the full expression environment, clumping, and the authored noise
-passes are not yet complete.
+The OpenSubdiv path evaluates current and reference limit patches and retains
+stable coarse-face identities, but boundary/crease metadata is absent when an
+Alembic file stores the Maya patch as a plain `PolyMesh`. PTEX density masks are
+bound for RandomGenerator. PTEX-backed primitive/FX attributes, ClumpingFX,
+and the remaining SeExpr method/operator forms are the current Rabbit-wide
+parity boundary.
 
 Consequently, timings from this path are engineering measurements for the
 native prototype, not an equal-output Maya speedup claim. A valid Maya
 comparison requires the same roots, surface evaluation, expressions, PTEX,
 modules, curve counts, CV counts, and renderer channels.
 
-The optional Luisa/HIP build now keeps the packed generator and supported
-Classic postprocess on one device stream through external-buffer import. See
-`docs/luisa-compute.md` and `scripts/run_rabbit_luisa_benchmark.sh` for the
-full nine-description Rabbit benchmark and its explicit parity boundary.
+The optional Luisa path uploads rebuilt float guides and CSR associations,
+generates final packed base points, and runs the same float expression,
+NoiseFX, CutFX, and width kernels through HIP or Vulkan. See
+`docs/luisa-compute.md` for the cold/no-cache Rabbit command and its explicit
+parity boundary.

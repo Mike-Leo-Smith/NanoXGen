@@ -58,9 +58,8 @@ influence represented by sweep angles and radii. For a generated primitive:
 
 The guide stencil deliberately moves expensive guide selection to asset
 construction. Runtime work is bounded by `strand_count * cvs_per_strand * 8`,
-with one GPU thread per strand. CUDA keeps a direct static mapping; on CPU,
-persistent worker threads dynamically claim CUDA-block-sized strand tiles
-through an atomic counter.
+with one Luisa work item per strand. On CPU, persistent worker threads
+dynamically claim fixed-size strand tiles through an atomic counter.
 
 ## Maya 2027.1 real-fixture results
 
@@ -117,10 +116,25 @@ The non-bitwise position values are caused by Maya/XGen's higher-precision
 intermediate evaluation before float output. Near zero, ULP counts can be large
 despite sub-micro-unit absolute error, so the regression requires either the
 absolute or ULP bound while still reporting both. Width evaluation is bitwise
-identical. The native root sampler still does not reproduce XGen's undocumented
-root RNG. Noise arithmetic is verified separately against official per-curve
-fields, as described below; clump and guide-neighborhood parity remain future
-work.
+identical. Noise arithmetic is verified separately against official per-curve
+fields, as described below; clump parity remains future work.
+
+## Classic RandomGenerator sample sequence
+
+Maya 2027 exposes `getSample`, which revealed sixteen fixed 32768-point double
+tables plus a deterministic tiled extension and eight description-ID square
+symmetries. NanoXGen embeds those exact double bit patterns and narrows only
+the final root ABI to float. On Rabbit this reproduces per-face candidate and
+accepted root counts for all nine descriptions; PTEX density rejection remains
+a host planning step.
+
+This data is not PBRT-v4's PMJ02-BN table. Against PBRT-v4 revision
+`5f7a606806a4ac7b939131ded9d7a30ebd02416e`, PBRT contains five 65536-point
+`uint32` sets, while XGen contains sixteen 32768-point double sets. Quantizing
+all 524288 XGen pairs to PBRT's 32-bit representation produced zero exact pair
+matches, including swapped coordinates and all eight aligned square
+symmetries. The sequences can share low-discrepancy/blue-noise goals without
+being the same resident table.
 
 ## Modifier-identification harness
 
@@ -175,19 +189,18 @@ The shipped Autodesk kernel was used as an interoperability reference, but its
 source and private headers are not redistributed or copied into NanoXGen. The
 gradient table is the separately licensed Disney SeExpr table; its complete
 BSD-3-Clause notice is retained in `LICENSES/SeExpr-BSD-3-Clause.txt`. The
-runtime implementation is shared `NXG_HOST_DEVICE` C++ and is independently
+CPU implementation and separately recorded Luisa kernels are independently
 guarded by fixed scalar samples, motion-stability tests, and the official output
 matrix.
 
-Current procedural boundaries remain explicit: NanoXGen accepts a scalar mask
-and implements the default linear magnitude ramp, not arbitrary Maya
-expressions, texture/PTEX masks, or authored ramp curves. Its surface-U basis is
-derived from mesh UVs; unusual Maya patch parameterizations still need targeted
-fixtures. The current oracle matrix covers straight hairs on flat and wave
-surfaces; a fixture with authored curved input is still needed to validate every
-parallel-transport step by output rather than by the interoperability reference.
-Clump experiments will be constructed from the captured public schema rather
-than hard-coded guesses.
+Current procedural boundaries remain explicit: the bounded Classic IR supports
+authored scalar expressions and ramp interpolation, but not arbitrary SeExpr or
+all texture/PTEX bindings. The IGS oracle matrix covers straight hairs on flat
+and wave surfaces. Rabbit `head_A` shows that the Classic first-NoiseFX result
+on a curved authored guide field is not yet equivalent even though its scalar
+random correlation value is exact; that case is rejected by its geometry
+oracle. Clump experiments will be constructed from the captured public schema
+rather than hard-coded guesses.
 
 ## CPU and renderer-payload performance snapshot
 
@@ -215,27 +228,21 @@ renderer output on the same 9-logical-CPU container. Length preservation needs
 an original-length pass, a noisy-length pass, and a final output pass; each CV
 also performs three eight-corner gradient samples. This CPU result is still far
 below Maya's roughly 550 ms serialization stage, but it is slower than decoding
-an already-produced XGen BLOB. The intended production path for expensive
-modifiers is the shared CUDA/HIP implementation. A measured AMD result is
-recorded below; it does not imply that the currently unsupported authoring
-modules have become native.
+an already-produced XGen BLOB. The current device path records the supported
+passes once through LuisaCompute and dispatches them through HIP or Vulkan.
 
-### AMD HIP and complete Rabbit cache snapshot
+### Historical cache-residency measurement
 
-On Arch Linux with ROCm/HIP 7.2, an AMD Radeon RX 9070 XT (`gfx1201`), and a
-Ryzen 9 9950X3D, the real-device HIP parity suite passed. Direct packed
-generation of 100,000 strands / 1.2 million CVs with the verified noise and
-40% length-preservation path took 0.5599 ms median and 0.5886 ms p90 over 31
-timed repetitions after three warm-ups. Asset/output buffers stayed resident;
-the measurement excludes file I/O and transfers and reports a kernel rate, not
-an Autodesk comparison.
+The following numbers predate the removal of NanoXGen's handwritten HIP path.
+They are retained only as a historical cache-residency observation and are not
+evidence for the current Luisa implementation or a cold-start comparison.
 
 The complete local Rabbit Classic example contains nine descriptions. Public
 XGen RenderAPI evaluation produced 2,456,139 curves / 47,421,673 CVs; evaluating
 the descriptions took 155,119.249 ms in aggregate and writing their nine
 renderer-minimal caches took 849.445 ms. The caches total 798,046,252 bytes.
 Those Autodesk stages are CPU authoring/evaluation work and are not accelerated
-by HIP.
+by the device traversal.
 
 The same nine `.nxc` files were then measured together with three warm-ups and
 15 repetitions. Their renderer point-count and `float4` sections occupy
@@ -330,7 +337,7 @@ placed their noisy-length delta on opposite sides of XGen's `1e-4` activation
 threshold for length preservation. The precision gate therefore limits both
 the number of these discontinuities and their `1.1e-4` hard maximum, in addition
 to the global RMS bound. Fast math remains opt-in and must be tested separately
-on the target CUDA architecture before enabling `--use_fast_math`.
+on every target compiler/backend before enabling relaxed floating-point math.
 
 One benchmark pitfall was found while adding renderer materialization:
 `XgItSpline::vertexCount()` must be cached once per iterator batch. Calling it
@@ -346,14 +353,14 @@ actual renderer-buffer copy.
    modifier outputs, not only evaluated final curves.
 3. Replace the isotropic support kernel with UV/geodesic, direction-dependent
    guide regions and validate interpolation error against those fixtures.
-4. Extend the implemented float runtime plan and Luisa HIP lowering with PTEX
+4. Extend the implemented float runtime plan and Luisa lowering with PTEX
    sampling through a texture indirection table.
 5. Implement remaining modifier passes in authored dependency order. Primitive
    length/width/taper/ramp and reparameterized Cut are now represented; add
    clump, coil, collision, authored noise, and wind. Fuse passes where locality permits and use
    explicit intermediate curve buffers where modifiers need neighborhoods.
-6. Expand CUDA/HIP device coverage beyond the tested RX 9070 XT and compare
-   LuisaCompute throughput, memory, determinism, and strict/float-mode error
+6. Expand Luisa HIP/Vulkan device coverage beyond the tested RX 9070 XT and
+   compare throughput, memory, determinism, and strict/float-mode error
    against the XGen CPU baseline.
 
 ## Interoperability implementation rule

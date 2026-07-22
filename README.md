@@ -1,7 +1,6 @@
 # NanoXGen
 
 [![CI](https://github.com/Mike-Leo-Smith/NanoXGen/actions/workflows/ci.yml/badge.svg)](https://github.com/Mike-Leo-Smith/NanoXGen/actions/workflows/ci.yml)
-[![CUDA](https://github.com/Mike-Leo-Smith/NanoXGen/actions/workflows/cuda.yml/badge.svg)](https://github.com/Mike-Leo-Smith/NanoXGen/actions/workflows/cuda.yml)
 
 NanoXGen is an experimental, GPU-oriented procedural hair representation and
 generator inspired by the relationship between NanoVDB and OpenVDB. It is not
@@ -17,17 +16,16 @@ The current prototype provides:
 - width taper and an XGen-compatible 3D gradient-noise core with verified
   magnitude, frequency, correlation, and length preservation plus a
   parallel-transported surface frame;
-- one shared C++/CUDA/HIP generation function with CUDA and AMD HIP launch
-  kernels;
-- an explicit LuisaCompute `next` JIT integration, tested through its WIP HIP
-  backend on AMD, without adding it to default core dependencies;
+- an explicit LuisaCompute `next` JIT integration, tested through HIP and
+  Vulkan on AMD, without adding it to default core dependencies or retaining
+  handwritten CUDA/HIP kernels;
 - a bounded scalar Classic-expression SSA compiler with a strict CPU
   Autodesk/SeExpr calibration mode and a separate float-only Luisa runtime IR;
 - executable CPU/GPU parity suites plus GPU-resident JSON benchmarks;
-- direct CPU/CUDA/HIP generation into renderer `float4(position, radius)` and
-  fixed `pointCounts` buffers, with checked device capacities and deformation
-  lengths at the public GPU boundary;
-- persistent CPU workers that claim GPU-block-sized strand tiles through an
+- direct CPU and Luisa generation into renderer `float4(position, radius)` and
+  fixed `pointCounts` buffers, with checked device capacities at the public
+  GPU boundary;
+- persistent CPU workers that claim fixed-size strand tiles through an
   atomic counter;
 - validation, corruption detection, tests, and an OBJ curve preview;
 - a Maya 2027.1-tested Autodesk XGen Interactive Grooming probe and real-fixture
@@ -76,54 +74,30 @@ Installed consumers can use `find_package(NanoXGen CONFIG REQUIRED)` and link
 `NanoXGen::nanoxgen`; CI builds a separate downstream project to verify that
 export on every change.
 
-Use `debug`, `native-release`, `cuda-release`, or `hip-release` in place of
-`release` for the corresponding core configuration. CUDA builds require an
-installed CUDA toolkit. HIP builds require ROCm and may need an explicit local
-compiler/architecture selection, for example:
-
-```bash
-cmake --preset hip-release \
-  -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
-  -DCMAKE_HIP_ARCHITECTURES=gfx1201
-cmake --build --preset hip-release
-ctest --preset hip-release
-```
-
-GPU tests use CTest's skip code when a toolkit is available but no matching
-device is usable. The default CPU presets do not discover or link CUDA, HIP,
-Maya, or XGen; the optional GPU presets do not discover or link Maya/XGen.
+Use `debug` or `native-release` in place of `release` for the corresponding
+core configuration. The default CPU presets do not discover or link
+LuisaCompute, ROCm, Maya, or XGen; the optional Luisa preset does not discover
+or link Maya/XGen.
 
 LuisaCompute is a separate optional execution backend. Its moving `next`
 checkout and build stay outside this repository; see
 [`docs/luisa-compute.md`](docs/luisa-compute.md) for the tested revision, AMD
-HIP build, cache behavior, and explicit `luisa-hip-release` preset.
+HIP/Vulkan build, cache behavior, and explicit `luisa-hip-release` and
+`luisa-classic-hip-release` presets.
 
 The Classic Alembic/OpenSubdiv/Ptex input stage is also explicit and optional. See
 [`docs/classic-native.md`](docs/classic-native.md) for its
 `classic-alembic-release` preset, external-asset command, and current
 subdivision, PTEX binding, and modifier parity boundary.
 
-The HIP build also provides direct generation and evaluated `.nxc` residency
-benchmarks. The latter accepts multiple caches, so a complete multi-description
-asset can be measured as one upload and validation workload:
-
-```bash
-./build/hip-release/nanoxgen_hip_benchmark groom.nxg \
-  --strands 100000 --cvs 12 --noise
-./build/hip-release/nanoxgen_hip_cache_benchmark \
-  --warmup 3 --repeats 15 /external/rabbit-cache/*.nxc
-```
-
-The cache benchmark reports CPU read/validation, one-time host concatenation,
-host-to-device transfer, and the GPU full-buffer validation/checksum separately.
-It does not claim that HIP accelerates Autodesk Classic description evaluation.
-
-The Luisa/HIP preset additionally builds a zero-host-copy Classic float-plan
-benchmark. `scripts/run_rabbit_luisa_benchmark.sh` runs all nine descriptions
-of the external Rabbit example as one warm batch and reports GPU and CPU
-timings, JIT/setup cost, checksum, and every remaining fallback count. Its
-output is explicitly partial-semantics until Autodesk-equivalent root sampling,
-PTEX, clumping, and authored noise parity are complete.
+The combined Luisa/Classic preset builds a no-shader-cache cold benchmark from
+the authoring collection, Alembic patch, PTEX density, exact roots and guide
+associations through the final renderer points. The Rabbit eyelash description
+currently completes this path with no Autodesk fallback, matches Maya's
+1514-curve/25738-point topology, and passes the recorded geometry tolerance.
+Seven other Rabbit descriptions expose ClumpingFX and map-expression gaps;
+`head_A` lowers but fails its final NoiseFX geometry oracle, so it is also not
+reported as native-compatible.
 
 The Makefile is a fallback for minimal CPU-only environments:
 
@@ -182,11 +156,11 @@ cmake --build --preset autodesk-bridge-release
 ./scripts/run_maya_xgen_cache_test.sh
 ```
 
-The default `release`, `debug`, `native-release`, CUDA, and HIP presets neither
-find nor link Maya/XGen. Classic authoring packages, Interactive Maya authoring
-graphs, evaluated `XgSplineData` renderer BLOBs, and NanoXGen `.nxc` runtime
-caches are four distinct layers; see the production-assets document for their
-support boundaries.
+The default `release`, `debug`, and `native-release` presets neither find nor
+link LuisaCompute, Maya, or XGen. Classic authoring packages, Interactive Maya
+authoring graphs, evaluated `XgSplineData` renderer BLOBs, and NanoXGen `.nxc`
+runtime caches are four distinct layers; see the production-assets document
+for their support boundaries.
 
 The suite uses Maya only to create official fixtures and provide an oracle. It
 compares NanoXGen's independent parser hash with `XgFnSpline`, requires the
@@ -240,8 +214,8 @@ curve payload contract and coverage relative to the Maya renderer paths.
 
 ## Continuous integration
 
-GitHub Actions configures CMake/Ninja presets, builds the CPU targets, and runs
-the core test suite on every push and pull request. A separate official CUDA
-toolkit image compiles all CUDA targets and marks runtime parity as skipped when
-no GPU is exposed. Autodesk calibration is intentionally excluded; run
+GitHub Actions configures CMake/Ninja presets, builds the portable CPU targets,
+and runs the core test suite on every push and pull request. LuisaCompute device
+tests require an explicitly supplied external `next` build and supported GPU.
+Autodesk calibration is intentionally excluded; run
 `scripts/run_xgen_real_tests.sh` on a licensed Maya machine for that coverage.

@@ -92,6 +92,19 @@ a distinct full-channel case. Its JSON records warm-up/iteration counts, median,
 p90, checksum, channel scope, and whether Autodesk serialization or file I/O is
 included.
 
+On the 2026-07-23 local 99,929-curve/1,199,148-CV Maya oracle, 3 warmups and
+15 measured iterations gave the following medians in milliseconds. The
+resident rows exclude file I/O; hot-file rows include it. Source/canonical are
+renderer-minimal, while full canonical retains all supported curve channels.
+
+| Build | Resident source | Resident canonical | Resident full | Hot source | Hot canonical | Hot full |
+|---|---:|---:|---:|---:|---:|---:|
+| portable Release | 8.648 | 19.410 | 38.042 | 9.680 | 20.528 | 38.514 |
+| native+LTO | 8.818 | 19.306 | 38.234 | 9.988 | 20.499 | 38.242 |
+
+Both builds produced checksum `0x167e2538f9ddfcb0`; the benchmark does not
+include Autodesk serialization.
+
 The default CMake targets above link only NanoXGen, Threads, and zlib. The
 optional Autodesk calibration targets generate fixtures and compare canonical
 hashes/caches; they are not called by the parser, processor, writer, generator,

@@ -15,8 +15,9 @@ The v0.2 sections are:
 
 The header carries magic/version/size metadata plus an FNV-1a content hash.
 `validate_asset` checks all section ranges and cross-references before the blob
-is uploaded to a GPU. `DeviceAssetView` is a small non-owning accessor that is
-compiled unchanged for C++ and CUDA/HIP device code.
+is used or uploaded. `DeviceAssetView` is a small non-owning CPU accessor. The
+Luisa backend instead uploads the explicitly required typed sections so its
+recorded kernels do not depend on a host ABI or a handwritten device struct.
 
 The blob base is a 64-byte alignment boundary. Host-owned `Asset` and
 `CurveCache` objects use an aligned allocator, and checked device descriptors
@@ -35,13 +36,11 @@ the same noise lookup runs on a CPU or GPU without a host global or device
 symbol initialization step.
 
 Generated curves use fixed CV counts in v0.2. Points and widths are strand-major,
-so one CUDA or HIP work item owns one contiguous strand. Both GPU kernels keep
-that direct static mapping. On CPU, a logical work block is a contiguous tile
-of strands with the same default width as a GPU block (128 strands); persistent
-CPU worker
-threads dynamically claim these tiles through a relaxed atomic counter. This
+so one Luisa work item owns one contiguous strand. On CPU, a logical work block
+is a contiguous tile of 128 strands by default; persistent worker threads
+dynamically claim these tiles through a relaxed atomic counter. This
 amortizes scheduling and balances future variable-cost modifiers without
-changing GPU behavior. A later backend can transpose CV tiles for
+changing renderer output. A later backend can transpose CV tiles for
 warp-coalesced modifier passes without changing the source asset format.
 
 Frame-local deformation is an overlay rather than a second asset blob. Optional
@@ -60,12 +59,11 @@ aligned `float4(position, radius)` values, root UVs, motion positions, and
 face-uniform primvars. Keeping transport data out of the asset avoids baking a
 specific renderer ABI into the persistent format.
 
-GPU launch descriptors keep a validated host mirror of the asset header plus
-the device allocation capacity. Deformation and output views carry explicit
-element counts, so the public checked launch can reject a stale mesh overlay or
-undersized renderer buffer without dereferencing device memory.
-Motion requests validate all shutter overlays and the combined sample-major
-position capacity before the first kernel is enqueued.
+Luisa integration validates all host-side source arrays before allocation, then
+uploads typed buffers with explicit element counts. The Classic runtime keeps
+root identity, exact SeExpr random prefixes, guide associations, and generated
+renderer points in separate buffers, which makes backend ownership and bounds
+visible at every recorded kernel boundary.
 
 `.nxc` is a separate evaluated-curve cache, not an authoring/procedural asset.
 Its pointer-free header references per-curve counts, aligned
