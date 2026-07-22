@@ -19,11 +19,12 @@ ctest --preset classic-alembic-release
 
 The output path must stay outside the repository for production assets. The
 importer reads sample zero, applies public Alembic parent transforms, selects
-only the face IDs declared by the description, triangulates polygon faces,
-evaluates embedded guide roots, transforms relative guide CVs, and passes the
-result through normal `.nxg` validation. Missing or ambiguous patch objects,
-bad topology, non-finite values, invalid guide ranges, and limit overflows are
-checked errors.
+only the face IDs declared by the description, and transforms relative guide
+CVs. `Subd` patches use OpenSubdiv Catmull-Clark limit patches for guide
+positions/derivatives and a bounded per-face tessellation for root sampling;
+polygon patches use their cage directly. The result passes normal `.nxg`
+validation. Missing or ambiguous patch objects, bad topology, non-finite
+values, invalid guide ranges, and limit overflows are checked errors.
 
 On the local Rabbit package, all nine descriptions imported successfully. The
 `mm` description contains 188 source vertices, 152 selected quad faces, 366
@@ -32,13 +33,14 @@ describe authoring input, not evaluated curve output.
 
 ## Current parity boundary
 
-This first importer evaluates a guide root on the Alembic quad cage with
-bilinear coordinates and triangulates the same cage for root sampling. Classic
-`Subd` evaluation uses a subdivision limit surface, so cage roots are not yet a
-bit-exact substitute. The current `.nxg` generator also uses NanoXGen root RNG
-and guide neighborhoods. Scalar/ramp IR is independently JIT-capable, but PTEX,
-the full expression environment, and authored FX-module ordering are not yet
-wired into this asset builder.
+The OpenSubdiv path removes the earlier bilinear-cage guide-root approximation,
+but its root sampling still uses a finite limit-surface tessellation (two
+segments per coarse-face edge by default), not XGen's own adaptive patch
+sampler. Boundary/crease metadata is also absent when an Alembic file stores
+the Maya patch as a plain `PolyMesh`. The current `.nxg` generator still uses
+NanoXGen root RNG and guide neighborhoods. Scalar/ramp IR is independently
+JIT-capable, but PTEX, the full expression environment, and authored FX-module
+ordering are not yet wired into this asset builder.
 
 Consequently, timings from this path are engineering measurements for the
 native prototype, not an equal-output Maya speedup claim. A valid Maya

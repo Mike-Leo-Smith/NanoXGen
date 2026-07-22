@@ -65,7 +65,7 @@ nanoxgen::ClassicDescription description() {
     guide.cv_offset = 0u;
     guide.cv_count = 2u;
     nanoxgen::ClassicPatch patch{};
-    patch.type = "Subd";
+    patch.type = "Poly";
     patch.name = "testPatch";
     patch.face_ids = {0u};
     patch.guides = {guide};
@@ -117,10 +117,34 @@ void test_missing_patch() {
     throw std::runtime_error("missing patch was accepted");
 }
 
+void test_subd_import() {
+    const TemporaryArchive archive = write_archive();
+    nanoxgen::ClassicDescription input = description();
+    input.patches.front().type = "Subd";
+    nanoxgen::ClassicAlembicLimits limits{};
+    limits.subd_face_resolution = 2u;
+    const nanoxgen::ClassicAlembicAssetInput imported =
+        nanoxgen::build_xgen_classic_alembic_asset_input(
+            input, archive.path, limits);
+    require(imported.asset.positions.size() == 9u,
+            "subdivision tessellation vertex count mismatch");
+    require(imported.asset.triangles.size() == 8u,
+            "subdivision tessellation triangle count mismatch");
+    const nanoxgen::GuideInput &guide = imported.asset.guides.front();
+    require(guide.triangle_index < imported.asset.triangles.size(),
+            "subdivision guide triangle is invalid");
+    require(std::isfinite(guide.cvs[0].x) && std::isfinite(guide.cvs[0].y) &&
+                std::isfinite(guide.cvs[0].z),
+            "subdivision guide root is non-finite");
+    require(near(guide.cvs[1].y - guide.cvs[0].y, 1.0f),
+            "subdivision guide relative CV mismatch");
+}
+
 } // namespace
 
 int main() try {
     test_import();
+    test_subd_import();
     test_missing_patch();
     std::cout << "Classic Alembic import tests passed\n";
     return 0;

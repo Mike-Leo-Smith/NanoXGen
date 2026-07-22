@@ -271,13 +271,16 @@ endif()
 
 if(NANOXGEN_ENABLE_ALEMBIC)
   find_package(Alembic CONFIG REQUIRED)
+  find_package(TBB CONFIG REQUIRED)
+  find_package(OpenSubdiv CONFIG REQUIRED)
   add_library(nanoxgen_classic_alembic STATIC src/xgen_classic_alembic.cpp)
   add_library(NanoXGen::nanoxgen_classic_alembic ALIAS nanoxgen_classic_alembic)
   target_include_directories(
     nanoxgen_classic_alembic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_compile_features(nanoxgen_classic_alembic PUBLIC cxx_std_20)
   target_link_libraries(
-    nanoxgen_classic_alembic PUBLIC nanoxgen Alembic::Alembic)
+    nanoxgen_classic_alembic
+    PUBLIC nanoxgen Alembic::Alembic OpenSubdiv::osdCPU)
   target_link_libraries(
     nanoxgen_classic_alembic PRIVATE nanoxgen_build_options)
   if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")

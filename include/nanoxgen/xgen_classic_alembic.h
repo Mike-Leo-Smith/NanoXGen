@@ -14,6 +14,7 @@ struct ClassicAlembicLimits {
     std::size_t max_faces{100000000u};
     std::size_t max_face_vertices{1000000000u};
     std::size_t max_triangles{200000000u};
+    std::uint32_t subd_face_resolution{2u};
 };
 
 struct ClassicAlembicAssetInput {
@@ -21,6 +22,9 @@ struct ClassicAlembicAssetInput {
     std::size_t source_vertex_count{};
     std::size_t source_face_count{};
     std::size_t selected_face_count{};
+    std::size_t subdivision_face_count{};
+    float guide_cage_root_rms_distance{};
+    float guide_cage_root_max_distance{};
 };
 
 // Read the first Alembic sample for each Classic patch, select only its

@@ -3,6 +3,7 @@
 #include "nanoxgen/xgen_classic_alembic.h"
 
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -73,14 +74,21 @@ int main(int argc, char **argv) try {
     }
     const nanoxgen::Asset asset = nanoxgen::build_asset(imported.asset);
     nanoxgen::save_asset(asset, options.output);
-    std::cout << "{\"description\":\"" << options.description
+    std::cout << std::setprecision(9)
+              << "{\"description\":\"" << options.description
               << "\",\"source_vertices\":" << imported.source_vertex_count
               << ",\"source_faces\":" << imported.source_face_count
               << ",\"selected_faces\":" << imported.selected_face_count
+              << ",\"subdivision_faces\":"
+              << imported.subdivision_face_count
               << ",\"vertices\":" << vertex_count
               << ",\"triangles\":" << triangle_count
               << ",\"guides\":" << guide_count
               << ",\"guide_cvs\":" << guide_cv_count
+              << ",\"guide_cage_root_rms_distance\":"
+              << imported.guide_cage_root_rms_distance
+              << ",\"guide_cage_root_max_distance\":"
+              << imported.guide_cage_root_max_distance
               << ",\"asset_bytes\":" << asset.bytes().size() << "}\n";
     return 0;
 } catch (const std::exception &error) {
