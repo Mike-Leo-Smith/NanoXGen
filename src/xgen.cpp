@@ -1426,7 +1426,9 @@ XGenEvaluatedCurves make_xgen_curves(const GeneratedCurves &curves) {
         const RootSample &root = curves.roots[strand];
         result.patch_uvs.push_back(root.uv);
         result.face_uvs.push_back(root.barycentric);
-        result.face_ids.push_back(root.triangle_index);
+        result.face_ids.push_back(root.surface_face_id == kInvalidIndex
+                                      ? root.triangle_index
+                                      : root.surface_face_id);
         for (std::uint32_t cv = 0u; cv < curves.cvs_per_strand; ++cv) {
             result.texcoords.push_back(
                 {0.0f, static_cast<float>(cv) /

@@ -1,4 +1,5 @@
 #include "nanoxgen/xgen_classic_runtime.h"
+#include "nanoxgen/seexpr_noise_table.h"
 
 #include <algorithm>
 #include <array>
@@ -135,7 +136,8 @@ float evaluate_runtime_expression(
     return evaluate_xgen_scalar_expression_float(
         expression.program,
         {std::span{inputs}.first(expression.program.inputs.size()), context.u,
-         context.v, context.face_seed, context.t},
+         context.v, context.face_seed, context.t, context.random_prefix,
+         context.has_random_prefix},
         scratch);
 }
 
@@ -161,45 +163,239 @@ void scale_curve(std::span<PackedCurvePoint> points, float scale) {
     }
 }
 
-void cut_and_reparameterize(std::span<PackedCurvePoint> points,
-                            float remaining_length,
-                            std::vector<float> &cumulative,
-                            std::vector<Vec3> &resampled) {
-    cumulative.resize(points.size());
+Vec3 xgen_curve_eval(std::span<const Vec3> points, float t) {
+    constexpr float epsilon = 1.0e-7f;
+    if (t < epsilon) { return points.front(); }
+    if (t > 1.0f - epsilon) { return points.back(); }
+    const std::uint32_t spans =
+        static_cast<std::uint32_t>(points.size() - 1u);
+    const float scaled = t * static_cast<float>(spans);
+    const std::uint32_t span = static_cast<std::uint32_t>(scaled);
+    const float f = scaled - static_cast<float>(span);
+    const float f2 = f * f;
+    const float f3 = f2 * f;
+    const float one_minus_f = 1.0f - f;
+    const float b0 = one_minus_f * one_minus_f * one_minus_f;
+    const float b1 = 3.0f * f3 - 6.0f * f2 + 4.0f;
+    const float b2 = -3.0f * f3 + 3.0f * f2 + 3.0f * f + 1.0f;
+    const float b3 = f3;
+    const Vec3 p0 = span == 0u
+        ? points[0u] * 2.0f - points[1u]
+        : points[span - 1u];
+    const Vec3 p1 = points[span];
+    const Vec3 p2 = points[span + 1u];
+    const Vec3 p3 = span + 2u == points.size()
+        ? points.back() * 2.0f - points[points.size() - 2u]
+        : points[span + 2u];
+    return (p0 * b0 + p1 * b1 + p2 * b2 + p3 * b3) * (1.0f / 6.0f);
+}
+
+float cut_from_tip_and_rebuild(std::span<PackedCurvePoint> points,
+                               float amount,
+                               std::vector<Vec3> &source,
+                               std::vector<Vec3> &resampled) {
+    source.resize(points.size());
     resampled.resize(points.size());
-    cumulative[0u] = 0.0f;
-    for (std::size_t index = 1u; index < points.size(); ++index) {
-        const Vec3 previous{points[index - 1u].x, points[index - 1u].y,
-                            points[index - 1u].z};
-        const Vec3 current{points[index].x, points[index].y, points[index].z};
-        cumulative[index] = cumulative[index - 1u] +
-                            std::sqrt(length_squared(current - previous));
-    }
-    std::size_t segment = 0u;
     for (std::size_t index = 0u; index < points.size(); ++index) {
-        const float parameter = static_cast<float>(index) /
-                                static_cast<float>(points.size() - 1u);
-        const float distance = remaining_length * parameter;
-        while (segment + 1u < points.size() &&
-               cumulative[segment + 1u] < distance) {
-            ++segment;
+        source[index] = {points[index].x, points[index].y, points[index].z};
+    }
+    float cut_parameter = 1.0f;
+    if (amount >= 1.0e-10f) {
+        const float step = 1.0f /
+            (2.0f * static_cast<float>(points.size()) + 4.0f);
+        float previous_parameter = 1.0f;
+        Vec3 previous = source.back();
+        float accumulated = 0.0f;
+        for (;;) {
+            const float parameter = std::max(previous_parameter - step, 0.0f);
+            const Vec3 current = xgen_curve_eval(source, parameter);
+            const float segment_length =
+                std::sqrt(length_squared(previous - current));
+            accumulated += segment_length;
+            if (accumulated >= amount && segment_length > 0.0f) {
+                cut_parameter = parameter +
+                    ((accumulated - amount) / segment_length) *
+                        (previous_parameter - parameter);
+                break;
+            }
+            if (parameter <= 1.0e-10f) {
+                cut_parameter = 0.0f;
+                std::fill(resampled.begin(), resampled.end(), source.front());
+                break;
+            }
+            previous_parameter = parameter;
+            previous = current;
         }
-        if (segment + 1u == points.size()) {
-            segment = points.size() - 2u;
+    }
+    if (cut_parameter > 0.0f) {
+        const float step = cut_parameter /
+            static_cast<float>(points.size() - 1u);
+        resampled.front() = source.front();
+        for (std::size_t index = 1u; index < points.size(); ++index) {
+            resampled[index] = xgen_curve_eval(
+                source, step * static_cast<float>(index));
         }
-        const float interval = cumulative[segment + 1u] - cumulative[segment];
-        const float weight = interval > 0.0f
-            ? (distance - cumulative[segment]) / interval
-            : 0.0f;
-        const Vec3 a{points[segment].x, points[segment].y, points[segment].z};
-        const Vec3 b{points[segment + 1u].x, points[segment + 1u].y,
-                     points[segment + 1u].z};
-        resampled[index] = a * (1.0f - weight) + b * weight;
     }
     for (std::size_t index = 0u; index < points.size(); ++index) {
         points[index].x = resampled[index].x;
         points[index].y = resampled[index].y;
         points[index].z = resampled[index].z;
+    }
+    return cut_parameter;
+}
+
+} // namespace
+
+float xgen_classic_noise_float(Vec3 sample) noexcept {
+    const float fx = std::floor(sample.x);
+    const float fy = std::floor(sample.y);
+    const float fz = std::floor(sample.z);
+    const std::int32_t ix = static_cast<std::int32_t>(fx);
+    const std::int32_t iy = static_cast<std::int32_t>(fy);
+    const std::int32_t iz = static_cast<std::int32_t>(fz);
+    const Vec3 weights{sample.x - fx, sample.y - fy, sample.z - fz};
+    float values[8]{};
+    for (std::uint32_t corner = 0u; corner < 8u; ++corner) {
+        const std::int32_t ox = static_cast<std::int32_t>(corner & 1u);
+        const std::int32_t oy = static_cast<std::int32_t>((corner >> 1u) & 1u);
+        const std::int32_t oz = static_cast<std::int32_t>((corner >> 2u) & 1u);
+        const Vec3 gradient = detail::kSeExprNoiseGradients[
+            noise_hash(ix + ox, iy + oy, iz + oz)];
+        values[corner] =
+            gradient.x * (weights.x - static_cast<float>(ox)) +
+            gradient.y * (weights.y - static_cast<float>(oy)) +
+            gradient.z * (weights.z - static_cast<float>(oz));
+    }
+    const float alphas[3] = {noise_s_curve(weights.x),
+                             noise_s_curve(weights.y),
+                             noise_s_curve(weights.z)};
+    for (std::int32_t dimension = 2; dimension >= 0; --dimension) {
+        const std::int32_t count = 1 << dimension;
+        for (std::int32_t value = 0; value < count; ++value) {
+            const std::int32_t index = value * (1 << (3 - dimension));
+            const std::int32_t axis = 2 - dimension;
+            const std::int32_t other = index + (1 << axis);
+            values[index] = (1.0f - alphas[axis]) * values[index] +
+                            alphas[axis] * values[other];
+        }
+    }
+    return 0.5f * values[0] + 0.5f;
+}
+
+namespace {
+
+void apply_noise(
+    std::span<PackedCurvePoint> points,
+    const ClassicFloatNoiseModule &noise,
+    ClassicFloatRuntimeContext &context,
+    Vec3 surface_normal,
+    Vec3 surface_tangent,
+    std::span<float> scratch) {
+    const auto evaluate = [&](const ClassicFloatRuntimeExpression &expression) {
+        return evaluate_runtime_expression(expression, context, scratch);
+    };
+    const float mask = std::clamp(evaluate(noise.mask), 0.0f, 1.0f);
+    if (!(mask > 1.0e-6f)) { return; }
+    const float frequency = std::max(evaluate(noise.frequency), 0.0f);
+    const float correlation = std::clamp(
+        evaluate(noise.correlation) * 0.01f, 0.0f, 1.0f);
+    const float preserve = std::clamp(
+        evaluate(noise.preserve_length) * 0.01f, 0.0f, 1.0f);
+    if (!std::isfinite(frequency) || !std::isfinite(correlation) ||
+        !std::isfinite(preserve)) {
+        throw std::runtime_error(
+            "Classic NoiseFX produced a non-finite parameter");
+    }
+    const float original_length = curve_length(points);
+    const float effective_frequency = original_length > 0.0f
+        ? std::max(0.5f / original_length, frequency)
+        : frequency;
+    const float decorrelation = 1.0f - correlation;
+    const float domain_scale = 100.0f * decorrelation * decorrelation;
+    const Vec3 root{points.front().x, points.front().y, points.front().z};
+    const Vec3 domain =
+        (root + Vec3{0.419276f, 0.184247f, 0.805721f}) * domain_scale;
+    if (!(length_squared(surface_tangent) > 1.0e-20f)) {
+        surface_tangent = fallback_surface_u(surface_normal);
+    } else {
+        surface_tangent = normalize(surface_tangent);
+    }
+    Vec3 previous_base = root;
+    Vec3 current_base = root;
+    Vec3 next_base{points[1u].x, points[1u].y, points[1u].z};
+    // SgCurve::frame transports cU from the surface normal to the first
+    // segment, then between successive segment tangents.
+    Vec3 prior_tangent = length_squared(surface_normal) > 1.0e-20f
+        ? normalize(surface_normal)
+        : Vec3{0.0f, 1.0f, 0.0f};
+    Vec3 transported_normal = surface_tangent;
+    float travelled = 0.0f;
+    for (std::uint32_t cv = 0u; cv < points.size(); ++cv) {
+        if (cv > 0u) {
+            travelled += std::sqrt(length_squared(current_base - previous_base));
+        }
+        Vec3 next_tangent = prior_tangent;
+        if (cv + 1u < points.size()) {
+            const Vec3 segment = next_base - current_base;
+            if (length_squared(segment) > 1.0e-20f) {
+                next_tangent = normalize(segment);
+            }
+        }
+        const Vec3 axis = cross(prior_tangent, next_tangent);
+        if (length_squared(axis) > 1.0e-20f) {
+            const float angle = std::acos(std::clamp(
+                dot(prior_tangent, next_tangent), -1.0f, 1.0f));
+            transported_normal = normalize(rotate_by(
+                transported_normal, normalize(axis), angle));
+        }
+        const Vec3 normal = transported_normal;
+        const Vec3 binormal = cross(normal, next_tangent);
+        const Vec3 tangent = cross(binormal, normal);
+        context.t = static_cast<float>(cv) /
+                    static_cast<float>(points.size() - 1u);
+        const float magnitude = std::max(evaluate(noise.magnitude), 0.0f) *
+            std::max(evaluate(noise.magnitude_scale), 0.0f) * mask;
+        if (!std::isfinite(magnitude)) {
+            throw std::runtime_error(
+                "Classic NoiseFX magnitude is non-finite");
+        }
+        if (cv > 0u) {
+            const float distance = travelled * effective_frequency;
+            const Vec3 local{
+                (xgen_classic_noise_float(
+                     {domain.x + distance, domain.y, domain.z}) - 0.5f) *
+                    magnitude,
+                (xgen_classic_noise_float(
+                     {domain.x, domain.y + distance, domain.z}) - 0.5f) *
+                    magnitude,
+                (xgen_classic_noise_float(
+                     {domain.x, domain.y, domain.z + distance}) - 0.5f) *
+                    magnitude};
+            const Vec3 displaced = current_base + normal * local.x +
+                                   binormal * local.y + tangent * local.z;
+            points[cv].x = displaced.x;
+            points[cv].y = displaced.y;
+            points[cv].z = displaced.z;
+        }
+        prior_tangent = next_tangent;
+        previous_base = current_base;
+        if (cv + 1u < points.size()) {
+            current_base = next_base;
+            if (cv + 2u < points.size()) {
+                next_base = {points[cv + 2u].x, points[cv + 2u].y,
+                             points[cv + 2u].z};
+            }
+        }
+    }
+    if (preserve > 0.001f) {
+        const float noisy_length = curve_length(points);
+        if (noisy_length > 0.0f) {
+            const float target = original_length * preserve +
+                                 noisy_length * (1.0f - preserve);
+            if (std::abs(noisy_length - target) >= 0.0001f) {
+                scale_curve(points, target / noisy_length);
+            }
+        }
     }
 }
 
@@ -240,6 +436,60 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
         if (!object.type.ends_with("FXModule") || !object_is_active(object)) {
             continue;
         }
+        if (object.type == "NoiseFXModule") {
+            const std::uint32_t mode = parse_uint_attribute(
+                find_classic_attribute(object.attributes, "mode"), 0u,
+                "NoiseFXModule mode");
+            if (mode != 0u) {
+                result.fallback_reasons.push_back(
+                    "NoiseFXModule " + object_name(object) +
+                    ": only mode 0 is implemented");
+                continue;
+            }
+            const auto attribute = [&](std::string_view name) {
+                const ClassicAttribute *value = find_classic_attribute(
+                    object.attributes, name);
+                if (value == nullptr || value->value.empty()) {
+                    throw std::runtime_error(
+                        "missing " + std::string{name} + " expression");
+                }
+                return value;
+            };
+            try {
+                ClassicFloatNoiseModule noise{
+                    compile_expression(object, *attribute("mask")),
+                    compile_expression(object, *attribute("magnitude")),
+                    compile_expression(object, *attribute("magnitudeScale")),
+                    compile_expression(object, *attribute("frequency")),
+                    compile_expression(object, *attribute("correlation")),
+                    compile_expression(object, *attribute("preserveLength")),
+                    mode};
+                bool valid = true;
+                valid &= validate_inputs(noise.mask, result.fallback_reasons);
+                valid &= validate_inputs(
+                    noise.magnitude, result.fallback_reasons);
+                valid &= validate_inputs(
+                    noise.magnitude_scale, result.fallback_reasons);
+                valid &= validate_inputs(
+                    noise.frequency, result.fallback_reasons);
+                valid &= validate_inputs(
+                    noise.correlation, result.fallback_reasons);
+                valid &= validate_inputs(
+                    noise.preserve_length, result.fallback_reasons);
+                if (valid) {
+                    const std::uint32_t index = static_cast<std::uint32_t>(
+                        result.noises.size());
+                    result.noises.emplace_back(std::move(noise));
+                    result.effects.push_back(
+                        {ClassicFloatEffectType::Noise, index});
+                }
+            } catch (const std::exception &error) {
+                result.fallback_reasons.push_back(
+                    "NoiseFXModule " + object_name(object) + ": " +
+                    error.what());
+            }
+            continue;
+        }
         if (object.type != "CutFXModule") {
             result.fallback_reasons.push_back(
                 object.type + " " + object_name(object) +
@@ -267,20 +517,17 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
             ClassicFloatCutModule cut{compile_expression(object, *amount),
                                       rebuild_type};
             if (validate_inputs(cut.amount, result.fallback_reasons)) {
+                const std::uint32_t index = static_cast<std::uint32_t>(
+                    result.cuts.size());
                 result.cuts.emplace_back(std::move(cut));
+                result.effects.push_back(
+                    {ClassicFloatEffectType::Cut, index});
             }
         } catch (const std::exception &error) {
             result.fallback_reasons.push_back(
                 "CutFXModule " + object_name(object) + ".amount: " +
                 error.what());
         }
-    }
-    if (std::any_of(description.objects.begin(), description.objects.end(),
-                    [](const ClassicObject &object) {
-                        return object.type == "RandomGenerator";
-                    })) {
-        result.fallback_reasons.push_back(
-            "RandomGenerator: Autodesk root sampling is not implemented");
     }
     return result;
 }
@@ -295,7 +542,10 @@ float evaluate_xgen_classic_float_runtime_expression(
 void apply_xgen_classic_float_runtime_plan_cpu(
     PackedGeneratedCurves &curves,
     const ClassicFloatRuntimePlan &plan,
-    float radius_scale) {
+    float radius_scale,
+    std::span<const Vec3> surface_tangents,
+    std::span<const std::uint32_t> random_prefixes,
+    std::span<const std::uint32_t> primitive_ids) {
     if (curves.strand_count == 0u || curves.cvs_per_strand < 2u ||
         curves.point_counts.size() != curves.strand_count ||
         curves.roots.size() != curves.strand_count ||
@@ -308,8 +558,45 @@ void apply_xgen_classic_float_runtime_plan_cpu(
         throw std::invalid_argument(
             "Classic runtime radius scale must be finite and non-negative");
     }
-    std::vector<float> cumulative;
+    if (!plan.noises.empty() &&
+        surface_tangents.size() != curves.strand_count) {
+        throw std::invalid_argument(
+            "Classic NoiseFX needs one surface tangent per strand");
+    }
+    bool needs_random_prefix = false;
+    const auto expression_needs_prefix = [&](
+        const std::optional<ClassicFloatRuntimeExpression> &expression) {
+        return expression && expression->program.random_call_count != 0u;
+    };
+    needs_random_prefix |= expression_needs_prefix(plan.length) ||
+        expression_needs_prefix(plan.width) ||
+        expression_needs_prefix(plan.taper) ||
+        expression_needs_prefix(plan.taper_start) ||
+        expression_needs_prefix(plan.width_ramp);
+    for (const ClassicFloatCutModule &cut : plan.cuts) {
+        needs_random_prefix |= cut.amount.program.random_call_count != 0u;
+    }
+    for (const ClassicFloatNoiseModule &noise : plan.noises) {
+        needs_random_prefix |= noise.mask.program.random_call_count != 0u ||
+            noise.magnitude.program.random_call_count != 0u ||
+            noise.magnitude_scale.program.random_call_count != 0u ||
+            noise.frequency.program.random_call_count != 0u ||
+            noise.correlation.program.random_call_count != 0u ||
+            noise.preserve_length.program.random_call_count != 0u;
+    }
+    if (needs_random_prefix &&
+        random_prefixes.size() != curves.strand_count) {
+        throw std::invalid_argument(
+            "Classic runtime needs one SeExpr prefix per strand");
+    }
+    if (!primitive_ids.empty() &&
+        primitive_ids.size() != curves.strand_count) {
+        throw std::invalid_argument(
+            "Classic runtime needs one primitive ID per strand");
+    }
+    std::vector<Vec3> cut_source;
     std::vector<Vec3> resampled;
+    std::vector<std::uint8_t> keep(curves.strand_count, 1u);
     std::size_t scratch_size = 0u;
     const auto include_scratch = [&](
         const std::optional<ClassicFloatRuntimeExpression> &expression) {
@@ -327,6 +614,15 @@ void apply_xgen_classic_float_runtime_plan_cpu(
         scratch_size = std::max(
             scratch_size, cut.amount.program.instructions.size());
     }
+    for (const ClassicFloatNoiseModule &noise : plan.noises) {
+        const ClassicFloatRuntimeExpression *expressions[] = {
+            &noise.mask, &noise.magnitude, &noise.magnitude_scale,
+            &noise.frequency, &noise.correlation, &noise.preserve_length};
+        for (const ClassicFloatRuntimeExpression *expression : expressions) {
+            scratch_size = std::max(
+                scratch_size, expression->program.instructions.size());
+        }
+    }
     std::vector<float> scratch(scratch_size);
     const auto evaluate = [&](const ClassicFloatRuntimeExpression &expression,
                               const ClassicFloatRuntimeContext &context) {
@@ -342,11 +638,17 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             curves.cvs_per_strand};
         const RootSample &root = curves.roots[strand];
         ClassicFloatRuntimeContext context{};
-        context.id = strand;
+        context.id = primitive_ids.empty() ? strand : primitive_ids[strand];
         context.u = root.uv.x;
         context.v = root.uv.y;
         context.face_seed = xgen_runtime_face_seed(
-            plan.description_id, plan.description_name, root.triangle_index);
+            plan.description_id, plan.description_name,
+            root.surface_face_id == kInvalidIndex
+                ? root.triangle_index
+                : root.surface_face_id);
+        context.random_prefix = random_prefixes.empty()
+            ? 0u : random_prefixes[strand];
+        context.has_random_prefix = !random_prefixes.empty();
         context.c_length = curve_length(points);
         if (plan.length) {
             const float length_scale = evaluate(*plan.length, context);
@@ -366,17 +668,32 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             throw std::runtime_error(
                 "Classic width expression produced a negative value");
         }
-        for (const ClassicFloatCutModule &cut : plan.cuts) {
-            const float amount = evaluate(cut.amount, context);
-            if (!std::isfinite(amount)) {
-                throw std::runtime_error(
-                    "Classic CutFX amount produced a non-finite value");
+        for (const ClassicFloatEffect effect : plan.effects) {
+            if (effect.type == ClassicFloatEffectType::Noise) {
+                if (effect.module_index >= plan.noises.size()) {
+                    throw std::invalid_argument(
+                        "Classic NoiseFX operation index is invalid");
+                }
+                apply_noise(points, plan.noises[effect.module_index], context,
+                            root.normal, surface_tangents[strand], scratch);
+                context.c_length = curve_length(points);
+            } else {
+                if (effect.module_index >= plan.cuts.size()) {
+                    throw std::invalid_argument(
+                        "Classic CutFX operation index is invalid");
+                }
+                const ClassicFloatCutModule &cut =
+                    plan.cuts[effect.module_index];
+                const float amount = evaluate(cut.amount, context);
+                if (!std::isfinite(amount)) {
+                    throw std::runtime_error(
+                        "Classic CutFX amount produced a non-finite value");
+                }
+                const float cut_parameter = cut_from_tip_and_rebuild(
+                    points, std::max(amount, 0.0f), cut_source, resampled);
+                if (cut_parameter < 1.0e-4f) { keep[strand] = 0u; }
+                context.c_length = curve_length(points);
             }
-            const float remaining = std::clamp(
-                context.c_length - std::max(amount, 0.0f), 0.0f,
-                context.c_length);
-            cut_and_reparameterize(points, remaining, cumulative, resampled);
-            context.c_length = curve_length(points);
         }
         const float taper = plan.taper
             ? evaluate(*plan.taper, context)
@@ -410,6 +727,69 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             points[cv].radius = 0.5f * diameter * radius_scale;
         }
     }
+    std::uint32_t write = 0u;
+    for (std::uint32_t read = 0u; read < curves.strand_count; ++read) {
+        if (keep[read] == 0u) { continue; }
+        if (write != read) {
+            for (std::uint32_t cv = 0u; cv < curves.cvs_per_strand; ++cv) {
+                curves.points[static_cast<std::size_t>(write) *
+                                  curves.cvs_per_strand + cv] =
+                    curves.points[static_cast<std::size_t>(read) *
+                                      curves.cvs_per_strand + cv];
+            }
+            curves.point_counts[write] = curves.point_counts[read];
+            curves.roots[write] = curves.roots[read];
+            if (!curves.root_uvs.empty()) {
+                curves.root_uvs[write] = curves.root_uvs[read];
+            }
+        }
+        ++write;
+    }
+    if (write != curves.strand_count) {
+        curves.strand_count = write;
+        curves.point_counts.resize(write);
+        curves.roots.resize(write);
+        if (!curves.root_uvs.empty()) { curves.root_uvs.resize(write); }
+        curves.points.resize(
+            static_cast<std::size_t>(write) * curves.cvs_per_strand);
+    }
+}
+
+void add_xgen_classic_renderer_endpoints(PackedGeneratedCurves &curves) {
+    if (curves.strand_count == 0u || curves.cvs_per_strand < 2u ||
+        curves.point_counts.size() != curves.strand_count ||
+        curves.points.size() != static_cast<std::size_t>(curves.strand_count) *
+                                    curves.cvs_per_strand) {
+        throw std::invalid_argument(
+            "Classic renderer endpoints need valid fixed-CV curves");
+    }
+    const std::uint32_t source_count = curves.cvs_per_strand;
+    const std::uint32_t output_count = source_count + 2u;
+    std::vector<PackedCurvePoint> output(
+        static_cast<std::size_t>(curves.strand_count) * output_count);
+    for (std::uint32_t strand = 0u; strand < curves.strand_count; ++strand) {
+        const PackedCurvePoint *source = curves.points.data() +
+            static_cast<std::size_t>(strand) * source_count;
+        PackedCurvePoint *destination = output.data() +
+            static_cast<std::size_t>(strand) * output_count;
+        std::copy_n(source, source_count, destination + 1u);
+        destination[0u] = {
+            2.0f * source[0u].x - source[1u].x,
+            2.0f * source[0u].y - source[1u].y,
+            2.0f * source[0u].z - source[1u].z,
+            source[0u].radius};
+        destination[output_count - 1u] = {
+            2.0f * source[source_count - 1u].x -
+                source[source_count - 2u].x,
+            2.0f * source[source_count - 1u].y -
+                source[source_count - 2u].y,
+            2.0f * source[source_count - 1u].z -
+                source[source_count - 2u].z,
+            source[source_count - 1u].radius};
+    }
+    curves.cvs_per_strand = output_count;
+    std::fill(curves.point_counts.begin(), curves.point_counts.end(), output_count);
+    curves.points = std::move(output);
 }
 
 } // namespace nanoxgen

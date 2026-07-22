@@ -32,6 +32,7 @@ namespace Sdc = OpenSubdiv::Sdc;
 
 struct LoadedMesh {
     std::vector<Imath::V3f> positions;
+    std::vector<Imath::V3f> reference_positions;
     std::vector<std::int32_t> face_counts;
     std::vector<std::int32_t> face_indices;
     Imath::M44d transform{};
@@ -50,11 +51,99 @@ struct SubdPosition {
     }
 };
 
+struct Double3 {
+    double x{};
+    double y{};
+    double z{};
+};
+
 struct SubdSample {
     Vec3 position{};
     Vec3 du{};
     Vec3 dv{};
 };
+
+struct SurfaceFrame {
+    Vec3 normal{};
+    Vec3 tangent{};
+    Vec3 binormal{};
+};
+
+SurfaceFrame xgen_surface_frame(Vec3 du, Vec3 dv) {
+    // XGen's patch v increases in the opposite direction from OpenSubdiv's
+    // Ptex v. XgPatch::evalFrame then rotates the two unit parameter tangents
+    // away from one another by half of their deviation from 90 degrees. The
+    // normalized sum/difference form performs the same symmetric
+    // orthogonalization without trigonometry.
+    const Vec3 u_tangent = normalize(du);
+    const Vec3 v_tangent = normalize(dv * -1.0f);
+    const Vec3 sum = u_tangent + v_tangent;
+    const Vec3 difference = u_tangent - v_tangent;
+    if (!(length_squared(sum) > 1.0e-20f) ||
+        !(length_squared(difference) > 1.0e-20f)) {
+        throw std::runtime_error(
+            "Classic Alembic import: surface parameter tangents cannot form an XGen frame");
+    }
+    constexpr float kInverseSqrtTwo = 0.7071067811865475244f;
+    const Vec3 tangent =
+        (normalize(sum) + normalize(difference)) * kInverseSqrtTwo;
+    const Vec3 binormal =
+        (normalize(sum) - normalize(difference)) * kInverseSqrtTwo;
+    return {normalize(cross(tangent, binormal)), tangent, binormal};
+}
+
+Double3 to_double(Vec3 value) noexcept {
+    return {static_cast<double>(value.x), static_cast<double>(value.y),
+            static_cast<double>(value.z)};
+}
+
+Double3 operator-(Double3 lhs, Double3 rhs) noexcept {
+    return {lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z};
+}
+
+Double3 operator+(Double3 lhs, Double3 rhs) noexcept {
+    return {lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z};
+}
+
+Double3 operator*(Double3 value, double scale) noexcept {
+    return {value.x * scale, value.y * scale, value.z * scale};
+}
+
+Double3 cross(Double3 lhs, Double3 rhs) noexcept {
+    return {lhs.y * rhs.z - lhs.z * rhs.y,
+            lhs.z * rhs.x - lhs.x * rhs.z,
+            lhs.x * rhs.y - lhs.y * rhs.x};
+}
+
+double length(Double3 value) noexcept {
+    return std::sqrt(value.x * value.x + value.y * value.y +
+                     value.z * value.z);
+}
+
+double triangle_double_area(Double3 a, Double3 b, Double3 c) noexcept {
+    return length(cross(b - a, c - a));
+}
+
+// SgSubdSurface::area evaluates the float control cage, not the OpenSubdiv
+// limit surface. For a quad it averages the double-areas of all four corner
+// triples. This is symmetric for non-planar cages and equals the usual area
+// for a planar quad.
+double xgen_quad_area(const Double3 (&p)[4]) noexcept {
+    return 0.25 * (triangle_double_area(p[0], p[1], p[2]) +
+                   triangle_double_area(p[0], p[1], p[3]) +
+                   triangle_double_area(p[0], p[2], p[3]) +
+                   triangle_double_area(p[1], p[2], p[3]));
+}
+
+// SgSubdSurface::lengthU/V use straight spans between opposite control-cage
+// edges. XGen requests both at 0.5 for surface compensation.
+double xgen_quad_length_u(const Double3 (&p)[4]) noexcept {
+    return length((p[3] + p[2]) * 0.5 - (p[0] + p[1]) * 0.5);
+}
+
+double xgen_quad_length_v(const Double3 (&p)[4]) noexcept {
+    return length((p[1] + p[2]) * 0.5 - (p[0] + p[3]) * 0.5);
+}
 
 struct MeshSearch {
     std::string target;
@@ -119,10 +208,40 @@ LoadedMesh copy_mesh_sample(const Sample &sample, const Imath::M44d &transform,
     }
     LoadedMesh result{};
     result.positions.assign(positions->get(), positions->get() + positions->size());
+    result.reference_positions = result.positions;
     result.face_counts.assign(counts->get(), counts->get() + counts->size());
     result.face_indices.assign(indices->get(), indices->get() + indices->size());
     result.transform = transform;
     return result;
+}
+
+template<typename Schema>
+void load_reference_positions(const Schema &schema, LoadedMesh &mesh) {
+    const Abc::ICompoundProperty arbitrary = schema.getArbGeomParams();
+    if (!arbitrary.valid() ||
+        !arbitrary.getPropertyHeader("xgen_Pref")) {
+        return;
+    }
+    const AbcGeom::IV3dGeomParam pref{arbitrary, "xgen_Pref"};
+    const AbcGeom::IV3dGeomParam::Sample sample = pref.getExpandedValue(
+        Abc::ISampleSelector{AbcCore::index_t{0}});
+    const auto values = sample.getVals();
+    if (!values || values->size() != mesh.positions.size()) {
+        fail("xgen_Pref must contain one value per mesh vertex");
+    }
+    mesh.reference_positions.resize(values->size());
+    for (std::size_t index = 0u; index < values->size(); ++index) {
+        const Imath::V3d &value = (*values)[index];
+        if (!finite(value)) { fail("xgen_Pref contains a non-finite value"); }
+        const Imath::V3f converted{
+            static_cast<float>(value.x), static_cast<float>(value.y),
+            static_cast<float>(value.z)};
+        if (!std::isfinite(converted.x) || !std::isfinite(converted.y) ||
+            !std::isfinite(converted.z)) {
+            fail("xgen_Pref value cannot be represented as float");
+        }
+        mesh.reference_positions[index] = converted;
+    }
 }
 
 LoadedMesh load_patch_mesh(const Abc::IArchive &archive, std::string_view name,
@@ -144,7 +263,9 @@ LoadedMesh load_patch_mesh(const Abc::IArchive &archive, std::string_view name,
         AbcGeom::IPolyMeshSchema::Sample sample;
         mesh.getSchema().get(
             sample, Abc::ISampleSelector{AbcCore::index_t{0}});
-        return copy_mesh_sample(sample, transform, limits);
+        LoadedMesh result = copy_mesh_sample(sample, transform, limits);
+        load_reference_positions(mesh.getSchema(), result);
+        return result;
     }
     AbcGeom::ISubD mesh{object, Abc::kWrapExisting};
     if (mesh.getSchema().getNumSamples() == 0u) {
@@ -153,14 +274,18 @@ LoadedMesh load_patch_mesh(const Abc::IArchive &archive, std::string_view name,
     AbcGeom::ISubDSchema::Sample sample;
     mesh.getSchema().get(
         sample, Abc::ISampleSelector{AbcCore::index_t{0}});
-    return copy_mesh_sample(sample, transform, limits);
+    LoadedMesh result = copy_mesh_sample(sample, transform, limits);
+    load_reference_positions(mesh.getSchema(), result);
+    return result;
 }
 
-Vec3 position(const LoadedMesh &mesh, std::uint32_t index) {
-    if (index >= mesh.positions.size()) { fail("face vertex index is out of range"); }
-    const Imath::V3f &source = mesh.positions[index];
+Vec3 transformed_position(std::span<const Imath::V3f> positions,
+                          const Imath::M44d &transform,
+                          std::uint32_t index) {
+    if (index >= positions.size()) { fail("face vertex index is out of range"); }
+    const Imath::V3f &source = positions[index];
     Imath::V3d transformed;
-    mesh.transform.multVecMatrix(
+    transform.multVecMatrix(
         Imath::V3d{source.x, source.y, source.z}, transformed);
     if (!finite(transformed)) { fail("mesh contains a non-finite position"); }
     const Vec3 result{static_cast<float>(transformed.x),
@@ -173,19 +298,13 @@ Vec3 position(const LoadedMesh &mesh, std::uint32_t index) {
     return result;
 }
 
-Vec3 direction(const LoadedMesh &mesh, const ClassicFloat3 &source) {
-    Imath::V3d transformed;
-    mesh.transform.multDirMatrix(
-        Imath::V3d{source.x, source.y, source.z}, transformed);
-    if (!finite(transformed)) { fail("guide contains a non-finite direction"); }
-    const Vec3 result{static_cast<float>(transformed.x),
-                      static_cast<float>(transformed.y),
-                      static_cast<float>(transformed.z)};
-    if (!std::isfinite(result.x) || !std::isfinite(result.y) ||
-        !std::isfinite(result.z)) {
-        fail("guide direction cannot be represented as float");
-    }
-    return result;
+Vec3 position(const LoadedMesh &mesh, std::uint32_t index) {
+    return transformed_position(mesh.positions, mesh.transform, index);
+}
+
+Vec3 reference_position(const LoadedMesh &mesh, std::uint32_t index) {
+    return transformed_position(
+        mesh.reference_positions, mesh.transform, index);
 }
 
 class SubdEvaluator {
@@ -211,7 +330,7 @@ public:
         descriptor.vertIndicesPerFace = indices.data();
         Sdc::Options scheme_options;
         scheme_options.SetVtxBoundaryInterpolation(
-            Sdc::Options::VTX_BOUNDARY_EDGE_AND_CORNER);
+            Sdc::Options::VTX_BOUNDARY_EDGE_ONLY);
         typename Far::TopologyRefinerFactory<Far::TopologyDescriptor>::Options
             refiner_options{Sdc::SCHEME_CATMARK, scheme_options};
         refiner_options.validateFullTopology = true;
@@ -222,9 +341,13 @@ public:
         _ptex_indices = std::make_unique<Far::PtexIndices>(*_base_refiner);
 
         _base_positions.resize(mesh.positions.size());
+        _reference_base_positions.resize(mesh.positions.size());
         for (std::uint32_t index = 0u; index < mesh.positions.size(); ++index) {
             const Vec3 value = position(mesh, index);
             _base_positions[index] = {value.x, value.y, value.z};
+            const Vec3 reference = reference_position(mesh, index);
+            _reference_base_positions[index] = {
+                reference.x, reference.y, reference.z};
         }
         std::vector<Far::Index> faces;
         faces.reserve(selected_faces.size());
@@ -260,28 +383,52 @@ public:
         }
         _local_positions.resize(
             static_cast<std::size_t>(refined_vertices + local_points));
-        if (refined_vertices != 0) {
-            Far::PrimvarRefiner primvar_refiner{*local_refiner};
-            const SubdPosition *source = _base_positions.data();
-            SubdPosition *destination = _local_positions.data();
-            for (int level = 1; level < local_refiner->GetNumLevels(); ++level) {
-                primvar_refiner.Interpolate(level, source, destination);
-                source = destination;
-                destination += local_refiner->GetLevel(level).GetNumVertices();
+        _reference_local_positions.resize(
+            static_cast<std::size_t>(refined_vertices + local_points));
+        const auto refine = [&](const auto &base, auto &local) {
+            if (refined_vertices != 0) {
+                Far::PrimvarRefiner primvar_refiner{*local_refiner};
+                const auto *source = base.data();
+                auto *destination = local.data();
+                for (int level = 1; level < local_refiner->GetNumLevels(); ++level) {
+                    primvar_refiner.Interpolate(level, source, destination);
+                    source = destination;
+                    destination +=
+                        local_refiner->GetLevel(level).GetNumVertices();
+                }
             }
-        }
-        if (local_points != 0) {
-            const Far::StencilTable *stencils =
-                _patch_table->GetLocalPointStencilTable();
-            if (!stencils) { fail("OpenSubdiv local point stencils are missing"); }
-            stencils->UpdateValues(
-                _base_positions.data(), base_vertices,
-                _local_positions.data(),
-                _local_positions.data() + refined_vertices);
-        }
+            if (local_points != 0) {
+                const Far::StencilTable *stencils =
+                    _patch_table->GetLocalPointStencilTable();
+                if (!stencils) {
+                    fail("OpenSubdiv local point stencils are missing");
+                }
+                stencils->UpdateValues(
+                    base.data(), base_vertices, local.data(),
+                    local.data() + refined_vertices);
+            }
+        };
+        refine(_base_positions, _local_positions);
+        refine(_reference_base_positions, _reference_local_positions);
     }
 
     [[nodiscard]] SubdSample evaluate(std::uint32_t face, float u, float v) const {
+        return evaluate_positions(
+            _base_positions, _local_positions, face, u, v);
+    }
+
+    [[nodiscard]] SubdSample evaluate_reference(
+        std::uint32_t face, float u, float v) const {
+        return evaluate_positions(
+            _reference_base_positions, _reference_local_positions,
+            face, u, v);
+    }
+
+private:
+    [[nodiscard]] SubdSample evaluate_positions(
+        const std::vector<SubdPosition> &base_positions,
+        const std::vector<SubdPosition> &local_positions,
+        std::uint32_t face, float u, float v) const {
         const int ptex_face = _ptex_indices->GetFaceId(static_cast<int>(face));
         const Far::PatchTable::PatchHandle *handle =
             _patch_map->FindPatch(ptex_face, u, v);
@@ -302,15 +449,15 @@ public:
         for (int index = 0; index < vertices.size(); ++index) {
             const Far::Index vertex = vertices[index];
             const SubdPosition *source = nullptr;
-            if (vertex < static_cast<Far::Index>(_base_positions.size())) {
-                source = &_base_positions[vertex];
+            if (vertex < static_cast<Far::Index>(base_positions.size())) {
+                source = &base_positions[vertex];
             } else {
                 const std::size_t local = static_cast<std::size_t>(vertex) -
-                                          _base_positions.size();
-                if (local >= _local_positions.size()) {
+                                          base_positions.size();
+                if (local >= local_positions.size()) {
                     fail("OpenSubdiv patch control point is out of range");
                 }
-                source = &_local_positions[local];
+                source = &local_positions[local];
             }
             p.AddWithWeight(*source, weights[index]);
             du.AddWithWeight(*source, du_weights[index]);
@@ -330,13 +477,58 @@ public:
         return result;
     }
 
-private:
     std::unique_ptr<Far::TopologyRefiner> _base_refiner;
     std::unique_ptr<Far::PtexIndices> _ptex_indices;
     std::unique_ptr<Far::PatchTable> _patch_table;
     std::unique_ptr<Far::PatchMap> _patch_map;
     std::vector<SubdPosition> _base_positions;
     std::vector<SubdPosition> _local_positions;
+    std::vector<SubdPosition> _reference_base_positions;
+    std::vector<SubdPosition> _reference_local_positions;
+};
+
+class ImportedReferenceSurface final : public ClassicReferenceSurfaceEvaluator {
+public:
+    void add(std::string patch_name,
+             std::unique_ptr<SubdEvaluator> evaluator) {
+        if (!evaluator ||
+            !_evaluators.emplace(std::move(patch_name), std::move(evaluator)).second) {
+            fail("duplicate reference-surface evaluator");
+        }
+    }
+
+    [[nodiscard]] ClassicReferenceSurfaceSample evaluate_current(
+        std::string_view patch_name, std::uint32_t face_id,
+        float u, float v) const override {
+        return evaluate_impl(patch_name, face_id, u, v, false);
+    }
+
+    [[nodiscard]] ClassicReferenceSurfaceSample evaluate(
+        std::string_view patch_name, std::uint32_t face_id,
+        float u, float v) const override {
+        return evaluate_impl(patch_name, face_id, u, v, true);
+    }
+
+private:
+    [[nodiscard]] ClassicReferenceSurfaceSample evaluate_impl(
+        std::string_view patch_name, std::uint32_t face_id,
+        float u, float v, bool reference) const {
+        const auto found = _evaluators.find(std::string{patch_name});
+        if (found == _evaluators.end()) {
+            fail("reference-surface patch was not imported: " +
+                 std::string{patch_name});
+        }
+        if (!std::isfinite(u) || !std::isfinite(v) ||
+            u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) {
+            fail("reference-surface coordinate is outside [0,1]");
+        }
+        const SubdSample sample = reference
+            ? found->second->evaluate_reference(face_id, u, 1.0f - v)
+            : found->second->evaluate(face_id, u, 1.0f - v);
+        const SurfaceFrame frame = xgen_surface_frame(sample.du, sample.dv);
+        return {sample.position, frame.normal, frame.tangent};
+    }
+    std::unordered_map<std::string, std::unique_ptr<SubdEvaluator>> _evaluators;
 };
 
 struct FaceRange {
@@ -359,6 +551,169 @@ std::vector<std::size_t> face_offsets(const LoadedMesh &mesh) {
     }
     if (result.back() != mesh.face_indices.size()) {
         fail("face counts do not consume the face-index array");
+    }
+    return result;
+}
+
+struct LimitVertexApproximation {
+    std::vector<Vec3> positions;
+    std::vector<bool> supported_neighborhood;
+};
+
+LimitVertexApproximation xgen_limit_vertices(const LoadedMesh &mesh) {
+    const std::vector<std::size_t> offsets = face_offsets(mesh);
+    struct Edge {
+        std::uint32_t first{};
+        std::uint32_t second{};
+        std::uint32_t face_count{};
+    };
+    std::vector<Vec3> neighbor_sums(mesh.positions.size());
+    std::vector<Vec3> boundary_neighbor_sums(mesh.positions.size());
+    std::vector<Vec3> face_point_sums(mesh.positions.size());
+    std::vector<std::uint32_t> incident_faces(mesh.positions.size());
+    std::vector<std::uint32_t> boundary_edges(mesh.positions.size());
+    std::vector<Edge> edges;
+    edges.reserve(mesh.face_indices.size() / 2u);
+    std::unordered_map<std::uint64_t, std::size_t> edge_indices;
+    edge_indices.reserve(mesh.face_indices.size());
+    for (std::size_t face = 0u; face < mesh.face_counts.size(); ++face) {
+        const std::size_t count = static_cast<std::size_t>(mesh.face_counts[face]);
+        const std::size_t offset = offsets[face];
+        Vec3 face_point{};
+        for (std::size_t corner = 0u; corner < count; ++corner) {
+            // Autodesk's Alembic bridge reverses each face's index run before
+            // constructing SESubd. The winding does not change the limit
+            // stencil mathematically, but it does change float accumulation
+            // order in computeFacePoints and is observable in RandomGenerator
+            // surface-compensation UVs.
+            const std::size_t reversed = count - 1u - corner;
+            const std::int32_t raw = mesh.face_indices[offset + reversed];
+            const std::int32_t raw_next =
+                mesh.face_indices[offset + (reversed + count - 1u) % count];
+            if (raw < 0 || raw_next < 0) {
+                fail("mesh contains a negative vertex index");
+            }
+            const std::uint32_t vertex = static_cast<std::uint32_t>(raw);
+            const std::uint32_t next = static_cast<std::uint32_t>(raw_next);
+            if (vertex >= mesh.positions.size() ||
+                next >= mesh.positions.size()) {
+                fail("mesh contains an out-of-range vertex index");
+            }
+            face_point = face_point + reference_position(mesh, vertex);
+            const std::uint32_t first = std::min(vertex, next);
+            const std::uint32_t second = std::max(vertex, next);
+            const std::uint64_t key =
+                (static_cast<std::uint64_t>(first) << 32u) | second;
+            const auto [found, inserted] =
+                edge_indices.try_emplace(key, edges.size());
+            if (inserted) {
+                edges.push_back({first, second, 1u});
+            } else {
+                ++edges[found->second].face_count;
+            }
+        }
+        face_point = face_point / static_cast<float>(count);
+        for (std::size_t corner = 0u; corner < count; ++corner) {
+            const std::uint32_t vertex = static_cast<std::uint32_t>(
+                mesh.face_indices[offset + count - 1u - corner]);
+            face_point_sums[vertex] = face_point_sums[vertex] + face_point;
+            ++incident_faces[vertex];
+        }
+    }
+    std::vector<std::uint32_t> valence(mesh.positions.size());
+    for (const Edge &edge : edges) {
+        if (edge.face_count != 2u) {
+            boundary_neighbor_sums[edge.first] =
+                boundary_neighbor_sums[edge.first] +
+                reference_position(mesh, edge.second);
+            boundary_neighbor_sums[edge.second] =
+                boundary_neighbor_sums[edge.second] +
+                reference_position(mesh, edge.first);
+            ++boundary_edges[edge.first];
+            ++boundary_edges[edge.second];
+        }
+        neighbor_sums[edge.first] = neighbor_sums[edge.first] +
+            reference_position(mesh, edge.second);
+        neighbor_sums[edge.second] = neighbor_sums[edge.second] +
+            reference_position(mesh, edge.first);
+        ++valence[edge.first];
+        ++valence[edge.second];
+    }
+    LimitVertexApproximation result{};
+    result.positions.resize(mesh.positions.size());
+    result.supported_neighborhood.resize(mesh.positions.size());
+    for (std::uint32_t vertex = 0u; vertex < mesh.positions.size(); ++vertex) {
+        const std::uint32_t n = valence[vertex];
+        const Vec3 own = reference_position(mesh, vertex);
+        if (boundary_edges[vertex] == 2u) {
+            // SESubd's smooth-boundary limit rule. It retains only the two
+            // boundary neighbours in the vertex edge accumulator and applies
+            // (4*P + E0 + E1) / 6 using float arithmetic.
+            result.positions[vertex] =
+                (own * 4.0f + boundary_neighbor_sums[vertex]) *
+                (1.0f / 6.0f);
+            result.supported_neighborhood[vertex] = true;
+            continue;
+        }
+        const bool regular = boundary_edges[vertex] == 0u && n >= 3u &&
+            incident_faces[vertex] == n;
+        if (!regular) {
+            // SESubd marks non-smooth boundary junctions as corners and their
+            // limit value is the authored cage vertex.
+            result.positions[vertex] = own;
+            result.supported_neighborhood[vertex] = true;
+            continue;
+        }
+        result.supported_neighborhood[vertex] = true;
+        const double dn = static_cast<double>(n);
+        const float vertex_weight = static_cast<float>((dn - 1.0) / (dn + 5.0));
+        const float neighbor_weight = static_cast<float>(
+            2.0 / (dn * (dn + 5.0)));
+        const float face_weight = static_cast<float>(
+            4.0 / (dn * (dn + 5.0)));
+        const Vec3 vertex_term = own * vertex_weight;
+        const Vec3 neighbor_term = neighbor_sums[vertex] * neighbor_weight;
+        const Vec3 face_term = face_point_sums[vertex] * face_weight;
+        result.positions[vertex] = vertex_term + neighbor_term + face_term;
+    }
+    return result;
+}
+
+std::vector<Vec3> smooth_vertex_normals(const LoadedMesh &mesh,
+                                        bool reference) {
+    std::vector<Vec3> result(mesh.positions.size());
+    const std::vector<std::size_t> offsets = face_offsets(mesh);
+    for (std::size_t face = 0u; face < mesh.face_counts.size(); ++face) {
+        const std::size_t count = static_cast<std::size_t>(mesh.face_counts[face]);
+        const std::size_t offset = offsets[face];
+        const auto sample_position = [&](std::size_t corner) {
+            const std::int32_t raw = mesh.face_indices[offset + corner];
+            if (raw < 0) { fail("mesh contains a negative vertex index"); }
+            const std::uint32_t index = static_cast<std::uint32_t>(raw);
+            return reference ? reference_position(mesh, index)
+                             : position(mesh, index);
+        };
+        const Vec3 first = sample_position(0u);
+        for (std::size_t corner = 1u; corner + 1u < count; ++corner) {
+            const Vec3 normal = cross(
+                sample_position(corner) - first,
+                sample_position(corner + 1u) - first);
+            const std::uint32_t i0 = static_cast<std::uint32_t>(
+                mesh.face_indices[offset]);
+            const std::uint32_t i1 = static_cast<std::uint32_t>(
+                mesh.face_indices[offset + corner]);
+            const std::uint32_t i2 = static_cast<std::uint32_t>(
+                mesh.face_indices[offset + corner + 1u]);
+            result[i0] = result[i0] + normal;
+            result[i1] = result[i1] + normal;
+            result[i2] = result[i2] + normal;
+        }
+    }
+    for (Vec3 &normal : result) {
+        if (!(length_squared(normal) > 0.0f)) {
+            fail("mesh contains a vertex without a valid normal");
+        }
+        normal = normalize(normal);
     }
     return result;
 }
@@ -395,6 +750,9 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
     if (!archive.valid()) { fail("cannot open archive: " + archive_path.string()); }
 
     ClassicAlembicAssetInput result{};
+    const auto reference_surface =
+        std::make_shared<ImportedReferenceSurface>();
+    result.reference_surface = reference_surface;
     float guide_cage_root_squared_distance_sum = 0.0f;
     std::size_t subdivision_guide_count = 0u;
     for (const ClassicPatch &patch : description.patches) {
@@ -403,6 +761,9 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
         result.source_face_count += mesh.face_counts.size();
         const std::vector<std::size_t> offsets = face_offsets(mesh);
         const bool subdivide = patch.type == "Subd";
+        const LimitVertexApproximation limit_vertices = subdivide
+            ? xgen_limit_vertices(mesh)
+            : LimitVertexApproximation{};
         if (limits.subd_face_resolution == 0u ||
             limits.subd_face_resolution > 64u) {
             fail("subdivision face resolution must be in [1, 64]");
@@ -421,7 +782,9 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
             }
             subd = std::make_unique<SubdEvaluator>(mesh, patch.face_ids);
         }
-        auto append_position = [&](Vec3 value) -> std::uint32_t {
+        auto append_vertex = [&](Vec3 value, Vec3 normal,
+                                 Vec3 reference_value,
+                                 Vec3 reference_normal) -> std::uint32_t {
             if (result.asset.positions.size() >= limits.max_vertices ||
                 result.asset.positions.size() >=
                     std::numeric_limits<std::uint32_t>::max()) {
@@ -430,6 +793,9 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
             const std::uint32_t index =
                 static_cast<std::uint32_t>(result.asset.positions.size());
             result.asset.positions.push_back(value);
+            result.asset.normals.push_back(normal);
+            result.asset.reference_positions.push_back(reference_value);
+            result.asset.reference_normals.push_back(reference_normal);
             return index;
         };
         std::uint32_t vertex_base = 0u;
@@ -445,8 +811,14 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
                 result.asset.positions.size());
             result.asset.positions.reserve(
                 result.asset.positions.size() + mesh.positions.size());
+            const std::vector<Vec3> current_normals =
+                smooth_vertex_normals(mesh, false);
+            const std::vector<Vec3> reference_normals =
+                smooth_vertex_normals(mesh, true);
             for (std::uint32_t index = 0u; index < mesh.positions.size(); ++index) {
-                result.asset.positions.push_back(position(mesh, index));
+                append_vertex(position(mesh, index), current_normals[index],
+                              reference_position(mesh, index),
+                              reference_normals[index]);
             }
         }
 
@@ -485,7 +857,16 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
                                         static_cast<float>(resolution);
                         const float v = static_cast<float>(y) /
                                         static_cast<float>(resolution);
-                        append_position(subd->evaluate(face_id, u, v).position);
+                        const float surface_v = 1.0f - v;
+                        const SubdSample current =
+                            subd->evaluate(face_id, u, surface_v);
+                        const SubdSample reference =
+                            subd->evaluate_reference(face_id, u, surface_v);
+                        append_vertex(
+                            current.position,
+                            xgen_surface_frame(current.du, current.dv).normal,
+                            reference.position,
+                            xgen_surface_frame(reference.du, reference.dv).normal);
                     }
                 }
                 const std::uint32_t row = resolution + 1u;
@@ -509,6 +890,63 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
                         vertex_index(mesh, offset + corner + 1u, vertex_base)});
                 }
             }
+            double surface_area = 0.0;
+            double center_u_length = 0.0;
+            double center_v_length = 0.0;
+            if (subdivide) {
+                Double3 cage[4u]{};
+                bool supported_neighborhood = true;
+                for (std::size_t corner = 0u; corner < 4u; ++corner) {
+                    const std::int32_t source_index =
+                        mesh.face_indices[offset + corner];
+                    if (source_index < 0) {
+                        fail("selected face has a negative vertex index");
+                    }
+                    const std::uint32_t vertex =
+                        static_cast<std::uint32_t>(source_index);
+                    supported_neighborhood = supported_neighborhood &&
+                        limit_vertices.supported_neighborhood[vertex];
+                    cage[corner] = to_double(limit_vertices.positions[vertex]);
+                }
+                if (!supported_neighborhood) {
+                    cage[0] = to_double(subd->evaluate_reference(
+                        face_id, 0.0f, 0.0f).position);
+                    cage[1] = to_double(subd->evaluate_reference(
+                        face_id, 1.0f, 0.0f).position);
+                    cage[2] = to_double(subd->evaluate_reference(
+                        face_id, 1.0f, 1.0f).position);
+                    cage[3] = to_double(subd->evaluate_reference(
+                        face_id, 0.0f, 1.0f).position);
+                }
+                surface_area = xgen_quad_area(cage);
+                center_u_length = xgen_quad_length_u(cage);
+                center_v_length = xgen_quad_length_v(cage);
+            } else {
+                for (std::uint32_t triangle_index = first_triangle;
+                     triangle_index < result.asset.triangles.size();
+                     ++triangle_index) {
+                    const UInt3 triangle = result.asset.triangles[triangle_index];
+                    surface_area += 0.5 * triangle_double_area(
+                        to_double(result.asset.positions[triangle.x]),
+                        to_double(result.asset.positions[triangle.y]),
+                        to_double(result.asset.positions[triangle.z]));
+                }
+                center_u_length = 1.0;
+                center_v_length = 1.0;
+            }
+            if (!std::isfinite(surface_area) || surface_area <= 0.0f) {
+                fail("selected face has invalid surface area");
+            }
+            if (!std::isfinite(center_u_length) ||
+                !std::isfinite(center_v_length) ||
+                center_u_length <= 0.0 || center_v_length <= 0.0) {
+                fail("selected face has invalid surface-compensation lengths");
+            }
+            result.surface_faces.push_back({
+                patch.name, face_id, first_triangle,
+                static_cast<std::uint32_t>(triangle_count),
+                subdivide ? limits.subd_face_resolution : 0u, surface_area,
+                center_u_length, center_v_length});
             selected.emplace(face_id, FaceRange{
                 offset, count, first_triangle, first_vertex});
             ++result.selected_face_count;
@@ -525,6 +963,7 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
             }
             const float u = static_cast<float>(guide.patch_u);
             const float v = static_cast<float>(guide.patch_v);
+            const float surface_v = 1.0f - v;
             if (!std::isfinite(u) || !std::isfinite(v) ||
                 u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) {
                 fail("guide patch coordinates must be finite and in [0, 1]");
@@ -532,7 +971,11 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
             Vec3 root{};
             Vec3 du{};
             Vec3 dv{};
+            Vec3 reference_root{};
+            Vec3 reference_du{};
+            Vec3 reference_dv{};
             Vec3 corners[4u]{};
+            Vec3 reference_corners[4u]{};
             for (std::size_t corner = 0u; corner < 4u; ++corner) {
                 const std::int32_t source_index =
                     mesh.face_indices[face.offset + corner];
@@ -541,17 +984,30 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
                 }
                 corners[corner] = position(
                     mesh, static_cast<std::uint32_t>(source_index));
+                reference_corners[corner] = reference_position(
+                    mesh, static_cast<std::uint32_t>(source_index));
             }
             const Vec3 cage_root =
-                corners[0] * ((1.0f - u) * (1.0f - v)) +
-                corners[1] * (u * (1.0f - v)) +
-                corners[2] * (u * v) +
-                corners[3] * ((1.0f - u) * v);
+                corners[0] * ((1.0f - u) * (1.0f - surface_v)) +
+                corners[1] * (u * (1.0f - surface_v)) +
+                corners[2] * (u * surface_v) +
+                corners[3] * ((1.0f - u) * surface_v);
+            const Vec3 reference_cage_root =
+                reference_corners[0] * ((1.0f - u) * (1.0f - surface_v)) +
+                reference_corners[1] * (u * (1.0f - surface_v)) +
+                reference_corners[2] * (u * surface_v) +
+                reference_corners[3] * ((1.0f - u) * surface_v);
             if (subdivide) {
-                const SubdSample sample = subd->evaluate(guide.face_id, u, v);
+                const SubdSample sample =
+                    subd->evaluate(guide.face_id, u, surface_v);
+                const SubdSample reference_sample =
+                    subd->evaluate_reference(guide.face_id, u, surface_v);
                 root = sample.position;
                 du = sample.du;
                 dv = sample.dv;
+                reference_root = reference_sample.position;
+                reference_du = reference_sample.du;
+                reference_dv = reference_sample.dv;
                 const float distance_squared = length_squared(root - cage_root);
                 guide_cage_root_squared_distance_sum += distance_squared;
                 result.guide_cage_root_max_distance = std::max(
@@ -560,14 +1016,64 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
                 ++subdivision_guide_count;
             } else {
                 root = cage_root;
-                du = (corners[1] - corners[0]) * (1.0f - v) +
-                     (corners[2] - corners[3]) * v;
+                du = (corners[1] - corners[0]) * (1.0f - surface_v) +
+                     (corners[2] - corners[3]) * surface_v;
                 dv = (corners[3] - corners[0]) * (1.0f - u) +
                      (corners[2] - corners[1]) * u;
+                reference_root = reference_cage_root;
+                reference_du =
+                    (reference_corners[1] - reference_corners[0]) *
+                        (1.0f - surface_v) +
+                    (reference_corners[2] - reference_corners[3]) * surface_v;
+                reference_dv =
+                    (reference_corners[3] - reference_corners[0]) * (1.0f - u) +
+                    (reference_corners[2] - reference_corners[1]) * u;
             }
             GuideInput output{};
-            output.root_normal = normalize(cross(du, dv));
+            const SurfaceFrame current_frame = xgen_surface_frame(du, dv);
+            const SurfaceFrame reference_frame =
+                xgen_surface_frame(reference_du, reference_dv);
+            output.root_normal = current_frame.normal;
             output.root_uv = {u, v};
+            output.surface_face_id = guide.face_id;
+            output.reference_root_position = reference_root;
+            output.reference_root_normal = reference_frame.normal;
+            output.reference_root_tangent = reference_frame.tangent;
+            output.reference_root_binormal = reference_frame.binormal;
+            if (((guide.interpolation_count & 1u) == 0u &&
+                 guide.interpolation_count != 0u) ||
+                guide.interpolation_offset > patch.guide_interpolation.size() ||
+                guide.interpolation_count > patch.guide_interpolation.size() -
+                                                guide.interpolation_offset) {
+                fail("guide interpolation payload is invalid");
+            }
+            if (guide.interpolation_count != 0u) {
+                const auto interpolation = std::span{
+                    patch.guide_interpolation}.subspan(
+                        guide.interpolation_offset, guide.interpolation_count);
+                const auto checked_float = [](double value) {
+                    const float converted = static_cast<float>(value);
+                    if (!std::isfinite(value) || !std::isfinite(converted)) {
+                        fail("guide interpolation contains a non-finite value");
+                    }
+                    return converted;
+                };
+                output.support_radii.reserve((interpolation.size() + 1u) / 2u);
+                output.support_angles.reserve(interpolation.size() / 2u);
+                // XgGuide::setInterpolation applies max(1 + blend, 1) to
+                // every authored support radius. Keep the source/parse side
+                // in double, then narrow the already-scaled value at the
+                // float-only runtime boundary.
+                const double radius_scale = std::max(1.0 + guide.blend, 1.0);
+                output.support_radii.push_back(
+                    checked_float(interpolation[0u] * radius_scale));
+                for (std::size_t index = 1u; index < interpolation.size(); index += 2u) {
+                    output.support_radii.push_back(
+                        checked_float(interpolation[index] * radius_scale));
+                    output.support_angles.push_back(checked_float(interpolation[index + 1u]));
+                }
+                output.support_radius = output.support_radii.front();
+            }
             float local_u = u;
             float local_v = v;
             std::uint32_t triangle = face.first_triangle;
@@ -595,10 +1101,32 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
                 if (guide.cv_offset + index >= patch.guide_cvs.size()) {
                     fail("guide CV range is invalid");
                 }
+                const ClassicFloat3 local =
+                    patch.guide_cvs[guide.cv_offset + index];
+                const Vec3 local_float{
+                    static_cast<float>(local.x),
+                    static_cast<float>(local.y),
+                    static_cast<float>(local.z)};
+                if (!std::isfinite(local.x) || !std::isfinite(local.y) ||
+                    !std::isfinite(local.z) ||
+                    !std::isfinite(local_float.x) ||
+                    !std::isfinite(local_float.y) ||
+                    !std::isfinite(local_float.z)) {
+                    fail("guide CV cannot be represented as float");
+                }
+                // Classic guide CVs are authored in the guide's patch frame,
+                // not as world-space displacement vectors. This mirrors
+                // XgBasePrimitive::transformGuidesToSurface(): local x is cU,
+                // local y is cN, and local z is the frame binormal.
                 output.cvs.push_back(
-                    root + direction(mesh, patch.guide_cvs[guide.cv_offset + index]));
+                    root + current_frame.tangent * local_float.x +
+                    current_frame.normal * local_float.y +
+                    current_frame.binormal * local_float.z);
             }
             result.asset.guides.emplace_back(std::move(output));
+        }
+        if (subd) {
+            reference_surface->add(patch.name, std::move(subd));
         }
     }
     if (subdivision_guide_count != 0u) {

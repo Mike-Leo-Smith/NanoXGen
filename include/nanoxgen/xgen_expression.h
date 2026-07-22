@@ -116,13 +116,16 @@ struct XgenExpressionContext {
 
 // Throughput-oriented runtime context. This path deliberately uses only
 // float/uint operations so the same IR is efficient on GPUs with weak FP64.
-// Its random sequence is NanoXGen-stable, not Autodesk SeExpr-bit-compatible.
+// Classic root planners may provide the exact SeExpr prefix for (u,v,face)
+// so rand() remains Autodesk-compatible without device FP64.
 struct XgenExpressionFloatContext {
     std::span<const float> inputs;
     float u{};
     float v{};
     float face_seed{};
     float t{};
+    std::uint32_t random_prefix{};
+    bool has_random_prefix{};
 };
 
 [[nodiscard]] XgenExpressionProgram compile_xgen_scalar_expression(
@@ -133,6 +136,12 @@ struct XgenExpressionFloatContext {
 
 [[nodiscard]] double evaluate_xgen_scalar_expression(
     const XgenExpressionProgram &program, const XgenExpressionContext &context);
+
+// Allocation-free exact CPU evaluation. Scratch must contain at least
+// program.instructions.size() doubles.
+[[nodiscard]] double evaluate_xgen_scalar_expression(
+    const XgenExpressionProgram &program, const XgenExpressionContext &context,
+    std::span<double> scratch);
 
 [[nodiscard]] float evaluate_xgen_scalar_expression_float(
     const XgenFloatExpressionProgram &program,
@@ -147,7 +156,16 @@ struct XgenExpressionFloatContext {
 
 [[nodiscard]] std::uint32_t xgen_runtime_hash32(
     std::span<const float> arguments) noexcept;
+[[nodiscard]] std::uint32_t xgen_runtime_hash_component(
+    float argument) noexcept;
 [[nodiscard]] float xgen_runtime_hash(std::span<const float> arguments) noexcept;
+[[nodiscard]] std::uint32_t xgen_seexpr_component(double argument) noexcept;
+[[nodiscard]] std::uint32_t xgen_seexpr_hash_prefix(
+    std::span<const double> arguments) noexcept;
+[[nodiscard]] std::uint32_t xgen_seexpr_hash_finish(
+    std::uint32_t state) noexcept;
+[[nodiscard]] float xgen_seexpr_hash_finish_float(
+    std::uint32_t state) noexcept;
 [[nodiscard]] float xgen_runtime_face_seed(
     std::uint32_t description_id, std::string_view patch_name,
     std::uint32_t face_id) noexcept;

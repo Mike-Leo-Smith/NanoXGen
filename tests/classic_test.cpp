@@ -205,6 +205,32 @@ void test_float_runtime_plan() {
                 std::abs(curves.points[1].radius - 0.075f) < 1.0e-6f &&
                 std::abs(curves.points[2].radius - 0.025f) < 1.0e-6f,
             "float runtime width/taper/ramp result mismatch");
+    add_xgen_classic_renderer_endpoints(curves);
+    require(curves.cvs_per_strand == 5u && curves.point_counts[0u] == 5u &&
+                std::abs(curves.points[0u].x + 1.5f) < 1.0e-6f &&
+                std::abs(curves.points[4u].x - 4.5f) < 1.0e-6f &&
+                curves.points[0u].radius == curves.points[1u].radius &&
+                curves.points[4u].radius == curves.points[3u].radius,
+            "Classic renderer endpoint expansion mismatch");
+
+    ClassicDescription id_description{};
+    id_description.name = "id";
+    id_description.objects.push_back({"SplinePrimitive", {
+        {"width", "$id", 1u}}, 1u});
+    const ClassicFloatRuntimePlan id_plan =
+        compile_xgen_classic_float_runtime_plan(id_description);
+    PackedGeneratedCurves id_curves{};
+    id_curves.strand_count = 1u;
+    id_curves.cvs_per_strand = 2u;
+    id_curves.point_counts = {2u};
+    id_curves.points.resize(2u);
+    id_curves.roots.resize(1u);
+    const std::uint32_t primitive_id = 7u;
+    apply_xgen_classic_float_runtime_plan_cpu(
+        id_curves, id_plan, 1.0f, {}, {}, {&primitive_id, 1u});
+    require(id_curves.points[0u].radius == 3.5f &&
+                id_curves.points[1u].radius == 3.5f,
+            "Classic runtime ignored the per-face primitive ID");
 }
 
 void test_float_runtime_fallbacks_and_validation() {
@@ -241,6 +267,32 @@ void test_float_runtime_fallbacks_and_validation() {
     throw std::runtime_error("negative Classic width was accepted");
 }
 
+void test_float_runtime_cut_culling() {
+    ClassicDescription description{};
+    description.name = "cutCulling";
+    description.objects.push_back({"SplinePrimitive", {
+        {"fxCVCount", "3", 1u}}, 1u});
+    description.objects.push_back({"CutFXModule", {
+        {"active", "true", 2u}, {"name", "cut", 3u},
+        {"amount", "10", 4u}, {"rebuildType", "1", 5u}}, 2u});
+    const ClassicFloatRuntimePlan plan =
+        compile_xgen_classic_float_runtime_plan(description);
+    PackedGeneratedCurves curves{};
+    curves.strand_count = 1u;
+    curves.cvs_per_strand = 3u;
+    curves.point_counts = {3u};
+    curves.points = {{0.0f, 0.0f, 0.0f, 0.1f},
+                     {0.0f, 0.5f, 0.0f, 0.1f},
+                     {0.0f, 1.0f, 0.0f, 0.1f}};
+    curves.roots.resize(1u);
+    curves.root_uvs.resize(1u);
+    apply_xgen_classic_float_runtime_plan_cpu(curves, plan);
+    require(curves.strand_count == 0u && curves.points.empty() &&
+                curves.point_counts.empty() && curves.roots.empty() &&
+                curves.root_uvs.empty(),
+            "fully cut Classic strand was not culled");
+}
+
 } // namespace
 
 int main() try {
@@ -249,6 +301,7 @@ int main() try {
     test_limits();
     test_float_runtime_plan();
     test_float_runtime_fallbacks_and_validation();
+    test_float_runtime_cut_culling();
     std::cout << "Classic XGen parser tests passed\n";
     return 0;
 } catch (const std::exception &error) {

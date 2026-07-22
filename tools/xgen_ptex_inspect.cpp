@@ -26,11 +26,41 @@ const char *data_name(nanoxgen::XgenPtexDataType type) {
 } // namespace
 
 int main(int argc, char **argv) try {
-    if (argc != 2) {
-        throw std::runtime_error("usage: nanoxgen_xgen_ptex_inspect MAP.ptx");
+    if (argc != 2 && argc != 5) {
+        throw std::runtime_error(
+            "usage: nanoxgen_xgen_ptex_inspect MAP.ptx [FACE U V]");
     }
     const nanoxgen::XgenPtexMap map{std::filesystem::path{argv[1]}};
     const nanoxgen::XgenPtexInfo &info = map.info();
+    if (argc == 5) {
+        const std::uint32_t face = static_cast<std::uint32_t>(
+            std::stoul(argv[2]));
+        const float u = std::stof(argv[3]);
+        const float v = std::stof(argv[4]);
+        std::cout << std::setprecision(9)
+                  << "{\"face\":" << face << ",\"u\":" << u
+                  << ",\"v\":" << v << ",\"value\":"
+                  << map.sample(face, u, v) << ",\"filters\":[";
+        const nanoxgen::XgenPtexFilter filters[]{
+            nanoxgen::XgenPtexFilter::Point,
+            nanoxgen::XgenPtexFilter::Bilinear,
+            nanoxgen::XgenPtexFilter::Box,
+            nanoxgen::XgenPtexFilter::Gaussian,
+            nanoxgen::XgenPtexFilter::Bicubic,
+            nanoxgen::XgenPtexFilter::BSpline,
+            nanoxgen::XgenPtexFilter::CatmullRom,
+            nanoxgen::XgenPtexFilter::Mitchell};
+        bool comma = false;
+        for (const nanoxgen::XgenPtexFilter filter : filters) {
+            nanoxgen::XgenPtexSampleOptions options{};
+            options.filter = filter;
+            std::cout << (comma ? "," : "")
+                      << map.sample(face, u, v, 0u, options);
+            comma = true;
+        }
+        std::cout << "]}\n";
+        return 0;
+    }
     std::uint32_t min_u = std::numeric_limits<std::uint32_t>::max();
     std::uint32_t min_v = min_u;
     std::uint32_t max_u{};

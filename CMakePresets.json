@@ -23,9 +23,7 @@
       "description": "Portable optimized CPU build with tests",
       "inherits": "base",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "NANOXGEN_ENABLE_CUDA": "OFF",
-        "NANOXGEN_ENABLE_HIP": "OFF"
+        "CMAKE_BUILD_TYPE": "Release"
       }
     },
     {
@@ -34,8 +32,7 @@
       "description": "Debug CPU build with tests",
       "inherits": "base",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "NANOXGEN_ENABLE_CUDA": "OFF"
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     },
     {
@@ -51,37 +48,27 @@
       }
     },
     {
-      "name": "cuda-release",
-      "displayName": "CUDA release",
-      "description": "Release build of all CPU and CUDA targets",
-      "inherits": "release",
-      "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": {
-        "NANOXGEN_ENABLE_CUDA": "ON"
-      }
-    },
-    {
-      "name": "hip-release",
-      "displayName": "HIP release",
-      "description": "Release build of all CPU and AMD HIP targets",
-      "inherits": "release",
-      "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": {
-        "NANOXGEN_ENABLE_HIP": "ON"
-      }
-    },
-    {
       "name": "luisa-hip-release",
       "displayName": "LuisaCompute next HIP release",
       "description": "Release build with an external LuisaCompute next HIP runtime",
       "inherits": "release",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
-        "NANOXGEN_ENABLE_HIP": "ON",
         "NANOXGEN_ENABLE_LUISA": "ON",
         "NANOXGEN_LUISA_BACKEND": "hip",
         "LUISA_COMPUTE_SOURCE_DIR": "$env{LUISA_COMPUTE_SOURCE_DIR}",
         "LUISA_COMPUTE_BUILD_DIR": "$env{LUISA_COMPUTE_BUILD_DIR}"
+      }
+    },
+    {
+      "name": "luisa-classic-hip-release",
+      "displayName": "LuisaCompute next HIP Classic release",
+      "description": "LuisaCompute HIP plus native Alembic/PTEX Classic inputs",
+      "inherits": "luisa-hip-release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "NANOXGEN_ENABLE_ALEMBIC": "ON",
+        "NANOXGEN_ENABLE_PTEX": "ON"
       }
     },
     {
@@ -133,18 +120,13 @@
       "jobs": 2
     },
     {
-      "name": "cuda-release",
-      "configurePreset": "cuda-release",
-      "jobs": 2
-    },
-    {
-      "name": "hip-release",
-      "configurePreset": "hip-release",
-      "jobs": 2
-    },
-    {
       "name": "luisa-hip-release",
       "configurePreset": "luisa-hip-release",
+      "jobs": 2
+    },
+    {
+      "name": "luisa-classic-hip-release",
+      "configurePreset": "luisa-classic-hip-release",
       "jobs": 2
     },
     {
@@ -186,22 +168,15 @@
       }
     },
     {
-      "name": "cuda-release",
-      "configurePreset": "cuda-release",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "hip-release",
-      "configurePreset": "hip-release",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
       "name": "luisa-hip-release",
       "configurePreset": "luisa-hip-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "luisa-classic-hip-release",
+      "configurePreset": "luisa-classic-hip-release",
       "output": {
         "outputOnFailure": true
       }

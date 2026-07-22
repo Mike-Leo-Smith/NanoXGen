@@ -1,11 +1,81 @@
 #include "nanoxgen/luisa/xgen_expression.h"
 
+#include <luisa/dsl/constant.h>
+
+#include <array>
+
 namespace nanoxgen::luisa_backend {
 
 using namespace luisa;
 using namespace luisa::compute;
 
 namespace {
+
+constexpr std::array<uint, 256u> permutation{
+    148,201,203,34,85,225,163,200,174,137,51,24,19,252,107,173,110,251,149,69,180,152,
+    141,132,22,20,147,219,37,46,154,114,59,49,155,161,239,77,47,10,70,227,53,235,
+    30,188,143,73,88,193,214,194,18,120,176,36,212,84,211,142,167,57,153,71,159,151,
+    126,115,229,124,172,101,79,183,32,38,68,11,67,109,221,3,4,61,122,94,72,117,
+    12,240,199,76,118,5,48,197,128,62,119,89,14,45,226,195,80,50,40,192,60,65,
+    166,106,90,215,213,232,250,207,104,52,182,29,157,103,242,97,111,17,8,175,254,108,
+    208,224,191,112,105,187,43,56,185,243,196,156,246,249,184,7,135,6,158,82,130,234,
+    206,255,160,236,171,230,42,98,54,74,209,205,33,177,15,138,178,44,116,96,140,253,
+    233,125,21,133,136,86,245,58,23,1,75,165,92,217,39,0,218,91,179,55,238,170,
+    134,83,25,189,216,100,129,150,241,210,123,99,2,164,16,220,121,139,168,64,190,9,
+    31,228,95,247,244,81,102,145,204,146,26,87,113,198,181,127,237,169,28,93,27,41,
+    231,248,78,162,13,186,63,66,131,202,35,144,222,223};
+
+Expr<uint> runtime_hash_component(Expr<float> argument) noexcept {
+    constexpr luisa::ulong constant_mantissa = 0x001114580b45d474ull;
+    constexpr uint constant_low = static_cast<uint>(constant_mantissa);
+    constexpr uint constant_high = static_cast<uint>(constant_mantissa >> 32u);
+    UInt bits = as<uint>(argument);
+    UInt absolute = bits & 0x7fffffffu;
+    UInt float_exponent = absolute >> 23u;
+    UInt mantissa = ite(float_exponent == 0u,
+                        absolute & 0x7fffffu,
+                        (absolute & 0x7fffffu) | 0x800000u);
+    ULong p0 = cast<luisa::ulong>(mantissa) *
+               static_cast<luisa::ulong>(constant_low);
+    ULong p1 = cast<luisa::ulong>(mantissa) *
+               static_cast<luisa::ulong>(constant_high);
+    ULong low = p0 + (p1 << 32u);
+    ULong high = (p1 >> 32u) + cast<luisa::ulong>(low < p0);
+    UInt high_word = cast<uint>(high);
+    UInt low_high_word = cast<uint>(low >> 32u);
+    UInt low_word = cast<uint>(low);
+    UInt length = ite(high_word != 0u,
+                      96u - clz(high_word),
+                      ite(low_high_word != 0u,
+                          64u - clz(low_high_word),
+                          32u - clz(low_word)));
+    UInt shift = length - 32u;
+    UInt top = cast<uint>((low >> shift) | (high << (64u - shift)));
+    ULong remainder = low & ((1ull << shift) - 1ull);
+    ULong ceil_div_2_32 = ((low >> 32u) | (high << 32u)) +
+                          cast<luisa::ulong>((low & 0xffffffffull) != 0ull);
+    UInt fraction = top - cast<uint>(remainder < ceil_div_2_32);
+    UInt value_exponent = ite(float_exponent == 0u,
+                              static_cast<uint>(-149),
+                              float_exponent - 150u);
+    UInt exponent = length + value_exponent - 49u;
+    UInt component = ite((bits >> 31u) != 0u, 0u - fraction, fraction) ^ exponent;
+    return ite(absolute != 0u, component, 0u);
+}
+
+Expr<uint> runtime_hash_finish(Expr<uint> input) noexcept {
+    UInt state = input;
+    state = state ^ (state >> 11u);
+    state = state ^ ((state << 7u) & 0x9d2c5680u);
+    state = state ^ ((state << 15u) & 0xefc60000u);
+    state = state ^ (state >> 18u);
+    Constant<uint> lookup{permutation};
+    UInt b3 = lookup[state & 0xffu];
+    UInt b2 = lookup[((state >> 8u) + b3) & 0xffu];
+    UInt b1 = lookup[((state >> 16u) + b2) & 0xffu];
+    UInt b0 = lookup[((state >> 24u) + b1) & 0xffu];
+    return b0 | (b1 << 8u) | (b2 << 16u) | (b3 << 24u);
+}
 
 Expr<float> lower_ramp(span<const XgenFloatRampPoint> points,
                        Expr<float> parameter) noexcept {
@@ -55,23 +125,20 @@ Expr<float> lower_ramp(span<const XgenFloatRampPoint> points,
 } // namespace
 
 Expr<float> runtime_hash(span<const Expr<float>> arguments) noexcept {
-    UInt state = 0x9e3779b9u;
+    UInt state = 0u;
     for (const Expr<float> argument : arguments) {
-        state = state ^ (as<uint>(argument) + 0x9e3779b9u +
-                         (state << 6u) + (state >> 2u));
-        state = state ^ (state >> 16u);
-        state = state * 0x7feb352du;
-        state = state ^ (state >> 15u);
-        state = state * 0x846ca68bu;
-        state = state ^ (state >> 16u);
+        state = state * 1664525u + runtime_hash_component(argument) +
+                1013904223u;
     }
-    return cast<float>(state >> 8u) * (1.0f / 16777216.0f);
+    return cast<float>(runtime_hash_finish(state)) * 0x1p-32f;
 }
 
 Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
                              span<const Expr<float>> inputs,
                              Expr<float> u, Expr<float> v,
-                             Expr<float> face_seed, Expr<float> t) noexcept {
+                             Expr<float> face_seed, Expr<float> t,
+                             Expr<uint> random_prefix,
+                             bool has_random_prefix) noexcept {
     vector<Expr<float>> values;
     values.reserve(program.instructions.size());
     for (const XgenFloatScalarInstruction &instruction : program.instructions) {
@@ -123,17 +190,31 @@ Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
             break;
         }
         case XgenScalarOp::random: {
-            vector<Expr<float>> arguments;
-            arguments.reserve(5u);
-            arguments.emplace_back(u);
-            arguments.emplace_back(v);
-            arguments.emplace_back(face_seed);
-            arguments.emplace_back(instruction.immediate);
-            if (instruction.operand_count == 1u ||
-                instruction.operand_count == 3u) {
-                arguments.emplace_back(operand(instruction.operand_count - 1u));
+            const bool explicit_seed = instruction.operand_count == 1u ||
+                                       instruction.operand_count == 3u;
+            if (has_random_prefix) {
+                UInt state = random_prefix * 1664525u +
+                             instruction.auxiliary + 1013904223u;
+                if (explicit_seed) {
+                    state = state * 1664525u +
+                            runtime_hash_component(
+                                operand(instruction.operand_count - 1u)) +
+                            1013904223u;
+                }
+                value = cast<float>(runtime_hash_finish(state)) * 0x1p-32f;
+            } else {
+                vector<Expr<float>> arguments;
+                arguments.reserve(5u);
+                arguments.emplace_back(u);
+                arguments.emplace_back(v);
+                arguments.emplace_back(face_seed);
+                arguments.emplace_back(instruction.immediate);
+                if (explicit_seed) {
+                    arguments.emplace_back(
+                        operand(instruction.operand_count - 1u));
+                }
+                value = runtime_hash(arguments);
             }
-            value = runtime_hash(arguments);
             if (instruction.operand_count >= 2u) {
                 value = (operand(1u) - operand(0u)) * value + operand(0u);
             }
@@ -160,6 +241,13 @@ Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
         values.emplace_back(value);
     }
     return values[program.result];
+}
+
+Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
+                             span<const Expr<float>> inputs,
+                             Expr<float> u, Expr<float> v,
+                             Expr<float> face_seed, Expr<float> t) noexcept {
+    return lower_expression(program, inputs, u, v, face_seed, t, 0u, false);
 }
 
 Expr<float> lower_expression(const XgenFloatExpressionProgram &program,

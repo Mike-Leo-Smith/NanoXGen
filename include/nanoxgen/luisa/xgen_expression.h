@@ -20,6 +20,19 @@ namespace nanoxgen::luisa_backend {
     luisa::compute::Expr<float> face_seed,
     luisa::compute::Expr<float> t) noexcept;
 
+// Exact RandomGenerator roots retain the double-domain SeExpr prefix for
+// (u,v,faceSeed). Appending the call-site and optional explicit seed here
+// keeps the device program float/uint-only without losing Autodesk parity.
+[[nodiscard]] luisa::compute::Expr<float> lower_expression(
+    const XgenFloatExpressionProgram &program,
+    luisa::span<const luisa::compute::Expr<float>> inputs,
+    luisa::compute::Expr<float> u,
+    luisa::compute::Expr<float> v,
+    luisa::compute::Expr<float> face_seed,
+    luisa::compute::Expr<float> t,
+    luisa::compute::Expr<luisa::uint> random_prefix,
+    bool has_random_prefix) noexcept;
+
 // Record a fast-float XGen expression program into the current LuisaCompute
 // callable/kernel. Inputs and contexts use structure-of-arrays layout:
 // inputs[input * count + index], followed by u/v/face_seed/t context planes.

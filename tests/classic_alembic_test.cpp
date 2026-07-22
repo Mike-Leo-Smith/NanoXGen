@@ -62,6 +62,9 @@ nanoxgen::ClassicDescription description() {
     guide.patch_u = 0.25;
     guide.patch_v = 0.5;
     guide.face_id = 0u;
+    guide.blend = 0.5;
+    guide.interpolation_offset = 0u;
+    guide.interpolation_count = 3u;
     guide.cv_offset = 0u;
     guide.cv_count = 2u;
     nanoxgen::ClassicPatch patch{};
@@ -69,7 +72,8 @@ nanoxgen::ClassicDescription description() {
     patch.name = "testPatch";
     patch.face_ids = {0u};
     patch.guides = {guide};
-    patch.guide_cvs = {{0.0, 0.0, 0.0}, {0.0, 1.0, 0.0}};
+    patch.guide_interpolation = {2.0, 1.0, 0.5};
+    patch.guide_cvs = {{0.0, 0.0, 0.0}, {1.0, 2.0, 3.0}};
     nanoxgen::ClassicDescription result{};
     result.name = "test";
     result.patches.emplace_back(std::move(patch));
@@ -92,12 +96,18 @@ void test_import() {
     require(near(guide.cvs[0].x, 3.5f) && near(guide.cvs[0].y, 4.0f) &&
                 near(guide.cvs[0].z, 6.0f),
             "transformed bilinear guide root mismatch");
-    require(near(guide.cvs[1].x, 3.5f) && near(guide.cvs[1].y, 5.0f) &&
-                near(guide.cvs[1].z, 6.0f),
-            "transformed relative guide CV mismatch");
+    require(near(guide.cvs[1].x, 4.5f) && near(guide.cvs[1].y, 6.0f) &&
+                near(guide.cvs[1].z, 3.0f),
+            "patch-frame guide CV transform mismatch");
     require(guide.triangle_index == 1u && near(guide.barycentric.x, 0.25f) &&
                 near(guide.barycentric.y, 0.25f),
             "guide triangle binding mismatch");
+    require(guide.support_radii.size() == 2u &&
+                near(guide.support_radii[0], 3.0f) &&
+                near(guide.support_radii[1], 1.5f) &&
+                guide.support_angles.size() == 1u &&
+                near(guide.support_angles[0], 0.5f),
+            "guide blend radius scale mismatch");
     const nanoxgen::Asset asset = nanoxgen::build_asset(imported.asset);
     require(nanoxgen::validate_asset(asset.bytes()).empty(),
             "imported asset failed validation");
@@ -136,7 +146,7 @@ void test_subd_import() {
     require(std::isfinite(guide.cvs[0].x) && std::isfinite(guide.cvs[0].y) &&
                 std::isfinite(guide.cvs[0].z),
             "subdivision guide root is non-finite");
-    require(near(guide.cvs[1].y - guide.cvs[0].y, 1.0f),
+    require(near(guide.cvs[1].y - guide.cvs[0].y, 2.0f),
             "subdivision guide relative CV mismatch");
 }
 

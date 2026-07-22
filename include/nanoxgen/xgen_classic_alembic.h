@@ -5,6 +5,10 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace nanoxgen {
 
@@ -17,8 +21,45 @@ struct ClassicAlembicLimits {
     std::uint32_t subd_face_resolution{2u};
 };
 
+struct ClassicReferenceSurfaceSample {
+    Vec3 position{};
+    Vec3 normal{};
+    Vec3 tangent{};
+};
+
+// CPU-only access to the imported OpenSubdiv limit surface. Keeping the
+// evaluator alive avoids approximating guide association through the compact
+// renderer tessellation; no OpenSubdiv type or double-precision payload enters
+// the Asset/GPU ABI.
+class ClassicReferenceSurfaceEvaluator {
+public:
+    virtual ~ClassicReferenceSurfaceEvaluator() = default;
+    [[nodiscard]] virtual ClassicReferenceSurfaceSample evaluate_current(
+        std::string_view patch_name, std::uint32_t face_id,
+        float u, float v) const = 0;
+    [[nodiscard]] virtual ClassicReferenceSurfaceSample evaluate(
+        std::string_view patch_name, std::uint32_t face_id,
+        float u, float v) const = 0;
+};
+
 struct ClassicAlembicAssetInput {
+    struct SurfaceFace {
+        std::string patch_name;
+        std::uint32_t face_id{};
+        std::uint32_t first_triangle{};
+        std::uint32_t triangle_count{};
+        std::uint32_t uv_resolution{};
+        // XGen computes these values in double from the SESubd float limit cage.
+        // They remain CPU-side authoring metadata and are never uploaded to a
+        // generation backend.
+        double surface_area{};
+        double center_u_length{};
+        double center_v_length{};
+    };
+
     AssetBuildInput asset;
+    std::vector<SurfaceFace> surface_faces;
+    std::shared_ptr<const ClassicReferenceSurfaceEvaluator> reference_surface;
     std::size_t source_vertex_count{};
     std::size_t source_face_count{};
     std::size_t selected_face_count{};

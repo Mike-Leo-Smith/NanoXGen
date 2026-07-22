@@ -551,48 +551,109 @@ Scalar evaluate_ramp_points(std::span<const Point> points, Scalar parameter) {
 
 } // namespace
 
-double xgen_seexpr_hash(std::span<const double> arguments) noexcept {
-    std::uint32_t seed = 0u;
-    for (const double argument : arguments) {
-        int exponent = 0;
-        const double fraction = std::frexp(argument * 8.539734222673566, &exponent);
-        const std::uint32_t component =
-            static_cast<std::uint32_t>(fraction * 4294967295.0) ^
-            static_cast<std::uint32_t>(exponent);
-        seed = seed * 1664525u + component + 1013904223u;
-    }
-    seed ^= seed >> 11u;
-    seed ^= (seed << 7u) & 0x9d2c5680u;
-    seed ^= (seed << 15u) & 0xefc60000u;
-    seed ^= seed >> 18u;
-    const std::uint8_t b3 = permutation[seed & 0xffu];
-    const std::uint8_t b2 = permutation[((seed >> 8u) + b3) & 0xffu];
-    const std::uint8_t b1 = permutation[((seed >> 16u) + b2) & 0xffu];
-    const std::uint8_t b0 = permutation[((seed >> 24u) + b1) & 0xffu];
-    const std::uint32_t result = static_cast<std::uint32_t>(b0) |
-        (static_cast<std::uint32_t>(b1) << 8u) |
-        (static_cast<std::uint32_t>(b2) << 16u) |
-        (static_cast<std::uint32_t>(b3) << 24u);
-    return static_cast<double>(result) * (1.0 / 4294967295.0);
+std::uint32_t xgen_seexpr_component(double argument) noexcept {
+    int exponent = 0;
+    const double fraction = std::frexp(
+        argument * 8.539734222673566, &exponent);
+    return static_cast<std::uint32_t>(fraction * 4294967295.0) ^
+           static_cast<std::uint32_t>(exponent);
 }
 
-std::uint32_t xgen_runtime_hash32(std::span<const float> arguments) noexcept {
-    std::uint32_t state = 0x9e3779b9u;
-    for (const float argument : arguments) {
-        state ^= std::bit_cast<std::uint32_t>(argument) + 0x9e3779b9u +
-                 (state << 6u) + (state >> 2u);
-        state ^= state >> 16u;
-        state *= 0x7feb352du;
-        state ^= state >> 15u;
-        state *= 0x846ca68bu;
-        state ^= state >> 16u;
+std::uint32_t xgen_seexpr_hash_prefix(
+    std::span<const double> arguments) noexcept {
+    std::uint32_t state = 0u;
+    for (const double argument : arguments) {
+        state = state * 1664525u + xgen_seexpr_component(argument) +
+                1013904223u;
     }
     return state;
 }
 
+std::uint32_t xgen_seexpr_hash_finish(std::uint32_t state) noexcept {
+    state ^= state >> 11u;
+    state ^= (state << 7u) & 0x9d2c5680u;
+    state ^= (state << 15u) & 0xefc60000u;
+    state ^= state >> 18u;
+    const std::uint8_t b3 = permutation[state & 0xffu];
+    const std::uint8_t b2 = permutation[((state >> 8u) + b3) & 0xffu];
+    const std::uint8_t b1 = permutation[((state >> 16u) + b2) & 0xffu];
+    const std::uint8_t b0 = permutation[((state >> 24u) + b1) & 0xffu];
+    const std::uint32_t result = static_cast<std::uint32_t>(b0) |
+        (static_cast<std::uint32_t>(b1) << 8u) |
+        (static_cast<std::uint32_t>(b2) << 16u) |
+        (static_cast<std::uint32_t>(b3) << 24u);
+    return result;
+}
+
+float xgen_seexpr_hash_finish_float(std::uint32_t state) noexcept {
+    return static_cast<float>(xgen_seexpr_hash_finish(state)) * 0x1p-32f;
+}
+
+double xgen_seexpr_hash(std::span<const double> arguments) noexcept {
+    return static_cast<double>(
+               xgen_seexpr_hash_finish(xgen_seexpr_hash_prefix(arguments))) *
+           (1.0 / 4294967295.0);
+}
+
+std::uint32_t xgen_runtime_hash_component(float argument) noexcept {
+    // Reproduce the top 32 fraction bits of
+    // frexp(double(floatValue) * 8.539734222673566) using integer arithmetic.
+    // The 24x53-bit product is held as two uint64 limbs; no device FP64 is
+    // required by the equivalent Luisa lowering.
+    constexpr std::uint64_t constant_mantissa = 0x001114580b45d474ull;
+    constexpr std::uint32_t constant_low =
+        static_cast<std::uint32_t>(constant_mantissa);
+    constexpr std::uint32_t constant_high =
+        static_cast<std::uint32_t>(constant_mantissa >> 32u);
+    const std::uint32_t bits = std::bit_cast<std::uint32_t>(argument);
+    const std::uint32_t absolute = bits & 0x7fffffffu;
+    std::uint32_t component = 0u;
+    if (absolute != 0u) {
+            const std::uint32_t float_exponent = absolute >> 23u;
+            const std::uint32_t mantissa = float_exponent == 0u
+                ? absolute & 0x7fffffu
+                : (absolute & 0x7fffffu) | 0x800000u;
+            const std::uint64_t p0 =
+                static_cast<std::uint64_t>(mantissa) * constant_low;
+            const std::uint64_t p1 =
+                static_cast<std::uint64_t>(mantissa) * constant_high;
+            const std::uint64_t low = p0 + (p1 << 32u);
+            const std::uint64_t high = (p1 >> 32u) + (low < p0 ? 1u : 0u);
+            const std::uint32_t length = high != 0u
+                ? 128u - static_cast<std::uint32_t>(std::countl_zero(high))
+                : 64u - static_cast<std::uint32_t>(std::countl_zero(low));
+            const std::uint32_t shift = length - 32u;
+            const std::uint32_t top = static_cast<std::uint32_t>(
+                (low >> shift) | (high << (64u - shift)));
+            const std::uint64_t remainder =
+                low & ((std::uint64_t{1u} << shift) - 1u);
+            const std::uint64_t ceil_div_2_32 =
+                ((low >> 32u) | (high << 32u)) +
+                ((low & 0xffffffffu) != 0u ? 1u : 0u);
+            const std::uint32_t fraction =
+                top - (remainder < ceil_div_2_32 ? 1u : 0u);
+            const std::int32_t value_exponent = float_exponent == 0u
+                ? -149
+                : static_cast<std::int32_t>(float_exponent) - 150;
+            const std::uint32_t exponent = static_cast<std::uint32_t>(
+                static_cast<std::int32_t>(length) + value_exponent - 49);
+        component = ((bits >> 31u) != 0u ? 0u - fraction : fraction) ^
+                    exponent;
+    }
+    return component;
+}
+
+std::uint32_t xgen_runtime_hash32(std::span<const float> arguments) noexcept {
+    std::uint32_t state = 0u;
+    for (const float argument : arguments) {
+        state = state * 1664525u +
+                xgen_runtime_hash_component(argument) + 1013904223u;
+    }
+    return xgen_seexpr_hash_finish(state);
+}
+
 float xgen_runtime_hash(std::span<const float> arguments) noexcept {
-    return static_cast<float>(xgen_runtime_hash32(arguments) >> 8u) *
-           (1.0f / 16777216.0f);
+    return static_cast<float>(xgen_runtime_hash32(arguments)) * 0x1p-32f;
 }
 
 float xgen_runtime_face_seed(std::uint32_t description_id,
@@ -664,9 +725,13 @@ XgenFloatExpressionProgram make_xgen_float_expression_program(
             throw std::runtime_error(
                 "XGen expression immediate cannot be represented as float");
         }
+        const std::uint32_t auxiliary =
+            instruction.op == XgenScalarOp::random
+                ? xgen_seexpr_component(instruction.immediate)
+                : instruction.auxiliary;
         result.instructions.push_back({
             instruction.op, instruction.operand_offset,
-            instruction.operand_count, instruction.auxiliary, immediate});
+            instruction.operand_count, auxiliary, immediate});
     }
     result.operands = program.operands;
     result.inputs = program.inputs;
@@ -689,6 +754,13 @@ XgenFloatExpressionProgram make_xgen_float_expression_program(
 
 double evaluate_xgen_scalar_expression(
     const XgenExpressionProgram &program, const XgenExpressionContext &context) {
+    std::vector<double> scratch(program.instructions.size());
+    return evaluate_xgen_scalar_expression(program, context, scratch);
+}
+
+double evaluate_xgen_scalar_expression(
+    const XgenExpressionProgram &program, const XgenExpressionContext &context,
+    std::span<double> values) {
     if (context.inputs.size() != program.inputs.size()) {
         throw std::runtime_error("XGen scalar expression input count mismatch");
     }
@@ -701,8 +773,10 @@ double evaluate_xgen_scalar_expression(
             throw std::runtime_error("XGen scalar expression input is non-finite");
         }
     }
-    std::vector<double> values;
-    values.reserve(program.instructions.size());
+    if (values.size() < program.instructions.size()) {
+        throw std::runtime_error("XGen scalar expression scratch is too small");
+    }
+    std::size_t value_count = 0u;
     for (const XgenScalarInstruction &instruction : program.instructions) {
         const std::size_t end = static_cast<std::size_t>(instruction.operand_offset) +
                                 instruction.operand_count;
@@ -714,7 +788,7 @@ double evaluate_xgen_scalar_expression(
                 throw std::runtime_error("XGen scalar expression instruction arity mismatch");
             }
             const std::uint32_t value = program.operands[instruction.operand_offset + index];
-            if (value >= values.size()) {
+            if (value >= value_count) {
                 throw std::runtime_error("XGen scalar expression violates SSA ordering");
             }
             return values[value];
@@ -805,9 +879,9 @@ double evaluate_xgen_scalar_expression(
         if (!std::isfinite(value)) {
             throw std::runtime_error("XGen scalar expression produced a non-finite value");
         }
-        values.push_back(value);
+        values[value_count++] = value;
     }
-    if (program.result >= values.size()) {
+    if (program.result >= value_count) {
         throw std::runtime_error("XGen scalar expression result index is invalid");
     }
     return values[program.result];
@@ -891,28 +965,36 @@ float evaluate_xgen_scalar_expression_float(
         case XgenScalarOp::select:
             require_arity(3u); value = operand(0u) != 0.0f ? operand(1u) : operand(2u); break;
         case XgenScalarOp::hash: {
-            std::uint32_t state = 0x9e3779b9u;
+            std::uint32_t state = 0u;
             for (std::size_t i = 0u; i < instruction.operand_count; ++i) {
-                state ^= std::bit_cast<std::uint32_t>(operand(i)) +
-                         0x9e3779b9u + (state << 6u) + (state >> 2u);
-                state ^= state >> 16u;
-                state *= 0x7feb352du;
-                state ^= state >> 15u;
-                state *= 0x846ca68bu;
-                state ^= state >> 16u;
+                state = state * 1664525u +
+                    xgen_runtime_hash_component(operand(i)) + 1013904223u;
             }
-            value = static_cast<float>(state >> 8u) *
-                    (1.0f / 16777216.0f);
+            value = xgen_seexpr_hash_finish_float(state);
             break;
         }
         case XgenScalarOp::random: {
-            std::array<float, 5u> arguments{context.u, context.v,
-                context.face_seed, instruction.immediate, 0.0f};
             const bool explicit_seed = instruction.operand_count == 1u ||
                                        instruction.operand_count == 3u;
-            if (explicit_seed) { arguments[4] = operand(instruction.operand_count - 1u); }
-            value = xgen_runtime_hash(
-                std::span{arguments}.first(explicit_seed ? 5u : 4u));
+            if (context.has_random_prefix) {
+                std::uint32_t state = context.random_prefix * 1664525u +
+                    instruction.auxiliary + 1013904223u;
+                if (explicit_seed) {
+                    state = state * 1664525u +
+                        xgen_runtime_hash_component(
+                            operand(instruction.operand_count - 1u)) +
+                        1013904223u;
+                }
+                value = xgen_seexpr_hash_finish_float(state);
+            } else {
+                std::array<float, 5u> arguments{context.u, context.v,
+                    context.face_seed, instruction.immediate, 0.0f};
+                if (explicit_seed) {
+                    arguments[4] = operand(instruction.operand_count - 1u);
+                }
+                value = xgen_runtime_hash(
+                    std::span{arguments}.first(explicit_seed ? 5u : 4u));
+            }
             if (instruction.operand_count >= 2u) {
                 value = (operand(1u) - operand(0u)) * value + operand(0u);
             }

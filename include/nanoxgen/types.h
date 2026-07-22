@@ -129,6 +129,9 @@ struct RootSample {
     Vec2 uv{};
     std::uint32_t triangle_index{};
     Vec2 barycentric{};
+    // Coarse authoring-surface identity. This differs from triangle_index
+    // when a Classic face is tessellated for renderer generation.
+    std::uint32_t surface_face_id{kInvalidIndex};
 };
 
 // Renderer-facing point layout. NanoXGen and XGen widths are diameters, while

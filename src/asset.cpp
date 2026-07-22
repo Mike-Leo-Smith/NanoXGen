@@ -103,6 +103,16 @@ void check_input(const AssetBuildInput &input) {
     if (!input.normals.empty() && input.normals.size() != input.positions.size()) {
         throw std::invalid_argument("normal count must match vertex count");
     }
+    if (!input.reference_positions.empty() &&
+        input.reference_positions.size() != input.positions.size()) {
+        throw std::invalid_argument(
+            "reference-position count must match vertex count");
+    }
+    if (!input.reference_normals.empty() &&
+        input.reference_normals.size() != input.positions.size()) {
+        throw std::invalid_argument(
+            "reference-normal count must match vertex count");
+    }
     if (!input.texcoords.empty() && input.texcoords.size() != input.positions.size()) {
         throw std::invalid_argument("texcoord count must match vertex count");
     }
@@ -114,6 +124,27 @@ void check_input(const AssetBuildInput &input) {
     for (const GuideInput &g : input.guides) {
         if (g.cvs.size() < 2u || g.cvs.size() > std::numeric_limits<std::uint16_t>::max()) {
             throw std::invalid_argument("each guide needs 2..65535 CVs");
+        }
+        if (!g.support_radii.empty()) {
+            if (g.support_radii.size() != g.support_angles.size() + 1u) {
+                throw std::invalid_argument(
+                    "Classic guide support radii must contain the broad radius plus one radius per angle");
+            }
+            for (const float radius : g.support_radii) {
+                if (!std::isfinite(radius) || radius < 0.0f) {
+                    throw std::invalid_argument(
+                        "Classic guide support radius must be finite and non-negative");
+                }
+            }
+            float previous = -1.0f;
+            for (const float angle : g.support_angles) {
+                if (!std::isfinite(angle) || angle < 0.0f || angle > 4.0f ||
+                    angle < previous) {
+                    throw std::invalid_argument(
+                        "Classic guide support angles must be finite, nondecreasing, and in [0,4]");
+                }
+                previous = angle;
+            }
         }
     }
 }
@@ -413,6 +444,58 @@ PackedGeneratedCurves generate_packed_deformed_cpu(
     const DeviceAssetView asset_view = asset.view();
     parallel_for_strands(params.strand_count, options, [&](std::uint32_t strand) {
         generate_packed_strand(asset_view, params, strand, output, device_deformed);
+    });
+    return curves;
+}
+
+PackedGeneratedCurves generate_packed_roots_cpu(
+    const Asset &asset,
+    const GenerationParams &params,
+    std::span<const RootSample> roots,
+    float radius_scale,
+    const CpuGenerationOptions &options) {
+    if (roots.size() != params.strand_count) {
+        throw std::invalid_argument(
+            "explicit root count must match generation strand count");
+    }
+    if (!std::isfinite(radius_scale) || radius_scale < 0.0f) {
+        throw std::invalid_argument(
+            "curve radius scale must be finite and non-negative");
+    }
+    const DeviceDeformedGeometryView deformed =
+        validate_generation_input(asset, params, {});
+    const DeviceAssetView view = asset.view();
+    for (const RootSample &root : roots) {
+        if (root.triangle_index >= view.header().triangle_count ||
+            !std::isfinite(root.position.x) ||
+            !std::isfinite(root.position.y) ||
+            !std::isfinite(root.position.z) ||
+            !std::isfinite(root.normal.x) ||
+            !std::isfinite(root.normal.y) ||
+            !std::isfinite(root.normal.z) || !std::isfinite(root.uv.x) ||
+            !std::isfinite(root.uv.y) ||
+            !std::isfinite(root.barycentric.x) ||
+            !std::isfinite(root.barycentric.y) || root.barycentric.x < 0.0f ||
+            root.barycentric.y < 0.0f ||
+            root.barycentric.x + root.barycentric.y > 1.00001f) {
+            throw std::invalid_argument("explicit root is invalid");
+        }
+    }
+    PackedGeneratedCurves curves{};
+    curves.strand_count = params.strand_count;
+    curves.cvs_per_strand = params.cvs_per_strand;
+    const std::size_t point_count =
+        static_cast<std::size_t>(params.strand_count) * params.cvs_per_strand;
+    curves.points.resize(point_count);
+    curves.point_counts.resize(params.strand_count);
+    curves.roots.resize(params.strand_count);
+    curves.root_uvs.resize(params.strand_count);
+    const DevicePackedCurveOutputView output{
+        curves.points.data(), curves.roots.data(), curves.root_uvs.data(),
+        radius_scale, curves.point_counts.data()};
+    parallel_for_strands(params.strand_count, options, [&](std::uint32_t strand) {
+        generate_packed_strand_from_root(
+            view, params, strand, roots[strand], output, deformed);
     });
     return curves;
 }

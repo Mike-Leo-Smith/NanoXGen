@@ -3,6 +3,11 @@
 
 #if __has_include(<xgen/src/xgrenderer/XgRenderAPI.h>)
 #include <xgen/src/xgrenderer/XgRenderAPI.h>
+#include <xgen/src/xgcore/XgDescription.h>
+#include <xgen/src/xgcore/XgFXModule.h>
+#include <xgen/src/xgcore/XgGenerator.h>
+#include <xgen/src/xgcore/XgPalette.h>
+#include <xgen/src/xgcore/XgPrimitive.h>
 #else
 #error "Autodesk XgRenderAPI.h was not found"
 #endif
@@ -199,6 +204,9 @@ std::uint64_t hash_values(std::uint64_t hash, std::span<const T> values) noexcep
 int main(int argc, char **argv) try {
     std::string xgen_args;
     std::string cache_dir{"xgenCache/"};
+    std::string description_name;
+    std::optional<std::string> generator_mask;
+    std::optional<std::size_t> fx_count;
     std::optional<std::filesystem::path> output_path;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
@@ -206,12 +214,25 @@ int main(int argc, char **argv) try {
             xgen_args = argv[++index];
         } else if (argument == "--cache-dir" && index + 1 < argc) {
             cache_dir = argv[++index];
+        } else if (argument == "--description" && index + 1 < argc) {
+            description_name = argv[++index];
+        } else if (argument == "--generator-mask" && index + 1 < argc) {
+            generator_mask = argv[++index];
+        } else if (argument == "--fx-count" && index + 1 < argc) {
+            std::size_t consumed{};
+            const std::string value = argv[++index];
+            fx_count = std::stoull(value, &consumed);
+            if (consumed != value.size()) {
+                throw std::invalid_argument("--fx-count must be an integer");
+            }
         } else if (argument == "--nxc" && index + 1 < argc) {
             output_path = argv[++index];
         } else if (argument == "--help") {
             std::cout
                 << "usage: nanoxgen_xgen_classic_typed --xgen-args <render-args> "
-                   "[--cache-dir <dir>] [--nxc <output.nxc>]\n";
+                   "[--cache-dir <dir>] [--nxc <output.nxc>] "
+                   "[--description <name> [--generator-mask <expression>] "
+                   "[--fx-count <count>]]\n";
             return 0;
         } else {
             throw std::invalid_argument("unknown or incomplete argument: " + argument);
@@ -219,6 +240,10 @@ int main(int argc, char **argv) try {
     }
     if (xgen_args.empty()) {
         throw std::invalid_argument("--xgen-args must not be empty");
+    }
+    if ((generator_mask || fx_count) && description_name.empty()) {
+        throw std::invalid_argument(
+            "--generator-mask/--fx-count requires --description");
     }
 
     TypedCallbacks callbacks{std::move(cache_dir)};
@@ -228,6 +253,53 @@ int main(int argc, char **argv) try {
         std::unique_ptr<api::PatchRenderer> patch{
             api::PatchRenderer::init(&callbacks, xgen_args.c_str())};
         if (!patch) { throw std::runtime_error("PatchRenderer::init returned null"); }
+        if (generator_mask || fx_count) {
+            XgDescription *matched_description = nullptr;
+            for (const std::string &palette_name : XgPalette::palettes()) {
+                XgPalette *palette = XgPalette::palette(palette_name);
+                XgDescription *description = palette
+                    ? palette->description(description_name)
+                    : nullptr;
+                if (!description) { continue; }
+                if (matched_description) {
+                    throw std::runtime_error(
+                        "multiple XGen descriptions matched generator override");
+                }
+                matched_description = description;
+            }
+            if (!matched_description) {
+                throw std::runtime_error(
+                    "XGen description was not found for runtime override");
+            }
+            if (generator_mask) {
+                XgGenerator *generator = matched_description->activeGenerator();
+                if (!generator ||
+                    !generator->setAttr("mask", *generator_mask, "float")) {
+                    throw std::runtime_error(
+                        "failed to override the active generator mask");
+                }
+            }
+            if (fx_count) {
+                XgPrimitive *primitive = matched_description->activePrimitive();
+                if (!primitive) {
+                    throw std::runtime_error(
+                        "XGen description has no active primitive");
+                }
+                auto &modules = primitive->modules();
+                if (*fx_count > modules.size()) {
+                    throw std::runtime_error(
+                        "--fx-count exceeds the loaded FX module count");
+                }
+                for (std::size_t module = *fx_count;
+                     module < modules.size(); ++module) {
+                    if (!modules[module] ||
+                        !modules[module]->setAttr("active", "false", "bool")) {
+                        throw std::runtime_error(
+                            "failed to disable an XGen FX module");
+                    }
+                }
+            }
+        }
         api::bbox bounds{};
         unsigned int face_id = std::numeric_limits<unsigned int>::max();
         while (callbacks.error().empty() && patch->nextFace(bounds, face_id)) {
@@ -285,6 +357,9 @@ int main(int argc, char **argv) try {
               << ",\"checksum\":\"0x" << std::hex << checksum << std::dec << '"'
               << ",\"typed_primitive_cache\":true"
               << ",\"intermediate_xgen_blob\":false";
+    if (fx_count) {
+        std::cout << ",\"fx_count\":" << *fx_count;
+    }
     if (output_path) {
         std::cout << ",\"output\":\"" << escape_json(output_path->string()) << '"';
     }

@@ -17,8 +17,6 @@ option(NANOXGEN_BUILD_CALIBRATION
   "Build Autodesk XGen calibration/oracle tools (requires a licensed XGen runtime)" OFF)
 option(NANOXGEN_BUILD_AUTODESK_BRIDGES
   "Build explicit Autodesk XGen/Maya renderer bridges" OFF)
-option(NANOXGEN_ENABLE_CUDA "Build the CUDA generation kernel" OFF)
-option(NANOXGEN_ENABLE_HIP "Build the HIP generation and cache-residency kernels" OFF)
 option(NANOXGEN_ENABLE_LUISA
   "Build the optional LuisaCompute next JIT execution bridge" OFF)
 option(NANOXGEN_ENABLE_ALEMBIC
@@ -116,6 +114,9 @@ target_link_libraries(nanoxgen_benchmark PRIVATE nanoxgen)
 add_executable(nanoxgen_cache_benchmark tools/cache_benchmark.cpp)
 target_link_libraries(nanoxgen_cache_benchmark PRIVATE nanoxgen)
 
+add_executable(nanoxgen_curve_cache_inspect tools/curve_cache_inspect.cpp)
+target_link_libraries(nanoxgen_curve_cache_inspect PRIVATE nanoxgen)
+
 add_executable(nanoxgen_precision tools/precision.cpp)
 target_link_libraries(nanoxgen_precision PRIVATE nanoxgen)
 
@@ -147,6 +148,7 @@ install(TARGETS
   nanoxgen_demo
   nanoxgen_benchmark
   nanoxgen_cache_benchmark
+  nanoxgen_curve_cache_inspect
   nanoxgen_precision
   nanoxgen_xgen_inspect
   nanoxgen_xgen_process
@@ -191,61 +193,6 @@ if(NANOXGEN_BUILD_TESTS)
   add_test(NAME nanoxgen_expression_tests COMMAND nanoxgen_expression_tests)
 endif()
 
-if(NANOXGEN_ENABLE_CUDA)
-  enable_language(CUDA)
-  find_package(CUDAToolkit REQUIRED)
-  add_library(nanoxgen_cuda STATIC src/cuda/generate.cu)
-  target_include_directories(nanoxgen_cuda PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_compile_features(nanoxgen_cuda PUBLIC cuda_std_17)
-  target_link_libraries(nanoxgen_cuda PUBLIC nanoxgen CUDA::cudart)
-  set_target_properties(nanoxgen_cuda PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
-    CUDA_RESOLVE_DEVICE_SYMBOLS ON)
-  if(NANOXGEN_FAST_MATH)
-    target_compile_options(nanoxgen_cuda PRIVATE --use_fast_math)
-  endif()
-
-  add_executable(nanoxgen_cuda_benchmark tools/cuda_benchmark.cpp)
-  target_link_libraries(nanoxgen_cuda_benchmark PRIVATE nanoxgen_cuda)
-
-  if(NANOXGEN_BUILD_TESTS)
-    add_executable(nanoxgen_cuda_tests tests/cuda_test.cpp)
-    target_link_libraries(
-      nanoxgen_cuda_tests PRIVATE nanoxgen_cuda nanoxgen_build_options)
-    add_test(NAME nanoxgen_cuda_tests COMMAND nanoxgen_cuda_tests)
-    set_tests_properties(nanoxgen_cuda_tests PROPERTIES SKIP_RETURN_CODE 77)
-  endif()
-endif()
-
-if(NANOXGEN_ENABLE_HIP)
-  enable_language(HIP)
-  find_package(hip REQUIRED CONFIG)
-  add_library(nanoxgen_hip STATIC src/hip/generate.hip)
-  set_source_files_properties(src/hip/generate.hip PROPERTIES LANGUAGE HIP)
-  target_include_directories(nanoxgen_hip PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_compile_features(nanoxgen_hip PUBLIC hip_std_20)
-  target_link_libraries(nanoxgen_hip PUBLIC nanoxgen hip::host)
-  if(NANOXGEN_FAST_MATH)
-    target_compile_options(nanoxgen_hip PRIVATE
-      $<$<COMPILE_LANGUAGE:HIP>:-ffast-math>)
-  endif()
-
-  add_executable(nanoxgen_hip_benchmark tools/hip_benchmark.cpp)
-  target_link_libraries(nanoxgen_hip_benchmark PRIVATE nanoxgen_hip)
-
-  add_executable(nanoxgen_hip_cache_benchmark tools/hip_cache_benchmark.cpp)
-  set_source_files_properties(tools/hip_cache_benchmark.cpp PROPERTIES LANGUAGE HIP)
-  target_link_libraries(nanoxgen_hip_cache_benchmark PRIVATE nanoxgen hip::host)
-  target_compile_features(nanoxgen_hip_cache_benchmark PRIVATE hip_std_20)
-
-  if(NANOXGEN_BUILD_TESTS)
-    add_executable(nanoxgen_hip_tests tests/hip_test.cpp)
-    target_link_libraries(nanoxgen_hip_tests PRIVATE nanoxgen_hip nanoxgen_build_options)
-    add_test(NAME nanoxgen_hip_tests COMMAND nanoxgen_hip_tests)
-    set_tests_properties(nanoxgen_hip_tests PROPERTIES SKIP_RETURN_CODE 77)
-  endif()
-endif()
-
 if(NANOXGEN_ENABLE_LUISA)
   list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
   find_package(LuisaComputeNext REQUIRED)
@@ -256,6 +203,7 @@ if(NANOXGEN_ENABLE_LUISA)
       "LuisaCompute backend plug-in not found: ${_nanoxgen_luisa_plugin}")
   endif()
   add_library(nanoxgen_luisa STATIC
+    src/luisa/generate.cpp
     src/luisa/xgen_expression.cpp
     src/luisa/xgen_classic_runtime.cpp)
   add_library(NanoXGen::nanoxgen_luisa ALIAS nanoxgen_luisa)
@@ -267,15 +215,10 @@ if(NANOXGEN_ENABLE_LUISA)
   add_executable(nanoxgen_luisa_tests tests/luisa_test.cpp)
   target_link_libraries(
     nanoxgen_luisa_tests PRIVATE nanoxgen_luisa)
-  if(TARGET nanoxgen_hip)
-    target_link_libraries(nanoxgen_luisa_tests PRIVATE nanoxgen_hip)
-    target_compile_definitions(
-      nanoxgen_luisa_tests PRIVATE NANOXGEN_TEST_LUISA_HIP_INTEROP=1)
-    add_executable(
-      nanoxgen_luisa_classic_benchmark tools/luisa_classic_benchmark.cpp)
-    target_link_libraries(
-      nanoxgen_luisa_classic_benchmark PRIVATE nanoxgen_luisa nanoxgen_hip)
-  endif()
+  add_executable(
+    nanoxgen_luisa_classic_benchmark tools/luisa_classic_benchmark.cpp)
+  target_link_libraries(
+    nanoxgen_luisa_classic_benchmark PRIVATE nanoxgen_luisa)
   if(NANOXGEN_BUILD_TESTS)
     add_test(NAME nanoxgen_luisa_tests
       COMMAND nanoxgen_luisa_tests
@@ -342,6 +285,44 @@ if(NANOXGEN_ENABLE_PTEX)
   endif()
 endif()
 
+if(NANOXGEN_ENABLE_ALEMBIC AND NANOXGEN_ENABLE_PTEX)
+  add_library(nanoxgen_classic_native STATIC
+    src/xgen_classic_roots.cpp
+    src/xgen_samples.cpp)
+  add_library(NanoXGen::nanoxgen_classic_native ALIAS nanoxgen_classic_native)
+  target_include_directories(
+    nanoxgen_classic_native PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_features(nanoxgen_classic_native PUBLIC cxx_std_20)
+  target_link_libraries(nanoxgen_classic_native PUBLIC
+    nanoxgen_classic_alembic nanoxgen_ptex)
+  target_link_libraries(nanoxgen_classic_native PRIVATE nanoxgen_build_options)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+      nanoxgen_classic_native PRIVATE -Wall -Wextra -Wpedantic)
+  elseif(MSVC)
+    target_compile_options(nanoxgen_classic_native PRIVATE /W4)
+  endif()
+  add_executable(
+    nanoxgen_xgen_classic_cold_benchmark
+    tools/xgen_classic_cold_benchmark.cpp)
+  target_link_libraries(
+    nanoxgen_xgen_classic_cold_benchmark PRIVATE nanoxgen_classic_native)
+  if(NANOXGEN_BUILD_TESTS)
+    add_executable(nanoxgen_classic_root_tests tests/classic_root_test.cpp)
+    target_link_libraries(
+      nanoxgen_classic_root_tests PRIVATE nanoxgen_classic_native)
+    add_test(NAME nanoxgen_classic_root_tests COMMAND nanoxgen_classic_root_tests)
+  endif()
+  if(NANOXGEN_ENABLE_LUISA)
+    add_executable(
+      nanoxgen_xgen_classic_luisa_benchmark
+      tools/xgen_classic_luisa_benchmark.cpp)
+    target_link_libraries(
+      nanoxgen_xgen_classic_luisa_benchmark PRIVATE
+      nanoxgen_classic_native nanoxgen_luisa)
+  endif()
+endif()
+
 if(NANOXGEN_BUILD_CALIBRATION OR NANOXGEN_BUILD_AUTODESK_BRIDGES)
   list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
   find_package(XGen REQUIRED)
@@ -370,6 +351,9 @@ if(NANOXGEN_BUILD_CALIBRATION)
   add_executable(nanoxgen_xgen_expression_oracle tools/xgen_expression_oracle.cpp)
   target_link_libraries(nanoxgen_xgen_expression_oracle PRIVATE XGen::XGen)
   target_compile_features(nanoxgen_xgen_expression_oracle PRIVATE cxx_std_20)
+  add_executable(nanoxgen_xgen_sample_oracle tools/xgen_sample_oracle.cpp)
+  target_link_libraries(nanoxgen_xgen_sample_oracle PRIVATE nanoxgen XGen::XGen)
+  target_compile_features(nanoxgen_xgen_sample_oracle PRIVATE cxx_std_20)
   set_target_properties(
     nanoxgen_xgen_probe
     nanoxgen_xgen_parity
@@ -377,6 +361,7 @@ if(NANOXGEN_BUILD_CALIBRATION)
     nanoxgen_xgen_cache_oracle
     nanoxgen_xgen_modifier_probe
     nanoxgen_xgen_expression_oracle
+    nanoxgen_xgen_sample_oracle
     PROPERTIES SKIP_BUILD_RPATH TRUE)
 endif()
 
@@ -385,12 +370,16 @@ if(NANOXGEN_BUILD_AUTODESK_BRIDGES)
   add_executable(nanoxgen_xgen_classic_typed tools/xgen_classic_typed.cpp)
   target_link_libraries(nanoxgen_xgen_classic_typed PRIVATE nanoxgen XGen::XGen)
   target_compile_features(nanoxgen_xgen_classic_typed PRIVATE cxx_std_20)
+  add_executable(nanoxgen_xgen_patch_oracle tools/xgen_patch_oracle.cpp)
+  target_link_libraries(nanoxgen_xgen_patch_oracle PRIVATE XGen::XGen)
+  target_compile_features(nanoxgen_xgen_patch_oracle PRIVATE cxx_std_20)
   add_library(nanoxgen_maya_xgen_cache MODULE tools/maya_xgen_cache.cpp)
   target_link_libraries(
     nanoxgen_maya_xgen_cache PRIVATE nanoxgen Maya::OpenMaya)
   target_compile_features(nanoxgen_maya_xgen_cache PRIVATE cxx_std_20)
   set_target_properties(
     nanoxgen_xgen_classic_typed
+    nanoxgen_xgen_patch_oracle
     nanoxgen_maya_xgen_cache
     PROPERTIES SKIP_BUILD_RPATH TRUE)
   set_target_properties(

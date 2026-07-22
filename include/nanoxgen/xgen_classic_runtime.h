@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,26 @@ struct ClassicFloatCutModule {
     std::uint32_t rebuild_type{};
 };
 
+struct ClassicFloatNoiseModule {
+    ClassicFloatRuntimeExpression mask;
+    ClassicFloatRuntimeExpression magnitude;
+    ClassicFloatRuntimeExpression magnitude_scale;
+    ClassicFloatRuntimeExpression frequency;
+    ClassicFloatRuntimeExpression correlation;
+    ClassicFloatRuntimeExpression preserve_length;
+    std::uint32_t mode{};
+};
+
+enum class ClassicFloatEffectType : std::uint8_t {
+    Noise,
+    Cut,
+};
+
+struct ClassicFloatEffect {
+    ClassicFloatEffectType type{};
+    std::uint32_t module_index{};
+};
+
 // Runtime subset of one Classic SplinePrimitive. Authoring values are parsed
 // losslessly elsewhere; this retained/JIT form contains float/uint data only.
 struct ClassicFloatRuntimePlan {
@@ -38,15 +59,21 @@ struct ClassicFloatRuntimePlan {
     std::optional<ClassicFloatRuntimeExpression> taper;
     std::optional<ClassicFloatRuntimeExpression> taper_start;
     std::optional<ClassicFloatRuntimeExpression> width_ramp;
+    std::vector<ClassicFloatNoiseModule> noises;
     std::vector<ClassicFloatCutModule> cuts;
-    // Requirements outside this plan (for example PTEX, root sampling, or an
-    // authored FX module) are preserved as explicit fallback diagnostics.
+    std::vector<ClassicFloatEffect> effects;
+    // Requirements outside this plan (for example PTEX or an authored FX
+    // module) are preserved as explicit fallback diagnostics. Classic random
+    // root sampling is planned separately by xgen_classic_roots.
     std::vector<std::string> fallback_reasons;
 
     [[nodiscard]] bool lowering_complete() const noexcept {
         return fallback_reasons.empty();
     }
 };
+
+// Float implementation of the SeExpr 3D noise used by Classic NoiseFX.
+[[nodiscard]] float xgen_classic_noise_float(Vec3 sample) noexcept;
 
 struct ClassicFloatRuntimeContext {
     std::uint32_t id{};
@@ -56,6 +83,8 @@ struct ClassicFloatRuntimeContext {
     float c_length{};
     float c_width{};
     float t{};
+    std::uint32_t random_prefix{};
+    bool has_random_prefix{};
 };
 
 [[nodiscard]] ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
@@ -73,6 +102,14 @@ struct ClassicFloatRuntimeContext {
 void apply_xgen_classic_float_runtime_plan_cpu(
     PackedGeneratedCurves &curves,
     const ClassicFloatRuntimePlan &plan,
-    float radius_scale = 1.0f);
+    float radius_scale = 1.0f,
+    std::span<const Vec3> surface_tangents = {},
+    std::span<const std::uint32_t> random_prefixes = {},
+    std::span<const std::uint32_t> primitive_ids = {});
+
+// Match the Classic renderer cache convention by adding one extrapolated
+// endpoint before and after every fixed-CV spline. Call after all FX modules
+// and culling have completed.
+void add_xgen_classic_renderer_endpoints(PackedGeneratedCurves &curves);
 
 } // namespace nanoxgen

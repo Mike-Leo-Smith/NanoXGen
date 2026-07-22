@@ -16,12 +16,27 @@ struct GuideInput {
     Vec3 root_normal{0.0f, 1.0f, 0.0f};
     Vec2 root_uv{};
     std::uint32_t triangle_index{kInvalidIndex};
+    std::uint32_t surface_face_id{kInvalidIndex};
     Vec2 barycentric{};
     float support_radius{0.0f}; // zero selects an automatic radius
+    // Optional Classic authoring metadata. These arrays stay on the CPU input
+    // side unless a backend explicitly packs them; renderer geometry remains
+    // float-only. support_radii[0] is the broad-phase maximum and subsequent
+    // entries correspond one-to-one with support_angles in XGen's [0,4) turn.
+    Vec3 reference_root_position{};
+    Vec3 reference_root_normal{0.0f, 1.0f, 0.0f};
+    Vec3 reference_root_tangent{1.0f, 0.0f, 0.0f};
+    Vec3 reference_root_binormal{0.0f, 0.0f, 1.0f};
+    std::vector<float> support_radii;
+    std::vector<float> support_angles;
 };
 
 struct AssetBuildInput {
     std::vector<Vec3> positions;
+    // Optional XGen reference-pose positions. Classic root/guide association
+    // uses these, while renderer generation continues to use positions.
+    std::vector<Vec3> reference_positions;
+    std::vector<Vec3> reference_normals;
     std::vector<Vec3> normals;
     std::vector<Vec2> texcoords;
     std::vector<UInt3> triangles;
@@ -88,9 +103,8 @@ struct LinearModifierReferenceParams {
 using LinearGenerationParams = LinearModifierReferenceParams;
 
 // CPU workers persist for the duration of one generation call and dynamically
-// claim logical work blocks. The default tile contains as many strands as the
-// unchanged CUDA kernel has threads per block, so one CPU worker serially
-// executes the logical work corresponding to one CUDA block at a time.
+// claim logical work tiles. The 128-strand default preserves the established
+// scheduling granularity without coupling the portable core to a GPU API.
 struct CpuGenerationOptions {
     std::uint32_t worker_count{};             // zero selects hardware concurrency
     std::uint32_t strands_per_work_block{128u};
@@ -129,6 +143,12 @@ void save_asset(const Asset &asset, const std::filesystem::path &path);
     const Asset &asset,
     const GenerationParams &params,
     const DeformedGeometryView &deformed,
+    float radius_scale = 1.0f,
+    const CpuGenerationOptions &options = {});
+[[nodiscard]] PackedGeneratedCurves generate_packed_roots_cpu(
+    const Asset &asset,
+    const GenerationParams &params,
+    std::span<const RootSample> roots,
     float radius_scale = 1.0f,
     const CpuGenerationOptions &options = {});
 [[nodiscard]] GeneratedCurves generate_linear_modifier_reference_cpu(

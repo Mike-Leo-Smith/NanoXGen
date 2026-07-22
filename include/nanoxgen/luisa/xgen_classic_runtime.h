@@ -10,11 +10,20 @@ using ClassicRuntimePrimitiveKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::float4>,
     luisa::compute::Buffer<luisa::float4>,
     luisa::compute::ByteBuffer,
+    luisa::compute::Buffer<luisa::uint>,
     luisa::compute::Buffer<luisa::float4>)>;
 using ClassicRuntimeCutKernel = ClassicRuntimePrimitiveKernel;
+using ClassicRuntimeNoiseKernel = luisa::compute::Kernel1D<void(
+    luisa::compute::Buffer<luisa::float4>,
+    luisa::compute::Buffer<luisa::float4>,
+    luisa::compute::ByteBuffer,
+    luisa::compute::Buffer<luisa::uint>,
+    luisa::compute::Buffer<luisa::float3>,
+    luisa::compute::Buffer<luisa::float4>)>;
 using ClassicRuntimeWidthKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::float4>,
     luisa::compute::ByteBuffer,
+    luisa::compute::Buffer<luisa::uint>,
     luisa::compute::Buffer<luisa::float4>)>;
 
 struct ClassicFloatRuntimeLuisaContext {
@@ -25,6 +34,8 @@ struct ClassicFloatRuntimeLuisaContext {
     luisa::compute::Expr<float> c_length;
     luisa::compute::Expr<float> c_width;
     luisa::compute::Expr<float> t;
+    luisa::compute::Expr<luisa::uint> random_prefix;
+    bool has_random_prefix{};
 };
 
 // Bind a Classic runtime expression directly to values in the surrounding
@@ -34,8 +45,9 @@ struct ClassicFloatRuntimeLuisaContext {
     const ClassicFloatRuntimeLuisaContext &context);
 
 // Kernels for a zero-host-copy Classic postprocess pipeline. Packed points are
-// float4(position, radius); roots is a byte view of RootSample records; state
-// is one float4(cLength, cWidth, taper, taperStart) per strand.
+// float4(position, radius); roots is a byte view of RootSample records;
+// root_runtime is interleaved uint2(primitiveId, exactSeExprPrefix); state is
+// one float4(cLength, cWidth, taper, taperStart) per strand.
 [[nodiscard]] ClassicRuntimePrimitiveKernel make_classic_runtime_primitive_kernel(
     const ClassicFloatRuntimePlan &plan,
     std::uint32_t cvs_per_strand,
@@ -44,6 +56,11 @@ struct ClassicFloatRuntimeLuisaContext {
 [[nodiscard]] ClassicRuntimeCutKernel make_classic_runtime_cut_kernel(
     const ClassicFloatRuntimePlan &plan,
     const ClassicFloatCutModule &cut,
+    std::uint32_t cvs_per_strand);
+
+[[nodiscard]] ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
+    const ClassicFloatRuntimePlan &plan,
+    const ClassicFloatNoiseModule &noise,
     std::uint32_t cvs_per_strand);
 
 [[nodiscard]] ClassicRuntimeWidthKernel make_classic_runtime_width_kernel(

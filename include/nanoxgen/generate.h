@@ -131,7 +131,7 @@ NXG_HOST_DEVICE inline RootSample sample_root(
     if ((h.flags & HasTexcoords) != 0u) {
         uv = asset.texcoords()[tri.x] * b0 + asset.texcoords()[tri.y] * b1 + asset.texcoords()[tri.z] * b2;
     }
-    return {p, n, uv, triangle_index, {b1, b2}};
+    return {p, n, uv, triangle_index, {b1, b2}, triangle_index};
 }
 
 NXG_HOST_DEVICE inline Vec3 guide_root(
@@ -535,9 +535,9 @@ NXG_HOST_DEVICE inline StrandGenerationState make_strand_generation_state(
     DeviceAssetView asset,
     DeviceDeformedGeometryView deformed,
     const GenerationParams &params,
-    std::uint32_t strand) noexcept {
+    RootSample root) noexcept {
     StrandGenerationState state{};
-    state.root = sample_root(asset, deformed, params, strand);
+    state.root = root;
     state.guide_blend = make_guide_blend_state(asset, deformed, params, state.root);
     if (noise_is_enabled(params)) {
         state.surface_u = root_surface_u(asset, deformed, state.root);
@@ -563,6 +563,15 @@ NXG_HOST_DEVICE inline StrandGenerationState make_strand_generation_state(
         }
     }
     return state;
+}
+
+NXG_HOST_DEVICE inline StrandGenerationState make_strand_generation_state(
+    DeviceAssetView asset,
+    DeviceDeformedGeometryView deformed,
+    const GenerationParams &params,
+    std::uint32_t strand) noexcept {
+    return make_strand_generation_state(
+        asset, deformed, params, sample_root(asset, deformed, params, strand));
 }
 
 NXG_HOST_DEVICE inline float evaluate_strand_width(
@@ -619,6 +628,40 @@ NXG_HOST_DEVICE inline void generate_packed_strand(
     for (std::uint32_t cv = 0u; cv < params.cvs_per_strand; ++cv) {
         Vec3 point = noise_enabled
             ? evaluate_and_advance_noise_cursor(asset, deformed, params, state, cursor)
+            : evaluate_base_strand_cv(asset, deformed, params, state, cv);
+        if (state.preserve_scale != 1.0f) {
+            point = state.root.position +
+                    (point - state.root.position) * state.preserve_scale;
+        }
+        const float width = evaluate_strand_width(params, cv);
+        const std::uint64_t index = static_cast<std::uint64_t>(strand) *
+                                    params.cvs_per_strand + cv;
+        output.points[index] = {point.x, point.y, point.z,
+                                0.5f * width * output.radius_scale};
+    }
+}
+
+NXG_HOST_DEVICE inline void generate_packed_strand_from_root(
+    DeviceAssetView asset,
+    const GenerationParams &params,
+    std::uint32_t strand,
+    const RootSample &root,
+    DevicePackedCurveOutputView output,
+    DeviceDeformedGeometryView deformed = {}) noexcept {
+    const StrandGenerationState state = make_strand_generation_state(
+        asset, deformed, params, root);
+    const bool noise_enabled = noise_is_enabled(params);
+    if (output.roots) { output.roots[strand] = state.root; }
+    if (output.root_uvs) { output.root_uvs[strand] = state.root.uv; }
+    if (output.point_counts) { output.point_counts[strand] = params.cvs_per_strand; }
+    StrandNoiseCursor cursor{};
+    if (noise_enabled) {
+        cursor = make_noise_cursor(asset, deformed, params, state);
+    }
+    for (std::uint32_t cv = 0u; cv < params.cvs_per_strand; ++cv) {
+        Vec3 point = noise_enabled
+            ? evaluate_and_advance_noise_cursor(
+                  asset, deformed, params, state, cursor)
             : evaluate_base_strand_cv(asset, deformed, params, state, cv);
         if (state.preserve_scale != 1.0f) {
             point = state.root.position +

@@ -400,6 +400,24 @@ void test_direct_packed_generation_math() {
     require(std::memcmp(public_output.points.data(), packed.data(),
                         packed.size() * sizeof(PackedCurvePoint)) == 0,
             "public packed generation must use shared device math");
+
+    const PackedGeneratedCurves explicit_output = generate_packed_roots_cpu(
+        asset, params, public_output.roots, 1.5f, {2u, 4u});
+    require(std::memcmp(explicit_output.points.data(), public_output.points.data(),
+                        public_output.points.size() * sizeof(PackedCurvePoint)) == 0 &&
+                std::memcmp(explicit_output.roots.data(), public_output.roots.data(),
+                            public_output.roots.size() * sizeof(RootSample)) == 0,
+            "explicit roots must reproduce packed generation bitwise");
+    std::vector<RootSample> invalid_roots = public_output.roots;
+    invalid_roots.front().triangle_index = asset.view().header().triangle_count;
+    bool rejected_root = false;
+    try {
+        (void)generate_packed_roots_cpu(
+            asset, params, invalid_roots, 1.0f, {1u, 128u});
+    } catch (const std::invalid_argument &) {
+        rejected_root = true;
+    }
+    require(rejected_root, "explicit root validation");
 }
 
 void test_checked_device_generation_contract() {
