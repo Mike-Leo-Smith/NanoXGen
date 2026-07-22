@@ -71,6 +71,19 @@
       }
     },
     {
+      "name": "luisa-hip-release",
+      "displayName": "LuisaCompute next HIP release",
+      "description": "Release build with an external LuisaCompute next HIP runtime",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "NANOXGEN_ENABLE_LUISA": "ON",
+        "NANOXGEN_LUISA_BACKEND": "hip",
+        "LUISA_COMPUTE_SOURCE_DIR": "$env{LUISA_COMPUTE_SOURCE_DIR}",
+        "LUISA_COMPUTE_BUILD_DIR": "$env{LUISA_COMPUTE_BUILD_DIR}"
+      }
+    },
+    {
       "name": "calibration-release",
       "displayName": "XGen calibration release",
       "description": "Optional Autodesk-backed oracle and conversion tools",
@@ -118,6 +131,11 @@
       "jobs": 2
     },
     {
+      "name": "luisa-hip-release",
+      "configurePreset": "luisa-hip-release",
+      "jobs": 2
+    },
+    {
       "name": "calibration-release",
       "configurePreset": "calibration-release",
       "jobs": 2
@@ -160,6 +178,13 @@
     {
       "name": "hip-release",
       "configurePreset": "hip-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "luisa-hip-release",
+      "configurePreset": "luisa-hip-release",
       "output": {
         "outputOnFailure": true
       }

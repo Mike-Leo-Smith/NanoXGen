@@ -19,6 +19,8 @@ The current prototype provides:
   parallel-transported surface frame;
 - one shared C++/CUDA/HIP generation function with CUDA and AMD HIP launch
   kernels;
+- an explicit LuisaCompute `next` JIT integration, tested through its WIP HIP
+  backend on AMD, without adding it to default core dependencies;
 - executable CPU/GPU parity suites plus GPU-resident JSON benchmarks;
 - direct CPU/CUDA/HIP generation into renderer `float4(position, radius)` and
   fixed `pointCounts` buffers, with checked device capacities and deformation
@@ -86,6 +88,11 @@ ctest --preset hip-release
 GPU tests use CTest's skip code when a toolkit is available but no matching
 device is usable. The default CPU presets do not discover or link CUDA, HIP,
 Maya, or XGen; the optional GPU presets do not discover or link Maya/XGen.
+
+LuisaCompute is a separate optional execution backend. Its moving `next`
+checkout and build stay outside this repository; see
+[`docs/luisa-compute.md`](docs/luisa-compute.md) for the tested revision, AMD
+HIP build, cache behavior, and explicit `luisa-hip-release` preset.
 
 The HIP build also provides direct generation and evaluated `.nxc` residency
 benchmarks. The latter accepts multiple caches, so a complete multi-description

@@ -19,6 +19,11 @@ option(NANOXGEN_BUILD_AUTODESK_BRIDGES
   "Build explicit Autodesk XGen/Maya renderer bridges" OFF)
 option(NANOXGEN_ENABLE_CUDA "Build the CUDA generation kernel" OFF)
 option(NANOXGEN_ENABLE_HIP "Build the HIP generation and cache-residency kernels" OFF)
+option(NANOXGEN_ENABLE_LUISA
+  "Build the optional LuisaCompute next JIT execution bridge" OFF)
+set(NANOXGEN_LUISA_BACKEND "hip" CACHE STRING
+  "LuisaCompute runtime backend used by the optional parity test")
+set_property(CACHE NANOXGEN_LUISA_BACKEND PROPERTY STRINGS hip vk cpu fallback)
 option(NANOXGEN_NATIVE_ARCH "Tune CPU code for the build host (non-portable binary)" OFF)
 option(NANOXGEN_FAST_MATH "Enable relaxed FP math; incompatible with strict parity" OFF)
 option(NANOXGEN_ENABLE_IPO "Enable interprocedural optimization when supported" OFF)
@@ -229,6 +234,25 @@ if(NANOXGEN_ENABLE_HIP)
     target_link_libraries(nanoxgen_hip_tests PRIVATE nanoxgen_hip nanoxgen_build_options)
     add_test(NAME nanoxgen_hip_tests COMMAND nanoxgen_hip_tests)
     set_tests_properties(nanoxgen_hip_tests PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
+endif()
+
+if(NANOXGEN_ENABLE_LUISA)
+  list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+  find_package(LuisaComputeNext REQUIRED)
+  set(_nanoxgen_luisa_plugin
+    "${LuisaComputeNext_RUNTIME_DIR}/${CMAKE_SHARED_MODULE_PREFIX}luisa-backend-${NANOXGEN_LUISA_BACKEND}${CMAKE_SHARED_MODULE_SUFFIX}")
+  if(NOT EXISTS "${_nanoxgen_luisa_plugin}")
+    message(FATAL_ERROR
+      "LuisaCompute backend plug-in not found: ${_nanoxgen_luisa_plugin}")
+  endif()
+  add_executable(nanoxgen_luisa_tests tests/luisa_test.cpp)
+  target_link_libraries(
+    nanoxgen_luisa_tests PRIVATE nanoxgen LuisaComputeNext::DSL)
+  if(NANOXGEN_BUILD_TESTS)
+    add_test(NAME nanoxgen_luisa_tests
+      COMMAND nanoxgen_luisa_tests
+        "${LuisaComputeNext_RUNTIME_DIR}" "${NANOXGEN_LUISA_BACKEND}")
   endif()
 endif()
 
