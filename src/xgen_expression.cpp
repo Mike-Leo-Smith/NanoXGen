@@ -31,7 +31,7 @@ constexpr std::array<std::uint8_t, 256u> permutation{
 enum class TokenKind : std::uint8_t {
     end, number, variable, identifier, string_literal, semicolon, comma,
     left_paren, right_paren, question, colon, assign, plus, minus, star,
-    slash, bang, less, less_equal, greater, greater_equal, equal, not_equal,
+    slash, bang, arrow, less, less_equal, greater, greater_equal, equal, not_equal,
     logical_and, logical_or,
 };
 
@@ -73,12 +73,48 @@ std::string normalize_source(std::string_view source, std::size_t limit) {
         if (c == '#') {
             comment = true;
         } else if (c == '\n' || c == '\r') {
-            result.push_back(';');
+            result.push_back(c);
         } else {
             result.push_back(c);
         }
     }
-    return result;
+    std::string continued;
+    continued.reserve(result.size());
+    const auto continuation = [](char c) noexcept {
+        switch (c) {
+        case '+': case '-': case '*': case '/': case '<': case '>':
+        case '=': case '!': case '&': case '|': case '?': case ':':
+        case ',': case '(':
+            return true;
+        default:
+            return false;
+        }
+    };
+    for (std::size_t index = 0u; index < result.size(); ++index) {
+        const char c = result[index];
+        if (c != '\n' && c != '\r') {
+            continued.push_back(c);
+            continue;
+        }
+        std::size_t before = continued.size();
+        while (before != 0u &&
+               (continued[before - 1u] == ' ' ||
+                continued[before - 1u] == '\t')) {
+            --before;
+        }
+        std::size_t after = index + 1u;
+        while (after < result.size() &&
+               (result[after] == ' ' || result[after] == '\t' ||
+                result[after] == '\n' || result[after] == '\r')) {
+            ++after;
+        }
+        const bool joins_previous = before != 0u &&
+            continuation(continued[before - 1u]);
+        const bool joins_next = after < result.size() &&
+            (continuation(result[after]) || result[after] == ')');
+        continued.push_back(joins_previous || joins_next ? ' ' : ';');
+    }
+    return continued;
 }
 
 bool identifier_start(char c) noexcept {
@@ -162,7 +198,7 @@ std::vector<Token> tokenize(std::string_view source, std::size_t limit) {
         case '?': push({TokenKind::question, {}, 0.0, i++}); break;
         case ':': push({TokenKind::colon, {}, 0.0, i++}); break;
         case '+': push({TokenKind::plus, {}, 0.0, i++}); break;
-        case '-': push({TokenKind::minus, {}, 0.0, i++}); break;
+        case '-': two('>', TokenKind::arrow, TokenKind::minus); break;
         case '*': push({TokenKind::star, {}, 0.0, i++}); break;
         case '/': push({TokenKind::slash, {}, 0.0, i++}); break;
         case '=': two('=', TokenKind::equal, TokenKind::assign); break;
@@ -199,7 +235,8 @@ public:
         while (peek().kind != TokenKind::end) {
             while (accept(TokenKind::semicolon)) {}
             if (peek().kind == TokenKind::end) { break; }
-            if (peek().kind == TokenKind::variable &&
+            if ((peek().kind == TokenKind::variable ||
+                 peek().kind == TokenKind::identifier) &&
                 peek(1u).kind == TokenKind::assign) {
                 const Token variable = take();
                 take();
@@ -340,7 +377,30 @@ private:
         if (accept(TokenKind::plus)) { return prefix(); }
         if (accept(TokenKind::minus)) { return unary(XgenScalarOp::negate, prefix()); }
         if (accept(TokenKind::bang)) { return unary(XgenScalarOp::logical_not, prefix()); }
-        return primary();
+        return postfix();
+    }
+
+    std::uint32_t postfix() {
+        std::uint32_t value = primary();
+        while (accept(TokenKind::arrow)) {
+            if (peek().kind != TokenKind::identifier) {
+                syntax_error(peek().offset,
+                             "expected a method name after '->'");
+            }
+            const Token name = take();
+            expect(TokenKind::left_paren,
+                   "expected '(' after expression method name");
+            std::vector<std::uint32_t> arguments{value};
+            if (!accept(TokenKind::right_paren)) {
+                do {
+                    arguments.push_back(expression());
+                } while (accept(TokenKind::comma));
+                expect(TokenKind::right_paren,
+                       "expected ')' after expression method arguments");
+            }
+            value = call(name, arguments);
+        }
+        return value;
     }
 
     double ramp_number(const char *what) {
@@ -437,6 +497,10 @@ private:
         if (name.text == "true") { return emit(XgenScalarOp::constant, {}, 1.0); }
         if (name.text == "false") { return emit(XgenScalarOp::constant, {}, 0.0); }
         if (!accept(TokenKind::left_paren)) {
+            if (const auto found = _locals.find(name.text);
+                found != _locals.end()) {
+                return found->second;
+            }
             syntax_error(name.offset, "bare identifier is unsupported: " + name.text);
         }
         if (name.text == "rampUI") { return ramp(name); }

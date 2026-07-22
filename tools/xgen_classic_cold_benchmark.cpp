@@ -3,6 +3,7 @@
 #include "nanoxgen/xgen_classic.h"
 #include "nanoxgen/xgen_classic_alembic.h"
 #include "nanoxgen/xgen_classic_clump.h"
+#include "nanoxgen/xgen_classic_ptex.h"
 #include "nanoxgen/xgen_classic_roots.h"
 #include "nanoxgen/xgen_classic_runtime.h"
 
@@ -267,6 +268,14 @@ int main(int argc, char **argv) try {
         const Clock::time_point asset_end = Clock::now();
         nanoxgen::ClassicFloatRuntimePlan runtime =
             nanoxgen::compile_xgen_classic_float_runtime_plan(description);
+        if (description.patches.empty()) {
+            throw std::runtime_error(
+                "Classic runtime PTEX binding needs one patch");
+        }
+        const nanoxgen::ClassicPtexRuntimeData ptex_runtime =
+            nanoxgen::build_xgen_classic_ptex_runtime_data(
+                runtime, description_directory,
+                description.patches.front().name, roots);
         if (options.effect_count) {
             if (*options.effect_count > runtime.effects.size()) {
                 throw std::runtime_error(
@@ -304,6 +313,12 @@ int main(int argc, char **argv) try {
             context.c_length = 1.0f;
             context.random_prefix = roots.random_prefixes[strand];
             context.has_random_prefix = true;
+            if (ptex_runtime.values_per_strand != 0u) {
+                context.ptex_values = std::span{ptex_runtime.values}.subspan(
+                    static_cast<std::size_t>(strand) *
+                        ptex_runtime.values_per_strand,
+                    ptex_runtime.values_per_strand);
+            }
             const std::array<float, 1u> runtime_hash_input{
                 static_cast<float>(context.id)};
             const std::array<double, 1u> exact_hash_input{
@@ -454,7 +469,8 @@ int main(int argc, char **argv) try {
             if (!options.base_only) {
                 nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
                     curves, runtime, 1.0f, roots.surface_tangents,
-                    roots.random_prefixes, roots.primitive_ids, clump_data);
+                    roots.random_prefixes, roots.primitive_ids, clump_data,
+                    ptex_runtime.values);
             }
             nanoxgen::add_xgen_classic_renderer_endpoints(curves);
             if (options.output_nxc) {

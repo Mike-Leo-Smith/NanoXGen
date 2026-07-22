@@ -103,8 +103,9 @@ device and that the supported bounded Classic runtime plan is JIT-lowered, not
 interpreted on the host. Authored `rampUI` values are parsed into constant
 control points and lowered with flat, linear, smooth, and spline interpolation.
 This is not yet a claim that every Classic XGen description is natively
-evaluable. Unsupported SeExpr, PTEX-bound attributes, modules, and topology
-operations remain checked errors and select the Autodesk fallback until their
+evaluable. Runtime PTEX `map()` attributes are pre-sampled into float buffers;
+unsupported custom/vector SeExpr, modules, and topology operations remain
+checked errors and select the Autodesk fallback until their
 CPU oracle and Luisa differential tests pass.
 
 ## Rabbit cold/no-cache benchmark
@@ -152,9 +153,10 @@ and JIT, and 10.78 ms warm median. HIP differed from the native CPU path by at
 most `1.78e-3`; both reached about `3.16e-3` maximum position error against the
 Maya oracle because of the same subdivision-boundary outlier. Thus `head_A`
 still fails the strict `1e-3` maximum-error gate even though the CPU RMS error is
-about `4.13e-6`. Full Rabbit remains incomplete: seven descriptions have
-explicit ClumpingFX/PTEX/expression fallbacks. A zero lowering-fallback count is
-reported separately from `oracle_within_tolerance`.
+about `4.13e-6`. Full Rabbit remains incomplete: PTEX lowering has since reduced
+the syntactic fallback set to `erduo` and `nose`, while several descriptions
+with zero fallback still fail topology or geometry parity. A zero
+lowering-fallback count is reported separately from `oracle_within_tolerance`.
 
 The Luisa `fallback` backend built against system LLVM 22/Embree 4.4.1 on this
 Arch host but crashed in its generated worker code even for the small parity
@@ -177,3 +179,15 @@ took 5601.2 ms, including 5385.4 ms for allocation/JIT. Warm execution was
 1.50x faster than Maya, but no-cache HIP and Vulkan were about 20.1x and 16.7x
 slower. These results make shader fusion/precompiled backend artifacts—not
 curve dispatch throughput—the next cold-start optimization target.
+
+The same float-table path was exercised on Rabbit `body`, whose primitive
+length is PTEX-backed. With the authored FX list disabled, a fresh HIP process
+matched the CPU primitive result within `2.86e-6`; cold end-to-end time was
+1544.3 ms (1143.4 ms native preparation, 304.2 ms JIT/allocation) and warm
+dispatch was 6.48 ms for 330101 strands / 8,912,727 renderer points. Enabling
+all eight scheduled effects removed the lowering fallback but took 31.98 s
+cold because the current benchmark JITs a separate shader per effect; warm
+execution was 38.17 ms. That full result differs from CPU by `3.07e-2` and its
+native topology differs from the Maya cache (330101 versus 330038 strands), so
+it is diagnostic evidence for PTEX transport, not an accepted end-to-end
+speedup or parity result.

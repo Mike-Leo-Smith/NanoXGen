@@ -4,6 +4,7 @@
 #include "nanoxgen/xgen_classic.h"
 #include "nanoxgen/xgen_classic_alembic.h"
 #include "nanoxgen/xgen_classic_clump.h"
+#include "nanoxgen/xgen_classic_ptex.h"
 #include "nanoxgen/xgen_classic_roots.h"
 #include "nanoxgen/xgen_classic_runtime.h"
 
@@ -249,12 +250,16 @@ int main(int argc, char **argv) try {
         throw std::runtime_error(
             "description needs fallback: " + runtime.fallback_reasons.front());
     }
-    if (options.effect_count < runtime.effects.size()) {
-        runtime.effects.resize(options.effect_count);
-    }
     if (root_plan.roots.empty() || root_plan.influence_offsets.empty()) {
         throw std::runtime_error("Classic root plan has no guide associations");
     }
+    if (description->patches.empty()) {
+        throw std::runtime_error("Classic PTEX runtime needs one patch");
+    }
+    const nanoxgen::ClassicPtexRuntimeData ptex_runtime =
+        nanoxgen::build_xgen_classic_ptex_runtime_data(
+            runtime, options.descriptions_root / description->name,
+            description->patches.front().name, root_plan);
     if (root_plan.primitive_ids.size() != root_plan.roots.size() ||
         root_plan.random_prefixes.size() != root_plan.roots.size() ||
         root_plan.surface_tangents.size() != root_plan.roots.size() ||
@@ -270,6 +275,9 @@ int main(int argc, char **argv) try {
                 *description, imported,
                 options.descriptions_root / description->name,
                 root_plan, runtime, module, cvs));
+    }
+    if (options.effect_count < runtime.effects.size()) {
+        runtime.effects.resize(options.effect_count);
     }
     const std::vector<nanoxgen::Vec3> rebuilt =
         nanoxgen::rebuild_xgen_classic_guides_for_device(imported.asset, cvs);
@@ -326,6 +334,10 @@ int main(int argc, char **argv) try {
         device.create_buffer<luisa::float3>(rebuilt_gpu.size());
     Buffer<std::uint32_t> runtime_data =
         device.create_buffer<std::uint32_t>(root_runtime.size());
+    std::vector<float> ptex_upload = ptex_runtime.values;
+    if (ptex_upload.empty()) { ptex_upload.push_back(0.0f); }
+    Buffer<float> ptex_buffer =
+        device.create_buffer<float>(ptex_upload.size());
     Buffer<luisa::float3> tangent_buffer =
         device.create_buffer<luisa::float3>(tangents.size());
     Buffer<luisa::float4> a = device.create_buffer<luisa::float4>(point_count);
@@ -362,36 +374,48 @@ int main(int argc, char **argv) try {
             runtime, cvs),
         shader_option);
     using NoiseShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
-        ByteBuffer, Buffer<std::uint32_t>, Buffer<luisa::float3>,
+        ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
+        Buffer<luisa::float3>,
         Buffer<luisa::float4>>;
     using CutShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
-        ByteBuffer, Buffer<std::uint32_t>, Buffer<luisa::float4>>;
+        ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
+        Buffer<luisa::float4>>;
     using ClumpShader = Shader1D<
         Buffer<luisa::float4>, Buffer<luisa::float4>, ByteBuffer,
-        Buffer<std::uint32_t>, Buffer<luisa::float4>, Buffer<luisa::float4>,
+        Buffer<std::uint32_t>, Buffer<float>, Buffer<luisa::float4>,
+        Buffer<luisa::float4>,
         Buffer<luisa::float4>, Buffer<std::uint32_t>,
         Buffer<std::uint32_t>>;
-    std::vector<NoiseShader> noises;
-    for (const auto &noise : runtime.noises) {
-        noises.emplace_back(device.compile(
-            nanoxgen::luisa_backend::make_classic_runtime_noise_kernel(
-                runtime, noise, cvs),
-            shader_option));
-    }
-    std::vector<CutShader> cuts;
-    for (const auto &cut : runtime.cuts) {
-        cuts.emplace_back(device.compile(
-            nanoxgen::luisa_backend::make_classic_runtime_cut_kernel(
-                runtime, cut, cvs),
-            shader_option));
-    }
-    std::vector<ClumpShader> clumps;
-    for (std::size_t module = 0u; module < runtime.clumps.size(); ++module) {
-        clumps.emplace_back(device.compile(
-            nanoxgen::luisa_backend::make_classic_runtime_clump_kernel(
-                runtime, runtime.clumps[module], cvs,
-                clump_host[module].guide_count),
-            shader_option));
+    std::vector<std::optional<NoiseShader>> noises(runtime.noises.size());
+    std::vector<std::optional<CutShader>> cuts(runtime.cuts.size());
+    std::vector<std::optional<ClumpShader>> clumps(runtime.clumps.size());
+    for (const nanoxgen::ClassicFloatEffect effect : runtime.effects) {
+        if (effect.type == nanoxgen::ClassicFloatEffectType::Noise) {
+            auto &shader = noises.at(effect.module_index);
+            if (!shader) {
+                shader.emplace(device.compile(
+                    nanoxgen::luisa_backend::make_classic_runtime_noise_kernel(
+                        runtime, runtime.noises[effect.module_index], cvs),
+                    shader_option));
+            }
+        } else if (effect.type == nanoxgen::ClassicFloatEffectType::Cut) {
+            auto &shader = cuts.at(effect.module_index);
+            if (!shader) {
+                shader.emplace(device.compile(
+                    nanoxgen::luisa_backend::make_classic_runtime_cut_kernel(
+                        runtime, runtime.cuts[effect.module_index], cvs),
+                    shader_option));
+            }
+        } else {
+            auto &shader = clumps.at(effect.module_index);
+            if (!shader) {
+                shader.emplace(device.compile(
+                    nanoxgen::luisa_backend::make_classic_runtime_clump_kernel(
+                        runtime, runtime.clumps[effect.module_index], cvs,
+                        clump_host[effect.module_index].guide_count),
+                    shader_option));
+            }
+        }
     }
     auto width = device.compile(
         nanoxgen::luisa_backend::make_classic_runtime_width_kernel(runtime, cvs),
@@ -403,6 +427,7 @@ int main(int argc, char **argv) try {
            << influences.copy_from(root_plan.influences.data())
            << guides.copy_from(rebuilt_gpu.data())
            << runtime_data.copy_from(root_runtime.data())
+           << ptex_buffer.copy_from(ptex_upload.data())
            << tangent_buffer.copy_from(tangents.data());
     for (std::size_t module = 0u; module < clump_host.size(); ++module) {
         stream << clump_axes[module].copy_from(clump_host[module].axes.data())
@@ -421,40 +446,43 @@ int main(int argc, char **argv) try {
         stream << base(roots, offsets, influences, guides, a)
                       .dispatch(static_cast<std::uint32_t>(strand_count));
         if (options.base_only) { return; }
-        stream << primitive(a, b, roots, runtime_data, states)
+        stream << primitive(a, b, roots, runtime_data, ptex_buffer, states)
                       .dispatch(static_cast<std::uint32_t>(strand_count));
         bool source_is_b = true;
         for (const nanoxgen::ClassicFloatEffect effect : runtime.effects) {
             if (effect.type == nanoxgen::ClassicFloatEffectType::Clump) {
-                auto &shader = clumps.at(effect.module_index);
+                auto &shader = clumps.at(effect.module_index).value();
                 stream << (source_is_b
-                    ? shader(b, a, roots, runtime_data, states,
+                    ? shader(b, a, roots, runtime_data, ptex_buffer, states,
                              clump_axes[effect.module_index],
                              clump_frames[effect.module_index],
                              clump_runtime[effect.module_index],
                              clump_strand_guides[effect.module_index])
-                    : shader(a, b, roots, runtime_data, states,
+                    : shader(a, b, roots, runtime_data, ptex_buffer, states,
                              clump_axes[effect.module_index],
                              clump_frames[effect.module_index],
                              clump_runtime[effect.module_index],
                              clump_strand_guides[effect.module_index]))
                     .dispatch(static_cast<std::uint32_t>(strand_count));
             } else if (effect.type == nanoxgen::ClassicFloatEffectType::Noise) {
-                auto &shader = noises.at(effect.module_index);
+                auto &shader = noises.at(effect.module_index).value();
                 stream << (source_is_b
-                    ? shader(b, a, roots, runtime_data, tangent_buffer, states)
-                    : shader(a, b, roots, runtime_data, tangent_buffer, states))
+                    ? shader(b, a, roots, runtime_data, ptex_buffer,
+                             tangent_buffer, states)
+                    : shader(a, b, roots, runtime_data, ptex_buffer,
+                             tangent_buffer, states))
                     .dispatch(static_cast<std::uint32_t>(strand_count));
             } else {
-                auto &shader = cuts.at(effect.module_index);
+                auto &shader = cuts.at(effect.module_index).value();
                 stream << (source_is_b
-                    ? shader(b, a, roots, runtime_data, states)
-                    : shader(a, b, roots, runtime_data, states))
+                    ? shader(b, a, roots, runtime_data, ptex_buffer, states)
+                    : shader(a, b, roots, runtime_data, ptex_buffer, states))
                     .dispatch(static_cast<std::uint32_t>(strand_count));
             }
             source_is_b = !source_is_b;
         }
-        stream << width(final_is_a ? a : b, roots, runtime_data, states)
+        stream << width(final_is_a ? a : b, roots, runtime_data,
+                        ptex_buffer, states)
                       .dispatch(static_cast<std::uint32_t>(strand_count));
     };
 
@@ -493,7 +521,8 @@ int main(int argc, char **argv) try {
     if (!options.base_only) {
         nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
             cpu, runtime, 1.0f, root_plan.surface_tangents,
-            root_plan.random_prefixes, root_plan.primitive_ids, clump_data);
+            root_plan.random_prefixes, root_plan.primitive_ids, clump_data,
+            ptex_runtime.values);
     }
     nanoxgen::add_xgen_classic_renderer_endpoints(cpu);
     const Clock::time_point cpu_end = Clock::now();

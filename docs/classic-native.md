@@ -76,9 +76,13 @@ clump variance/cut/copy/curl/offset/flatness/volumizing controls remain
 explicit fallbacks. Noise uses the SeExpr gradient table and
 XGen's transported surface frame. `rebuildType=1` cuts use the cubic
 `SgCurve::cutFromTip` search/rebuild convention, including fully-cut culling.
-Width evaluation stores half the final diameter in renderer
+`map()` calls in these scalar attributes are assigned stable runtime inputs.
+The optional PTEX stage expands `${DESC}`, point-samples each map at the
+strand's coarse-face `(face,u,v)` identity, and produces a row-major float
+table shared by CPU and Luisa. PTEX objects and paths never enter the core or
+the GPU kernel. Width evaluation stores half the final diameter in renderer
 `float4.radius`, and the renderer output adds XGen's two extrapolated endpoint
-CVs. Unsupported variables, unbound PTEX expressions, keep-param cuts, and
+CVs. Unsupported variables, custom expression functions, keep-param cuts, and
 other active FX modules produce `fallback_reasons`; an unknown binding is
 never silently replaced by zero.
 
@@ -100,19 +104,24 @@ maximum-error gate. Rabbit `mm` lowers both ClumpingFX modules, the active
 NoiseFX module, and CutFX with zero CPU fallback and matches Maya's complete
 3526-curve/59942-renderer-point topology. Against a fresh typed RenderAPI
 cache, the full result has `2.62e-3` maximum and `1.23e-4` RMS position error;
-the two-clump intermediate has `1.53e-3` maximum and `1.09e-4` RMS error. The
-other incomplete descriptions retain unsupported ClumpingFX controls,
-PTEX-backed primitive length/width, or unsupported-expression fallbacks.
+the two-clump intermediate has `1.53e-3` maximum and `1.09e-4` RMS error.
+Rabbit `body` and `head` now lower their PTEX-backed primitive/FX expressions
+without fallback. This is not yet a parity claim: `body` produced 330101 native
+strands versus 330038 in the current Maya cache, and the deeper multi-effect
+Luisa differential still has a `3.07e-2` maximum position error. The other
+incomplete descriptions retain custom/unsupported expression fallbacks or
+known topology/geometry mismatches.
 
 ## Current parity boundary
 
 The OpenSubdiv path evaluates current and reference limit patches and retains
 stable coarse-face identities, but boundary/crease metadata is absent when an
 Alembic file stores the Maya patch as a plain `PolyMesh`. PTEX density masks
-are bound for RandomGenerator, and point-filtered encoded guide maps are bound
-for hierarchical ClumpingFX. PTEX-backed primitive/FX scalar attributes, the
-remaining advanced ClumpingFX controls, and unsupported SeExpr method/operator
-forms are the current Rabbit-wide parity boundary.
+are bound for RandomGenerator, point-filtered encoded guide maps are bound for
+hierarchical ClumpingFX, and runtime scalar `map()` inputs are pre-sampled into
+float tables. Palette custom functions, position-vector SeExpr noise, the
+remaining advanced ClumpingFX controls, and several strict topology/geometry
+differentials are the current Rabbit-wide parity boundary.
 
 Consequently, timings from this path are engineering measurements for the
 native prototype, not an equal-output Maya speedup claim. A valid Maya

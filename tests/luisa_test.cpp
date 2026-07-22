@@ -109,7 +109,8 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
     description.name = "luisaEffects";
     description.attributes.push_back({"descriptionId", "9", 1u});
     description.objects.push_back({"SplinePrimitive", {
-        {"fxCVCount", "7", 2u}, {"length", "1.1", 3u},
+        {"fxCVCount", "7", 2u},
+        {"length", "0.9+0.2*map('fixture')", 3u},
         {"width", "0.02+hash($id)*0.01", 4u},
         {"taper", "0.25", 5u}, {"taperStart", "0.35", 6u},
         {"widthRamp", "rampUI(0,1,1:1,0.8,1)", 7u}}, 2u});
@@ -158,6 +159,7 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
     std::vector<std::uint32_t> primitive_ids(strand_count);
     std::vector<std::uint32_t> prefixes(strand_count);
     std::vector<std::uint32_t> root_runtime(strand_count * 2u);
+    std::vector<float> ptex_values(strand_count);
     for (std::uint32_t strand = 0u; strand < strand_count; ++strand) {
         const float root_x = static_cast<float>(strand % 8u) * 0.07f;
         const float root_z = static_cast<float>(strand / 8u) * 0.06f;
@@ -179,6 +181,7 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
         prefixes[strand] = nanoxgen::xgen_seexpr_hash_prefix(prefix_input);
         root_runtime[strand * 2u] = primitive_ids[strand];
         root_runtime[strand * 2u + 1u] = prefixes[strand];
+        ptex_values[strand] = static_cast<float>(strand % 7u) / 6.0f;
         for (std::uint32_t cv = 0u; cv < cvs; ++cv) {
             const float t = static_cast<float>(cv) /
                             static_cast<float>(cvs - 1u);
@@ -220,7 +223,7 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
     const std::array clump_bindings{clump_data};
     nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
         reference, plan, 1.0f, cpu_tangents, prefixes, primitive_ids,
-        clump_bindings);
+        clump_bindings, ptex_values);
     if (reference.strand_count != strand_count) {
         throw std::runtime_error("Luisa Classic effects fixture unexpectedly culled");
     }
@@ -228,6 +231,7 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
     auto roots = device.create_byte_buffer(
         reference.roots.size() * sizeof(nanoxgen::RootSample));
     auto runtime = device.create_buffer<std::uint32_t>(root_runtime.size());
+    auto ptex = device.create_buffer<float>(ptex_values.size());
     auto tangent_buffer = device.create_buffer<luisa::float3>(tangents.size());
     std::vector<luisa::float4> clump_axes;
     for (const nanoxgen::Vec3 value : clump_data.guide_axes) {
@@ -272,6 +276,7 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
     std::vector<luisa::float4> actual(source.size());
     stream << roots.copy_from(reference.roots.data())
            << runtime.copy_from(root_runtime.data())
+           << ptex.copy_from(ptex_values.data())
            << tangent_buffer.copy_from(tangents.data())
            << clump_axes_buffer.copy_from(clump_axes.data())
            << clump_frames_buffer.copy_from(clump_frames.data())
@@ -279,15 +284,16 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
            << clump_guides_buffer.copy_from(
                   clump_data.strand_guide_indices.data())
            << a.copy_from(source.data())
-           << primitive(a, b, roots, runtime, states).dispatch(strand_count)
-           << clump(b, a, roots, runtime, states,
+           << primitive(a, b, roots, runtime, ptex, states)
+                  .dispatch(strand_count)
+           << clump(b, a, roots, runtime, ptex, states,
                     clump_axes_buffer, clump_frames_buffer,
                     clump_runtime_buffer, clump_guides_buffer)
                   .dispatch(strand_count)
-           << noise(a, b, roots, runtime, tangent_buffer, states)
+           << noise(a, b, roots, runtime, ptex, tangent_buffer, states)
                   .dispatch(strand_count)
-           << cut(b, a, roots, runtime, states).dispatch(strand_count)
-           << width(a, roots, runtime, states).dispatch(strand_count)
+           << cut(b, a, roots, runtime, ptex, states).dispatch(strand_count)
+           << width(a, roots, runtime, ptex, states).dispatch(strand_count)
            << a.copy_to(luisa::span{actual})
            << synchronize();
     float max_error = 0.0f;

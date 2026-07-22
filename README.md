@@ -106,8 +106,12 @@ into those maps. Rabbit `mm` now evaluates both ClumpingFX modules, Noise2, and
 Cut1 with zero CPU fallback and matches Maya's 3526-curve/59942-point topology;
 the full result has `2.62e-3` maximum and `1.23e-4` RMS position error. The same
 ordered plan runs through Luisa HIP and Vulkan without handwritten GPU APIs.
-Other advanced clump controls and PTEX-expression bindings remain explicit
-fallbacks, so the complete Rabbit package is not yet claimed as
+Runtime `map()` expressions are now bound by the optional native stage: PTEX is
+point-sampled once at stable strand roots and CPU/Luisa execution consumes only
+a dense float table. This removes the prior PTEX lowering fallbacks from Rabbit
+`body` and `head`, but their complete geometry/topology still does not pass the
+Maya differential gate. Remaining custom SeExpr forms and advanced controls are
+still explicit fallbacks, so the complete Rabbit package is not yet claimed as
 native-compatible.
 
 The Makefile is a fallback for minimal CPU-only environments:

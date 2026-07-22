@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
@@ -33,6 +34,7 @@ static_assert(offsetof(RootSample, surface_face_id) == 44u);
 ClassicFloatRuntimeLuisaContext make_context(
     const ClassicFloatRuntimePlan &plan, Expr<uint> strand,
     const ByteBufferVar &roots, const BufferUInt &root_runtime,
+    const BufferFloat *ptex_values,
     Expr<float> c_length,
     Expr<float> c_width, Expr<float> t) noexcept {
     const UInt root_offset = strand * static_cast<uint>(sizeof(RootSample));
@@ -46,7 +48,9 @@ ClassicFloatRuntimeLuisaContext make_context(
         cast<float>(face_id)};
     return {root_runtime.read(strand * 2u), uv.x, uv.y,
             runtime_hash(seed_arguments), c_length, c_width, t,
-            root_runtime.read(strand * 2u + 1u), true};
+            root_runtime.read(strand * 2u + 1u), true, ptex_values,
+            strand * static_cast<uint>(plan.ptex_paths.size()),
+            static_cast<std::uint32_t>(plan.ptex_paths.size())};
 }
 
 Float3 xgen_curve_eval(const BufferFloat4 &points, Expr<uint> first,
@@ -235,6 +239,21 @@ Expr<float> lower_classic_runtime_expression(
             inputs.emplace_back(context.c_length);
         } else if (input == "cWidth") {
             inputs.emplace_back(context.c_width);
+        } else if (input.starts_with("__nxg_map_")) {
+            std::string_view suffix{input};
+            suffix.remove_prefix(std::string_view{"__nxg_map_"}.size());
+            std::uint32_t index{};
+            const auto converted = std::from_chars(
+                suffix.data(), suffix.data() + suffix.size(), index);
+            if (suffix.empty() || converted.ec != std::errc{} ||
+                converted.ptr != suffix.data() + suffix.size() ||
+                context.ptex_values == nullptr ||
+                index >= context.ptex_stride) {
+                throw std::runtime_error(
+                    "Classic Luisa PTEX input is not bound");
+            }
+            inputs.emplace_back(context.ptex_values->read(
+                context.ptex_offset + index));
         } else {
             throw std::runtime_error(
                 "Classic Luisa runtime variable is not bound: $" + input);
@@ -259,6 +278,7 @@ ClassicRuntimePrimitiveKernel make_classic_runtime_primitive_kernel(
     return Kernel1D{[=, &plan](BufferFloat4 source, BufferFloat4 destination,
                                ByteBufferVar roots,
                                BufferUInt root_runtime,
+                               BufferFloat ptex_values,
                                BufferFloat4 states) noexcept {
         set_block_size(128u, 1u, 1u);
         const UInt strand = dispatch_id().x;
@@ -267,7 +287,7 @@ ClassicRuntimePrimitiveKernel make_classic_runtime_primitive_kernel(
         const Float base_length = xgen_curve_length(
             source, first, cvs_per_strand);
         const auto base_context = make_context(
-            plan, strand, roots, root_runtime, base_length,
+            plan, strand, roots, root_runtime, &ptex_values, base_length,
             radius_scale > 0.0f ? 2.0f * root_point.w / radius_scale : 0.0f,
             0.0f);
         Float length_scale{1.0f};
@@ -277,13 +297,14 @@ ClassicRuntimePrimitiveKernel make_classic_runtime_primitive_kernel(
         }
         const Float c_length = base_length * length_scale;
         const auto length_context = make_context(
-            plan, strand, roots, root_runtime, c_length,
+            plan, strand, roots, root_runtime, &ptex_values, c_length,
             base_context.c_width, 0.0f);
         const Float c_width = plan.width
             ? lower_classic_runtime_expression(*plan.width, length_context)
             : length_context.c_width;
         const auto width_context = make_context(
-            plan, strand, roots, root_runtime, c_length, c_width, 0.0f);
+            plan, strand, roots, root_runtime, &ptex_values,
+            c_length, c_width, 0.0f);
         Float taper{0.0f};
         if (plan.taper) {
             taper = lower_classic_runtime_expression(*plan.taper, width_context);
@@ -316,6 +337,7 @@ ClassicRuntimeCutKernel make_classic_runtime_cut_kernel(
     return Kernel1D{[=, &plan, &cut](
                         BufferFloat4 source, BufferFloat4 destination,
                         ByteBufferVar roots, BufferUInt root_runtime,
+                        BufferFloat ptex_values,
                         BufferFloat4 states) noexcept {
         set_block_size(128u, 1u, 1u);
         const UInt strand = dispatch_id().x;
@@ -324,7 +346,7 @@ ClassicRuntimeCutKernel make_classic_runtime_cut_kernel(
             source, first, cvs_per_strand);
         const Float4 state = states.read(strand);
         const auto context = make_context(
-            plan, strand, roots, root_runtime,
+            plan, strand, roots, root_runtime, &ptex_values,
             input_length, state.y, 0.0f);
         const Float amount = lower_classic_runtime_expression(cut.amount, context);
         const Float cut_amount = max(amount, 0.0f);
@@ -390,6 +412,7 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
     return Kernel1D{[=, &plan, &clump](
                         BufferFloat4 source, BufferFloat4 destination,
                         ByteBufferVar roots, BufferUInt root_runtime,
+                        BufferFloat ptex_values,
                         BufferFloat4 states, BufferFloat4 guide_axes,
                         BufferFloat4 guide_frames, BufferUInt guide_runtime,
                         BufferUInt strand_guides) noexcept {
@@ -416,7 +439,7 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
         const Float input_length = xgen_curve_length(
             source, first, cvs_per_strand);
         auto context = make_context(
-            plan, strand, roots, root_runtime,
+            plan, strand, roots, root_runtime, &ptex_values,
             input_length, state.y, 0.0f);
         const Float mask = clamp(
             lower_classic_runtime_expression(clump.mask, context),
@@ -430,7 +453,8 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
         ClassicFloatRuntimeLuisaContext guide_context{
             context.id, frame_nu.w, frame_tv.w,
             runtime_hash(guide_seed_arguments), input_length, state.y,
-            0.0f, guide_prefix, true};
+            0.0f, guide_prefix, true, context.ptex_values,
+            context.ptex_offset, context.ptex_stride};
         const Float noise = max(
             lower_classic_runtime_expression(clump.noise, guide_context),
             0.0f);
@@ -532,7 +556,9 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
                 guide_context.c_width,
                 static_cast<float>(cv) /
                     static_cast<float>(cvs_per_strand - 1u),
-                guide_context.random_prefix, true};
+                guide_context.random_prefix, true,
+                guide_context.ptex_values, guide_context.ptex_offset,
+                guide_context.ptex_stride};
             const Float scale = max(
                 lower_classic_runtime_expression(
                     clump.noise_scale, guide_cv_context),
@@ -602,7 +628,7 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
         }
         const Float rebuilt_length = xgen_curve_length(rebuilt);
         const auto rebuilt_context = make_context(
-            plan, strand, roots, root_runtime,
+            plan, strand, roots, root_runtime, &ptex_values,
             rebuilt_length, state.y, 0.0f);
         const Float amount = clamp(
             lower_classic_runtime_expression(clump.clump, rebuilt_context),
@@ -613,7 +639,7 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
             const float t = static_cast<float>(cv) /
                             static_cast<float>(cvs_per_strand - 1u);
             const auto cv_context = make_context(
-                plan, strand, roots, root_runtime,
+                plan, strand, roots, root_runtime, &ptex_values,
                 rebuilt_length, state.y, t);
             const Float scale = lower_classic_runtime_expression(
                 clump.clump_scale, cv_context);
@@ -648,6 +674,7 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
     return Kernel1D{[=, &plan, &noise](
                         BufferFloat4 source, BufferFloat4 destination,
                         ByteBufferVar roots, BufferUInt root_runtime,
+                        BufferFloat ptex_values,
                         BufferFloat3 surface_tangents,
                         BufferFloat4 states) noexcept {
         set_block_size(128u, 1u, 1u);
@@ -667,7 +694,7 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
         const Float original_length = polyline_length(
             source, first, cvs_per_strand);
         auto context = make_context(
-            plan, strand, roots, root_runtime,
+            plan, strand, roots, root_runtime, &ptex_values,
             c_length, state.y, 0.0f);
         const Float mask = clamp(
             lower_classic_runtime_expression(noise.mask, context), 0.0f, 1.0f);
@@ -739,7 +766,7 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
             const Float3 binormal = cross(normal, next_tangent);
             const Float3 tangent = cross(binormal, normal);
             const auto cv_context = make_context(
-                plan, strand, roots, root_runtime,
+                plan, strand, roots, root_runtime, &ptex_values,
                 c_length, state.y,
                 static_cast<float>(cv) /
                     static_cast<float>(cvs_per_strand - 1u));
@@ -797,6 +824,7 @@ ClassicRuntimeWidthKernel make_classic_runtime_width_kernel(
     }
     return Kernel1D{[=, &plan](BufferFloat4 points, ByteBufferVar roots,
                                BufferUInt root_runtime,
+                               BufferFloat ptex_values,
                                BufferFloat4 states) noexcept {
         set_block_size(128u, 1u, 1u);
         const UInt strand = dispatch_id().x;
@@ -814,7 +842,8 @@ ClassicRuntimeWidthKernel make_classic_runtime_width_kernel(
                              max(1.0f - state.w, 1.0e-20f)),
                          1.0f);
             const auto context = make_context(
-                plan, strand, roots, root_runtime, c_length, state.y, t);
+                plan, strand, roots, root_runtime, &ptex_values,
+                c_length, state.y, t);
             if (plan.width_ramp) {
                 scale *= lower_classic_runtime_expression(
                     *plan.width_ramp, context);

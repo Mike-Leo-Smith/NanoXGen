@@ -93,9 +93,14 @@ struct ClassicFloatRuntimePlan {
     std::vector<ClassicFloatClumpModule> clumps;
     std::vector<ClassicFloatCutModule> cuts;
     std::vector<ClassicFloatEffect> effects;
-    // Requirements outside this plan (for example PTEX or an authored FX
-    // module) are preserved as explicit fallback diagnostics. Classic random
-    // root sampling is planned separately by xgen_classic_roots.
+    // PTEX paths referenced by map() calls, in the stable input order used by
+    // every compiled expression. The core does not open these files: the
+    // optional native layer samples them once at strand roots and supplies a
+    // dense float table to CPU/GPU execution.
+    std::vector<std::string> ptex_paths;
+    // Requirements outside this plan (for example a custom expression or an
+    // authored FX module) are preserved as explicit fallback diagnostics.
+    // Classic random root sampling is planned separately by xgen_classic_roots.
     std::vector<std::string> fallback_reasons;
 
     [[nodiscard]] bool lowering_complete() const noexcept {
@@ -116,6 +121,7 @@ struct ClassicFloatRuntimeContext {
     float t{};
     std::uint32_t random_prefix{};
     bool has_random_prefix{};
+    std::span<const float> ptex_values;
 };
 
 [[nodiscard]] ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
@@ -137,7 +143,10 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     std::span<const Vec3> surface_tangents = {},
     std::span<const std::uint32_t> random_prefixes = {},
     std::span<const std::uint32_t> primitive_ids = {},
-    std::span<const ClassicClumpRuntimeData> clump_data = {});
+    std::span<const ClassicClumpRuntimeData> clump_data = {},
+    // Row-major [strand][plan.ptex_paths] values. Kept as plain float data so
+    // the same table can be uploaded to GPU backends without PTEX support.
+    std::span<const float> ptex_values = {});
 
 // Match the Classic renderer cache convention by adding one extrapolated
 // endpoint before and after every fixed-CV spline. Call after all FX modules

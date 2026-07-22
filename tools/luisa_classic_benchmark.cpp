@@ -137,6 +137,7 @@ struct RuntimeCase {
     ByteBuffer asset_buffer;
     ByteBuffer root_buffer;
     Buffer<std::uint32_t> root_runtime_buffer;
+    Buffer<float> ptex_buffer;
     Buffer<luisa::float3> surface_tangent_buffer;
     Buffer<luisa::float4> a;
     Buffer<luisa::float4> b;
@@ -144,15 +145,19 @@ struct RuntimeCase {
     Shader1D<ByteBuffer, ByteBuffer, Buffer<luisa::float4>> generate;
     Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>, ByteBuffer,
              Buffer<std::uint32_t>,
+             Buffer<float>,
              Buffer<luisa::float4>> primitive;
     std::vector<Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
                          ByteBuffer, Buffer<std::uint32_t>,
+                         Buffer<float>,
                          Buffer<luisa::float4>>> cuts;
     std::vector<Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
                          ByteBuffer, Buffer<std::uint32_t>,
+                         Buffer<float>,
                          Buffer<luisa::float3>,
                          Buffer<luisa::float4>>> noises;
     Shader1D<Buffer<luisa::float4>, ByteBuffer, Buffer<std::uint32_t>,
+             Buffer<float>,
              Buffer<luisa::float4>> width;
     bool final_is_a{};
 
@@ -200,6 +205,7 @@ struct RuntimeCase {
             roots.size() * sizeof(nanoxgen::RootSample));
         root_runtime_buffer = device.create_buffer<std::uint32_t>(
             root_runtime.size());
+        ptex_buffer = device.create_buffer<float>(1u);
         surface_tangent_buffer = device.create_buffer<luisa::float3>(
             surface_tangents.size());
         a = device.create_buffer<luisa::float4>(checked_points(spec));
@@ -230,15 +236,18 @@ struct RuntimeCase {
     }
 
     void upload(Stream &stream) {
+        static constexpr std::array<float, 1u> empty_ptex{0.0f};
         stream << asset_buffer.copy_from(asset.bytes().data())
                << root_buffer.copy_from(roots.data())
                << root_runtime_buffer.copy_from(root_runtime.data())
+               << ptex_buffer.copy_from(empty_ptex.data())
                << surface_tangent_buffer.copy_from(surface_tangents.data());
     }
 
     void dispatch(Stream &stream) {
         stream << generate(asset_buffer, root_buffer, a).dispatch(spec.strands)
-               << primitive(a, b, root_buffer, root_runtime_buffer, states)
+               << primitive(a, b, root_buffer, root_runtime_buffer,
+                            ptex_buffer, states)
                       .dispatch(spec.strands);
         bool source_is_b = true;
         for (const nanoxgen::ClassicFloatEffect effect : plan.effects) {
@@ -246,27 +255,29 @@ struct RuntimeCase {
                 auto &noise = noises.at(effect.module_index);
                 if (source_is_b) {
                     stream << noise(b, a, root_buffer, root_runtime_buffer,
-                                    surface_tangent_buffer, states)
+                                    ptex_buffer, surface_tangent_buffer, states)
                                   .dispatch(spec.strands);
                 } else {
                     stream << noise(a, b, root_buffer, root_runtime_buffer,
-                                    surface_tangent_buffer, states)
+                                    ptex_buffer, surface_tangent_buffer, states)
                                   .dispatch(spec.strands);
                 }
             } else {
                 auto &cut = cuts.at(effect.module_index);
                 if (source_is_b) {
-                    stream << cut(b, a, root_buffer, root_runtime_buffer, states)
+                    stream << cut(b, a, root_buffer, root_runtime_buffer,
+                                  ptex_buffer, states)
                                   .dispatch(spec.strands);
                 } else {
-                    stream << cut(a, b, root_buffer, root_runtime_buffer, states)
+                    stream << cut(a, b, root_buffer, root_runtime_buffer,
+                                  ptex_buffer, states)
                                   .dispatch(spec.strands);
                 }
             }
             source_is_b = !source_is_b;
         }
         stream << width(final_is_a ? a : b, root_buffer,
-                        root_runtime_buffer, states)
+                        root_runtime_buffer, ptex_buffer, states)
                       .dispatch(spec.strands);
     }
 

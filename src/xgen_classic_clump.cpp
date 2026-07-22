@@ -1,5 +1,6 @@
 #include "nanoxgen/xgen_classic_clump.h"
 
+#include "nanoxgen/xgen_classic_ptex.h"
 #include "nanoxgen/xgen_ptex.h"
 #include "nanoxgen/xpd.h"
 
@@ -192,6 +193,14 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
         surface.asset, guide_roots, cvs_per_guide);
     if (module_index != 0u) {
         ClassicFloatRuntimePlan prefix = runtime_plan;
+        // Guide-axis construction needs primitive length and the authored FX
+        // prefix, but renderer width/taper only affect radii. Evaluating them
+        // here is both wasted work and wrong for sparse density maps whose
+        // extrapolated fit() value can be negative outside rendered roots.
+        prefix.width.reset();
+        prefix.taper.reset();
+        prefix.taper_start.reset();
+        prefix.width_ramp.reset();
         const auto current = std::find_if(
             prefix.effects.begin(), prefix.effects.end(),
             [module_index](const ClassicFloatEffect &effect) {
@@ -215,9 +224,13 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
                 description, surface, description_directory, guide_roots,
                 runtime_plan, previous, cvs_per_guide));
         }
+        const ClassicPtexRuntimeData guide_ptex =
+            build_xgen_classic_ptex_runtime_data(
+                prefix, description_directory, patch.name, guide_roots);
         apply_xgen_classic_float_runtime_plan_cpu(
             axes, prefix, 1.0f, guide_roots.surface_tangents,
-            guide_roots.random_prefixes, guide_roots.primitive_ids, upstream);
+            guide_roots.random_prefixes, guide_roots.primitive_ids, upstream,
+            guide_ptex.values);
     }
     ClassicClumpRuntimeData result{};
     result.module_name = module.name;

@@ -1,5 +1,6 @@
 #include "nanoxgen/asset.h"
 #include "nanoxgen/xgen_classic_roots.h"
+#include "nanoxgen/xgen_classic_ptex.h"
 #include "nanoxgen/xgen_samples.h"
 
 #include <Ptexture.h>
@@ -114,6 +115,26 @@ void test_full_mask_and_generation() {
                     root.uv.x >= 0.0f && root.uv.x < 1.0f &&
                     root.uv.y >= 0.0f && root.uv.y < 1.0f,
                 "root identity or coordinates are invalid");
+    }
+
+    nanoxgen::ClassicDescription runtime_description = description();
+    runtime_description.objects.push_back({"SplinePrimitive", {
+        {"fxCVCount", "4", 4u},
+        {"length", "0.5+map('${DESC}/paintmaps/density')", 5u}}, 4u});
+    const nanoxgen::ClassicFloatRuntimePlan runtime =
+        nanoxgen::compile_xgen_classic_float_runtime_plan(
+            runtime_description);
+    require(runtime.lowering_complete() && runtime.ptex_paths.size() == 1u,
+            "runtime map expression did not lower");
+    const nanoxgen::ClassicPtexRuntimeData runtime_data =
+        nanoxgen::build_xgen_classic_ptex_runtime_data(
+            runtime, fixture.path, "testPatch", first);
+    require(runtime_data.strand_count == first.roots.size() &&
+                runtime_data.values_per_strand == 1u &&
+                runtime_data.values.size() == first.roots.size(),
+            "runtime PTEX table dimensions mismatch");
+    for (const float value : runtime_data.values) {
+        require(value == 1.0f, "runtime PTEX sample mismatch");
     }
 
     const nanoxgen::Asset asset = nanoxgen::build_asset(input.asset);
