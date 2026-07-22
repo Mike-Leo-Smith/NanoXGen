@@ -39,8 +39,21 @@ int main(int argc, char **argv) try {
         const float v = std::stof(argv[4]);
         std::cout << std::setprecision(9)
                   << "{\"face\":" << face << ",\"u\":" << u
-                  << ",\"v\":" << v << ",\"value\":"
-                  << map.sample(face, u, v) << ",\"filters\":[";
+                  << ",\"v\":" << v << ",\"channels\":[";
+        for (std::uint32_t channel = 0u; channel < info.channel_count;
+             ++channel) {
+            if (channel != 0u) { std::cout << ','; }
+            std::cout << map.sample(face, u, v, channel);
+        }
+        nanoxgen::XgenPtexSampleOptions point_options{};
+        point_options.filter = nanoxgen::XgenPtexFilter::Point;
+        std::cout << "],\"point_channels\":[";
+        for (std::uint32_t channel = 0u; channel < info.channel_count;
+             ++channel) {
+            if (channel != 0u) { std::cout << ','; }
+            std::cout << map.sample(face, u, v, channel, point_options);
+        }
+        std::cout << "],\"filters\":[";
         const nanoxgen::XgenPtexFilter filters[]{
             nanoxgen::XgenPtexFilter::Point,
             nanoxgen::XgenPtexFilter::Bilinear,

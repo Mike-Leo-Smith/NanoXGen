@@ -25,12 +25,20 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace nanoxgen;
 namespace classic = nanoxgen::classic_typed;
 namespace api = XGenRenderAPI;
 
 namespace {
+
+struct ModuleAttributeOverride {
+    std::string module;
+    std::string attribute;
+    std::string type;
+    std::string value;
+};
 
 class CleanupOnce {
 public:
@@ -207,6 +215,7 @@ int main(int argc, char **argv) try {
     std::string description_name;
     std::optional<std::string> generator_mask;
     std::optional<std::size_t> fx_count;
+    std::vector<ModuleAttributeOverride> module_attribute_overrides;
     std::optional<std::filesystem::path> output_path;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
@@ -225,6 +234,9 @@ int main(int argc, char **argv) try {
             if (consumed != value.size()) {
                 throw std::invalid_argument("--fx-count must be an integer");
             }
+        } else if (argument == "--module-attr" && index + 4 < argc) {
+            module_attribute_overrides.push_back({
+                argv[++index], argv[++index], argv[++index], argv[++index]});
         } else if (argument == "--nxc" && index + 1 < argc) {
             output_path = argv[++index];
         } else if (argument == "--help") {
@@ -232,7 +244,8 @@ int main(int argc, char **argv) try {
                 << "usage: nanoxgen_xgen_classic_typed --xgen-args <render-args> "
                    "[--cache-dir <dir>] [--nxc <output.nxc>] "
                    "[--description <name> [--generator-mask <expression>] "
-                   "[--fx-count <count>]]\n";
+                   "[--fx-count <count>] "
+                   "[--module-attr <module> <attribute> <type> <value> ...]]\n";
             return 0;
         } else {
             throw std::invalid_argument("unknown or incomplete argument: " + argument);
@@ -241,9 +254,10 @@ int main(int argc, char **argv) try {
     if (xgen_args.empty()) {
         throw std::invalid_argument("--xgen-args must not be empty");
     }
-    if ((generator_mask || fx_count) && description_name.empty()) {
+    if ((generator_mask || fx_count || !module_attribute_overrides.empty()) &&
+        description_name.empty()) {
         throw std::invalid_argument(
-            "--generator-mask/--fx-count requires --description");
+            "runtime overrides require --description");
     }
 
     TypedCallbacks callbacks{std::move(cache_dir)};
@@ -253,7 +267,7 @@ int main(int argc, char **argv) try {
         std::unique_ptr<api::PatchRenderer> patch{
             api::PatchRenderer::init(&callbacks, xgen_args.c_str())};
         if (!patch) { throw std::runtime_error("PatchRenderer::init returned null"); }
-        if (generator_mask || fx_count) {
+        if (generator_mask || fx_count || !module_attribute_overrides.empty()) {
             XgDescription *matched_description = nullptr;
             for (const std::string &palette_name : XgPalette::palettes()) {
                 XgPalette *palette = XgPalette::palette(palette_name);
@@ -297,6 +311,20 @@ int main(int argc, char **argv) try {
                         throw std::runtime_error(
                             "failed to disable an XGen FX module");
                     }
+                }
+            }
+            for (const ModuleAttributeOverride &override_value :
+                 module_attribute_overrides) {
+                XgPrimitive *primitive = matched_description->activePrimitive();
+                XgFXModule *module = primitive
+                    ? primitive->findFXModule(override_value.module) : nullptr;
+                if (!module || !module->setAttr(
+                        override_value.attribute, override_value.value,
+                        override_value.type)) {
+                    throw std::runtime_error(
+                        "failed to override XGen module attribute " +
+                        override_value.module + "." +
+                        override_value.attribute);
                 }
             }
         }

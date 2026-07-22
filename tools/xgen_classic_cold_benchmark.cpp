@@ -216,6 +216,11 @@ int main(int argc, char **argv) try {
                 description.patches.front().name, options.probe_face,
                 options.probe_uv.x, options.probe_uv.y);
             std::cout << " mask " << mask;
+            nanoxgen::ClassicRootPlan probe_roots{};
+            probe_roots.roots.push_back({
+                current.position, current.normal, options.probe_uv, 0u, {},
+                options.probe_face});
+            probe_roots.influence_offsets.push_back(0u);
             for (std::size_t index = 0u;
                  index < imported.asset.guides.size(); ++index) {
                 const float weight =
@@ -224,9 +229,30 @@ int main(int argc, char **argv) try {
                         sample.normal);
                 if (weight > 0.0f) {
                     std::cout << ' ' << index << ':' << weight;
+                    probe_roots.influences.push_back({
+                        static_cast<std::uint32_t>(index), weight});
                 }
             }
             std::cout << '\n';
+            probe_roots.influence_offsets.push_back(
+                static_cast<std::uint32_t>(probe_roots.influences.size()));
+            if (!probe_roots.influences.empty()) {
+                const std::uint32_t probe_cvs = options.cvs == 0u
+                    ? nanoxgen::compile_xgen_classic_float_runtime_plan(
+                          description).fx_cv_count
+                    : options.cvs;
+                const nanoxgen::PackedGeneratedCurves curve =
+                    nanoxgen::generate_xgen_classic_base_curves_cpu(
+                        imported.asset, probe_roots, probe_cvs);
+                std::cout << "probe_curve " << options.probe_face << ' '
+                          << options.probe_uv.x << ' ' << options.probe_uv.y
+                          << " count " << curve.points.size();
+                for (const nanoxgen::PackedCurvePoint &point : curve.points) {
+                    std::cout << ' ' << point.x << ' ' << point.y << ' '
+                              << point.z;
+                }
+                std::cout << '\n';
+            }
         }
         double surface_area = 0.0;
         for (const auto &face : imported.surface_faces) {

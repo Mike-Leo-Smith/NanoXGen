@@ -357,6 +357,12 @@ if(NANOXGEN_BUILD_CALIBRATION)
   add_executable(nanoxgen_xgen_curve_oracle tools/xgen_curve_oracle.cpp)
   target_link_libraries(nanoxgen_xgen_curve_oracle PRIVATE nanoxgen XGen::XGen)
   target_compile_features(nanoxgen_xgen_curve_oracle PRIVATE cxx_std_20)
+  if(TARGET XGen::Xpd)
+    add_executable(nanoxgen_xpd_oracle tools/xpd_oracle.cpp)
+    target_link_libraries(nanoxgen_xpd_oracle PRIVATE XGen::Xpd)
+    target_compile_features(nanoxgen_xpd_oracle PRIVATE cxx_std_20)
+    set_target_properties(nanoxgen_xpd_oracle PROPERTIES SKIP_BUILD_RPATH TRUE)
+  endif()
   set_target_properties(
     nanoxgen_xgen_probe
     nanoxgen_xgen_parity

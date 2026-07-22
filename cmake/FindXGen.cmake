@@ -6,6 +6,7 @@
 # Defines:
 #   XGen_FOUND
 #   XGen::XGen
+#   XGen::Xpd (when the public XPD runtime is present)
 
 set(_XGEN_HINTS
   "${XGEN_ROOT}"
@@ -39,6 +40,11 @@ find_library(XGen_CLEW_LIBRARY
   NAMES clew libclew
   HINTS ${_XGEN_HINTS}
   PATH_SUFFIXES lib ../../lib)
+
+find_library(XGen_XPD_LIBRARY
+  NAMES AdskXpd libAdskXpd
+  HINTS ${_XGEN_HINTS}
+  PATH_SUFFIXES lib)
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(XGen
@@ -75,5 +81,13 @@ if(XGen_FOUND AND NOT TARGET XGen::XGen)
   endif()
 endif()
 
+if(XGen_FOUND AND XGen_XPD_LIBRARY AND NOT TARGET XGen::Xpd)
+  add_library(XGen::Xpd UNKNOWN IMPORTED)
+  set_target_properties(XGen::Xpd PROPERTIES
+    IMPORTED_LOCATION "${XGen_XPD_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${XGen_INCLUDE_DIR};${XGen_MAYA_INCLUDE_DIR}")
+endif()
+
 mark_as_advanced(
-  XGen_INCLUDE_DIR XGen_MAYA_INCLUDE_DIR XGen_LIBRARY XGen_CLEW_LIBRARY)
+  XGen_INCLUDE_DIR XGen_MAYA_INCLUDE_DIR XGen_LIBRARY XGen_CLEW_LIBRARY
+  XGen_XPD_LIBRARY)

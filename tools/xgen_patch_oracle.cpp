@@ -9,11 +9,14 @@
 #include <xgen/src/xgcore/XgPalette.h>
 #include <xgen/src/xgcore/XgPatch.h>
 #include <xgen/src/xgcore/XgPrimitive.h>
+#include <xgen/src/xgfxmodule/XgWireSupport.h>
+#include <xgen/src/xgprimitive/XgSplinePrimitive.h>
 #include <xgen/src/sggeom/SgCurve.h>
 #else
 #error "Autodesk XGen SDK headers were not found"
 #endif
 
+#include <algorithm>
 #include <cstring>
 #include <dlfcn.h>
 #include <charconv>
@@ -21,6 +24,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -130,6 +134,19 @@ private:
     bool _done{};
 };
 
+class ClumpGuideProbe final : public XgClumpGuides {
+public:
+    void exportClumpCurves() override {}
+    static const safevector<clumpGuide> &inspect(
+        const XgClumpGuides &source) noexcept {
+        // The concrete Autodesk Clumping module inherits this public support
+        // class. RTTI finds that base; this calibration-only cast exposes its
+        // protected public-SDK guide records without naming the unshipped
+        // concrete class.
+        return reinterpret_cast<const ClumpGuideProbe &>(source)._cGuides;
+    }
+};
+
 } // namespace
 
 int main(int argc, char **argv) try {
@@ -139,6 +156,7 @@ int main(int argc, char **argv) try {
     std::string expression_name;
     std::string module_name;
     std::string stop_at_name;
+    std::string clump_module_name;
     std::optional<unsigned int> primitive_id;
     bool faces = false;
     bool weights = false;
@@ -146,12 +164,14 @@ int main(int argc, char **argv) try {
     bool apply_fx = false;
     bool guides = false;
     bool subd_arrays = false;
+    bool cv_attrs = false;
     std::vector<Sample> samples;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if ((argument == "--xgen-args" || argument == "--description" ||
              argument == "--patch" || argument == "--expression" ||
              argument == "--module" ||
+             argument == "--clump-module" ||
              argument == "--sample" || argument == "--sample-file" ||
              argument == "--stop-at" || argument == "--id") &&
             index + 1 < argc) {
@@ -162,6 +182,9 @@ int main(int argc, char **argv) try {
             else if (argument == "--expression") { expression_name = value; }
             else if (argument == "--module") { module_name = value; }
             else if (argument == "--stop-at") { stop_at_name = value; }
+            else if (argument == "--clump-module") {
+                clump_module_name = value;
+            }
             else if (argument == "--id") {
                 const int parsed = parse_int(value, "primitive id");
                 if (parsed < 0) {
@@ -203,13 +226,16 @@ int main(int argc, char **argv) try {
             guides = true;
         } else if (argument == "--subd-arrays") {
             subd_arrays = true;
+        } else if (argument == "--cv-attrs") {
+            cv_attrs = true;
         } else {
             throw std::invalid_argument(
                 "usage: nanoxgen_xgen_patch_oracle --xgen-args ARGS "
                 "--description NAME --patch NAME [--faces] "
                 "[--module FX --expression ATTR] [--weights] [--geometry] [--apply-fx] "
                 "[--guides] "
-                "[--subd-arrays] [--stop-at FX] [--id ID] "
+                "[--subd-arrays] [--cv-attrs] [--stop-at FX] [--id ID] "
+                "[--clump-module FX] "
                 "[--sample FACE,U,V ...] [--sample-file PATH]");
         }
     }
@@ -403,6 +429,61 @@ int main(int argc, char **argv) try {
         }
     }
 
+    if (!clump_module_name.empty()) {
+        auto *spline = dynamic_cast<XgSplinePrimitive *>(primitive);
+        XgFXModule *module = primitive
+            ? primitive->findFXModule(clump_module_name) : nullptr;
+        if (!spline || !module) {
+            throw std::runtime_error(
+                "requested clump spline/module was not found");
+        }
+        primitive->setupInterpolation(true);
+        api::bbox bounds{};
+        unsigned int face_id = std::numeric_limits<unsigned int>::max();
+        while (renderer->nextFace(bounds, face_id)) {
+            std::unique_ptr<api::FaceRenderer> face{
+                api::FaceRenderer::init(renderer.get(), face_id, &callbacks)};
+            if (!face || !face->render()) {
+                throw std::runtime_error(
+                    "clump calibration face render failed");
+            }
+        }
+        const XgClumpGuides *loaded = dynamic_cast<XgClumpGuides *>(module);
+        if (!loaded) {
+            throw std::runtime_error(
+                "requested module does not expose XgClumpGuides");
+        }
+        std::cout << std::setprecision(17);
+        const auto &clump_guides = ClumpGuideProbe::inspect(*loaded);
+        std::cout << "clump_guides " << clump_module_name << " count "
+                  << clump_guides.size() << '\n';
+        for (std::size_t index = 0u; index < clump_guides.size(); ++index) {
+            const auto &guide = clump_guides[index];
+            std::cout << "clump_guide " << index << " valid " << guide.valid
+                      << " face " << guide.faceId << " u " << guide.u
+                      << " v " << guide.v << " patch " << guide.patch
+                      << " best " << guide.best << " len " << guide.len
+                      << " poly_len " << guide.polyLen << " P "
+                      << guide.P[0] << ' ' << guide.P[1] << ' ' << guide.P[2]
+                      << " n " << guide.nVec[0] << ' ' << guide.nVec[1]
+                      << ' ' << guide.nVec[2] << " u " << guide.uVec[0]
+                      << ' ' << guide.uVec[1] << ' ' << guide.uVec[2]
+                      << " v " << guide.vVec[0] << ' ' << guide.vVec[1]
+                      << ' ' << guide.vVec[2] << " seg_len "
+                      << guide.segLen.size();
+            for (const double length : guide.segLen) {
+                std::cout << ' ' << length;
+            }
+            std::cout
+                      << " axis " << guide.axis.size();
+            for (const SgVec3d &point : guide.axis) {
+                std::cout << ' ' << point[0] << ' ' << point[1] << ' '
+                          << point[2];
+            }
+            std::cout << '\n';
+        }
+    }
+
     if (!expression_name.empty()) {
         if (samples.empty()) {
             throw std::invalid_argument(
@@ -511,6 +592,22 @@ int main(int argc, char **argv) try {
                           << point[2];
             }
             std::cout << '\n';
+            if (cv_attrs) {
+                auto &attributes = primitive->cvAttrs();
+                std::cout << "cv_attrs " << sample.face << ' ' << sample.u
+                          << ' ' << sample.v << " count "
+                          << attributes.size() << '\n';
+                for (auto attribute = attributes.begin();
+                     attribute != attributes.end(); ++attribute) {
+                    std::cout << "cv_attr " << attribute->first << " count "
+                              << attribute->second.size();
+                    for (const SgVec3d &value : attribute->second) {
+                        std::cout << ' ' << value[0] << ' ' << value[1]
+                                  << ' ' << value[2];
+                    }
+                    std::cout << '\n';
+                }
+            }
             safevector<SgVec3d> normals;
             safevector<SgVec3d> binormals;
             const SgVec3d surface_n =
