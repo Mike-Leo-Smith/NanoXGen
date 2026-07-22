@@ -646,6 +646,17 @@ void test_self_contained_xgen_round_trip() {
             curves.texcoords[1].y == 0.5f && curves.texcoords[2].y == 1.0f,
             "XGen renderer texcoords must match XgFnSpline (0,t)");
 
+    const XGenEvaluatedCurves source_curves = materialize_xgen_curves(
+        parsed, XGenCurveOrder::Source);
+    require(source_curves.face_ids == std::vector<std::uint32_t>({9u, 3u}),
+            "source-order materialization must preserve XGen Item order");
+    const XGenPackedCurves packed = materialize_xgen_packed_curves(
+        parsed, XGenCurveOrder::Source);
+    require(packed.point_counts == source_curves.point_counts &&
+                packed.points.size() == source_curves.positions.size() &&
+                packed.points.front().radius == 0.5f * source_curves.widths.front(),
+            "minimal packed XGen path must preserve topology and convert width to radius");
+
     XGenDocument identity_document = parsed;
     process_xgen_document(identity_document, {});
     require(serialize_xgen_document(identity_document) == encoded,

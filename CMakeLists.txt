@@ -76,7 +76,8 @@ add_library(nanoxgen STATIC
   src/asset.cpp
   src/curve_cache.cpp
   src/curve_payload.cpp
-  src/xgen.cpp)
+  src/xgen.cpp
+  src/xgen_package.cpp)
 add_library(NanoXGen::nanoxgen ALIAS nanoxgen)
 target_include_directories(nanoxgen PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -112,6 +113,12 @@ target_link_libraries(nanoxgen_xgen_process PRIVATE nanoxgen)
 add_executable(nanoxgen_xgen_cache tools/xgen_to_nxc.cpp)
 target_link_libraries(nanoxgen_xgen_cache PRIVATE nanoxgen)
 
+add_executable(nanoxgen_xgen_read_benchmark tools/xgen_read_benchmark.cpp)
+target_link_libraries(nanoxgen_xgen_read_benchmark PRIVATE nanoxgen)
+
+add_executable(nanoxgen_xgen_package tools/xgen_package.cpp)
+target_link_libraries(nanoxgen_xgen_package PRIVATE nanoxgen)
+
 install(TARGETS nanoxgen
   EXPORT NanoXGenTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -126,6 +133,8 @@ install(TARGETS
   nanoxgen_xgen_inspect
   nanoxgen_xgen_process
   nanoxgen_xgen_cache
+  nanoxgen_xgen_read_benchmark
+  nanoxgen_xgen_package
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(EXPORT NanoXGenTargets
   FILE NanoXGenTargets.cmake
@@ -149,6 +158,9 @@ if(NANOXGEN_BUILD_TESTS)
   add_executable(nanoxgen_tests tests/test_main.cpp)
   target_link_libraries(nanoxgen_tests PRIVATE nanoxgen)
   add_test(NAME nanoxgen_tests COMMAND nanoxgen_tests)
+  add_executable(nanoxgen_package_tests tests/package_test.cpp)
+  target_link_libraries(nanoxgen_package_tests PRIVATE nanoxgen)
+  add_test(NAME nanoxgen_package_tests COMMAND nanoxgen_package_tests)
 endif()
 
 if(NANOXGEN_ENABLE_CUDA)

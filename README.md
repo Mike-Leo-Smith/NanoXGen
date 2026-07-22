@@ -35,9 +35,15 @@ The current prototype provides:
 - frame-local deformed mesh/normal/guide overlays with stable root identities;
 - a bit-exact evaluated-curve `.nxc` cache with canonical motion matching, for
   bypassing Maya/XGen on repeated static renders;
-- a self-contained v1 Interactive Grooming `.xgen` BLOB parser, lossless
+- a self-contained v1 Interactive Grooming `XgSplineData` BLOB parser, lossless
   container round-trip, curve processor, writer, inspector, and `.nxc`
   converter using only C++ and zlib;
+- a production-package inventory that distinguishes Classic collections from
+  evaluated BLOBs by content, resolves path variables, reports missing/external
+  dependencies, refuses symlink traversal, and selects a native, Classic typed,
+  or Interactive Maya backend;
+- source-order and canonical renderer-minimal ingestion plus a staged direct-read
+  benchmark for evaluated snapshots;
 - optional native ISA, SIMD-width, IPO/LTO, and precision-gated fast-math modes.
 
 ## Build and test
@@ -74,18 +80,24 @@ The demo writes `build/demo/demo.nxg` and `build/demo/curves.obj`.
 ## Autodesk calibration (optional)
 
 The NanoXGen core loads, validates, processes, and writes Interactive Grooming
-`outRenderData` `.xgen` BLOBs, `.nxg` assets, and `.nxc` caches without Maya or
-any Autodesk library. This is the binary Interactive Grooming container, not
-the unrelated classic XGen text-description format that also uses `.xgen`.
+`outRenderData` BLOBs, `.nxg` assets, and `.nxc` caches without Maya or any
+Autodesk library. The calibration scripts historically give those BLOBs an
+`.xgen` suffix, but they are evaluated renderer snapshots, not complete XGen
+authoring assets. Classic XGen also uses `.xgen` for a text collection and a
+production asset normally includes many sidecars.
 
 ```bash
 ./build/release/nanoxgen_xgen_inspect groom.xgen
 ./build/release/nanoxgen_xgen_process groom.xgen scaled.xgen --length-scale 0.8
 ./build/release/nanoxgen_xgen_cache groom.xgen groom.nxc
+./build/release/nanoxgen_xgen_read_benchmark groom.xgen
+./build/release/nanoxgen_xgen_package --require-complete /show/asset/xgen
 ```
 
 The demo also writes a new `.xgen` directly from NanoXGen procedural output.
 See [`docs/xgen-format.md`](docs/xgen-format.md) for the container contract.
+See [`docs/xgen-production-assets.md`](docs/xgen-production-assets.md) for the
+package boundary, dependency scanner, and Autodesk fallback architecture.
 
 See [`docs/sdk-setup.md`](docs/sdk-setup.md). The official Maya DevKit is
 downloadable without sign-in, but Autodesk ships the actual XGen headers and

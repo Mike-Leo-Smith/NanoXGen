@@ -3,6 +3,7 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <charconv>
 #include <cmath>
@@ -10,10 +11,12 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <mutex>
 #include <sstream>
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <utility>
 
@@ -589,7 +592,18 @@ XGenDocument parse_xgen_document(std::span<const std::byte> bytes) {
     document.group_base64 = metadata.group_base64;
     document.group_deflate = metadata.group_deflate;
     document.group_deflate_level = metadata.group_deflate_level;
-    document.groups.reserve(metadata.group_count);
+    document.groups.resize(metadata.group_count);
+
+    struct StoredGroup {
+        std::uint32_t index{};
+        std::uint64_t array_count{};
+        std::uint64_t raw_data_size{};
+        std::uint64_t flags{};
+        std::size_t payload_offset{};
+        std::size_t payload_size{};
+    };
+    std::vector<StoredGroup> stored_groups;
+    stored_groups.reserve(metadata.group_count);
 
     std::size_t offset = kFileHeaderBytes + metadata_bytes;
     if (metadata.group_count > (bytes.size() - offset) / kGroupHeaderBytes) {
@@ -622,15 +636,25 @@ XGenDocument parse_xgen_document(std::span<const std::byte> bytes) {
                               kArrayHeaderBytes) {
             invalid("group expanded size overflows uint64");
         }
-        const std::uint64_t expanded_size =
-            raw_data_size + array_count * kArrayHeaderBytes;
         const std::uint64_t payload_size_u64 = stored_size - 32u;
         if (payload_size_u64 > bytes.size() - offset - kGroupHeaderBytes) {
             invalid("group stored size is out of bounds");
         }
         const std::size_t payload_offset = offset + kGroupHeaderBytes;
         const std::size_t payload_size = static_cast<std::size_t>(payload_size_u64);
-        const std::span<const std::byte> stored = bytes.subspan(payload_offset, payload_size);
+        stored_groups.push_back(
+            {group_index, array_count, raw_data_size, flags, payload_offset, payload_size});
+        offset += kGroupHeaderBytes + payload_size;
+    }
+    if (offset != bytes.size()) { invalid("file has trailing bytes after its groups"); }
+
+    const auto decode_group = [&](const StoredGroup &stored_group) {
+        const std::span<const std::byte> stored = bytes.subspan(
+            stored_group.payload_offset, stored_group.payload_size);
+        const std::uint64_t expanded_size = checked_add(
+            stored_group.raw_data_size,
+            stored_group.array_count * kArrayHeaderBytes,
+            "group expanded");
         std::vector<std::byte> raw;
         if (document.group_deflate) {
             raw = inflate_group(stored, expanded_size);
@@ -642,15 +666,16 @@ XGenDocument parse_xgen_document(std::span<const std::byte> bytes) {
         }
 
         XGenGroup group{};
-        group.index = group_index;
-        group.flags = flags;
-        if (array_count > std::numeric_limits<std::size_t>::max()) {
+        group.index = stored_group.index;
+        group.flags = stored_group.flags;
+        if (stored_group.array_count > std::numeric_limits<std::size_t>::max()) {
             invalid("group array count exceeds size_t");
         }
-        group.arrays.reserve(static_cast<std::size_t>(array_count));
+        group.arrays.reserve(static_cast<std::size_t>(stored_group.array_count));
         std::size_t array_offset = 0u;
         std::uint64_t data_sum = 0u;
-        for (std::uint64_t array_index = 0u; array_index < array_count; ++array_index) {
+        for (std::uint64_t array_index = 0u;
+             array_index < stored_group.array_count; ++array_index) {
             if (array_offset > raw.size() || raw.size() - array_offset < kArrayHeaderBytes) {
                 invalid("array record header is truncated");
             }
@@ -668,13 +693,49 @@ XGenDocument parse_xgen_document(std::span<const std::byte> bytes) {
             data_sum = checked_add(data_sum, array_size, "group raw data");
             group.arrays.emplace_back(std::move(array));
         }
-        if (array_offset != raw.size() || data_sum != raw_data_size) {
+        if (array_offset != raw.size() || data_sum != stored_group.raw_data_size) {
             invalid("group array sizes do not consume the declared payload");
         }
-        document.groups.emplace_back(std::move(group));
-        offset += kGroupHeaderBytes + payload_size;
+        return group;
+    };
+
+    // XGen commonly splits large snapshots into independently deflated groups.
+    // Decode a bounded number in parallel; group placement stays deterministic.
+    const std::size_t worker_count = std::min<std::size_t>(
+        stored_groups.size(), std::max<std::size_t>(
+            1u, std::min<std::size_t>(8u, std::thread::hardware_concurrency())));
+    if (worker_count <= 1u) {
+        for (const StoredGroup &stored_group : stored_groups) {
+            document.groups[stored_group.index] = decode_group(stored_group);
+        }
+    } else {
+        std::atomic_size_t next_group{0u};
+        std::atomic_bool failed{false};
+        std::exception_ptr first_error;
+        std::mutex error_mutex;
+        std::vector<std::jthread> workers;
+        workers.reserve(worker_count);
+        for (std::size_t worker = 0u; worker < worker_count; ++worker) {
+            workers.emplace_back([&] {
+                while (!failed.load(std::memory_order_relaxed)) {
+                    const std::size_t ordinal = next_group.fetch_add(
+                        1u, std::memory_order_relaxed);
+                    if (ordinal >= stored_groups.size()) { return; }
+                    try {
+                        const StoredGroup &stored_group = stored_groups[ordinal];
+                        document.groups[stored_group.index] = decode_group(stored_group);
+                    } catch (...) {
+                        std::lock_guard lock{error_mutex};
+                        if (!first_error) { first_error = std::current_exception(); }
+                        failed.store(true, std::memory_order_relaxed);
+                        return;
+                    }
+                }
+            });
+        }
+        workers.clear(); // join all jthreads before inspecting first_error
+        if (first_error) { std::rethrow_exception(first_error); }
     }
-    if (offset != bytes.size()) { invalid("file has trailing bytes after its groups"); }
     return document;
 }
 
@@ -758,7 +819,8 @@ void save_xgen_document(
     if (!stream) { throw std::runtime_error("failed to write XGen output: " + path.string()); }
 }
 
-XGenEvaluatedCurves materialize_xgen_curves(const XGenDocument &document) {
+XGenEvaluatedCurves materialize_xgen_curves(
+    const XGenDocument &document, XGenCurveOrder order) {
     const MetadataHeader metadata = parse_metadata(document.metadata_json);
     const std::vector<JsonValue> &items = as_array(member(metadata.root, "Items"), "Items");
     if (items.empty()) { invalid("metadata contains no Items"); }
@@ -820,9 +882,11 @@ XGenEvaluatedCurves materialize_xgen_curves(const XGenDocument &document) {
         }
     }
     if (curves.empty()) { invalid("Items contain no curves"); }
-    std::stable_sort(curves.begin(), curves.end(), [](const auto &a, const auto &b) {
-        return curve_key(a) < curve_key(b);
-    });
+    if (order == XGenCurveOrder::Canonical) {
+        std::stable_sort(curves.begin(), curves.end(), [](const auto &a, const auto &b) {
+            return curve_key(a) < curve_key(b);
+        });
+    }
 
     XGenEvaluatedCurves result{};
     for (const MaterializedCurve &curve : curves) {
@@ -840,6 +904,32 @@ XGenEvaluatedCurves materialize_xgen_curves(const XGenDocument &document) {
             result.texcoords.end(), curve.texcoords.begin(), curve.texcoords.end());
     }
     return result;
+}
+
+XGenPackedCurves materialize_xgen_packed_curves(
+    const XGenDocument &document, XGenCurveOrder order) {
+    const XGenEvaluatedCurves curves = materialize_xgen_curves(document, order);
+    XGenPackedCurves packed{};
+    packed.point_counts = curves.point_counts;
+    packed.points.resize(curves.positions.size());
+    for (std::size_t point = 0u; point < curves.positions.size(); ++point) {
+        packed.points[point] = {
+            curves.positions[point].x,
+            curves.positions[point].y,
+            curves.positions[point].z,
+            0.5f * curves.widths[point]};
+    }
+    return packed;
+}
+
+XGenPackedCurves parse_xgen_packed_curves(
+    std::span<const std::byte> bytes, XGenCurveOrder order) {
+    return materialize_xgen_packed_curves(parse_xgen_document(bytes), order);
+}
+
+XGenPackedCurves load_xgen_packed_curves(
+    const std::filesystem::path &path, XGenCurveOrder order) {
+    return materialize_xgen_packed_curves(load_xgen_document(path), order);
 }
 
 XGenEvaluatedCurves make_xgen_curves(const GeneratedCurves &curves) {

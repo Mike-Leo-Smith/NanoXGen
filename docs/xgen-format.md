@@ -47,9 +47,10 @@ The renderer-relevant v1 tags verified so far are:
 face UV/ID, frozen values, widths, and directions. `PrimitiveInfos` contains at
 least offset and CV count per curve. NanoXGen materializes `Positions`,
 `PatchUVs`, `FaceUV`, `FaceId`, and `WIDTH_CV`, then reconstructs the public
-varying curve texcoord exactly as `(0, CV/(CVCount-1))`. Curves are
-canonicalized by the bit patterns of `faceId + faceUV + patchUV`, matching the
-motion/cache identity contract.
+varying curve texcoord exactly as `(0, CV/(CVCount-1))`. The default full
+materializer canonicalizes curves by the bit patterns of
+`faceId + faceUV + patchUV`, matching the motion/cache identity contract. A
+source-order renderer-minimal path skips that sort for one-shot static work.
 
 The generic `XGenDocument` retains the original metadata string, unknown type
 tags, unknown arrays, group flags, and compression settings. A parse/serialize
@@ -67,6 +68,8 @@ nanoxgen_xgen_inspect input.xgen --round-trip output.xgen
 nanoxgen_xgen_process input.xgen output.xgen --length-scale 0.8 --width-scale 1.2
 nanoxgen_xgen_process input.xgen minimal.xgen --rebuild --group-bytes 8388608
 nanoxgen_xgen_cache input.xgen output.nxc
+nanoxgen_xgen_cache --renderer-minimal --source-order input.xgen output.nxc
+nanoxgen_xgen_read_benchmark input.xgen
 ```
 
 The default CMake targets above link only NanoXGen, Threads, and zlib. The
@@ -82,4 +85,5 @@ group versions, non-finite renderer values, inconsistent primitive ranges, and
 out-of-range array references. `GroupBase64=true` belongs to XGen's separate
 ASCII stream path and is rejected by this binary API instead of being guessed.
 Classic XGen descriptions, XPD/XUV/XGC files, and future `XgSplineData`
-versions require separate parsers.
+versions are not parsed by this binary API. The package API inventories those
+formats and their references without claiming to evaluate them.

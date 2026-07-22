@@ -20,12 +20,12 @@ ifneq ($(SIMD_WIDTH),)
 CXXFLAGS += -mprefer-vector-width=$(SIMD_WIDTH)
 endif
 
-CORE := src/asset.cpp src/curve_cache.cpp src/curve_payload.cpp src/xgen.cpp
+CORE := src/asset.cpp src/curve_cache.cpp src/curve_payload.cpp src/xgen.cpp src/xgen_package.cpp
 HEADERS := $(wildcard include/nanoxgen/*.h)
 
 .PHONY: all test fast-math-check clean
 
-all: bin/nanoxgen_demo bin/nanoxgen_tests bin/nanoxgen_benchmark bin/nanoxgen_cache_benchmark bin/nanoxgen_precision bin/nanoxgen_xgen_inspect bin/nanoxgen_xgen_process bin/nanoxgen_xgen_cache
+all: bin/nanoxgen_demo bin/nanoxgen_tests bin/nanoxgen_package_tests bin/nanoxgen_benchmark bin/nanoxgen_cache_benchmark bin/nanoxgen_precision bin/nanoxgen_xgen_inspect bin/nanoxgen_xgen_process bin/nanoxgen_xgen_cache bin/nanoxgen_xgen_read_benchmark bin/nanoxgen_xgen_package
 
 bin/nanoxgen_demo: $(CORE) tools/demo.cpp $(HEADERS)
 	@mkdir -p bin
@@ -34,6 +34,10 @@ bin/nanoxgen_demo: $(CORE) tools/demo.cpp $(HEADERS)
 bin/nanoxgen_tests: $(CORE) tests/test_main.cpp $(HEADERS)
 	@mkdir -p bin
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CORE) tests/test_main.cpp -o $@ $(LDLIBS)
+
+bin/nanoxgen_package_tests: $(CORE) tests/package_test.cpp $(HEADERS)
+	@mkdir -p bin
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CORE) tests/package_test.cpp -o $@ $(LDLIBS)
 
 bin/nanoxgen_benchmark: $(CORE) tools/benchmark.cpp $(HEADERS)
 	@mkdir -p bin
@@ -59,11 +63,20 @@ bin/nanoxgen_xgen_cache: $(CORE) tools/xgen_to_nxc.cpp $(HEADERS)
 	@mkdir -p bin
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CORE) tools/xgen_to_nxc.cpp -o $@ $(LDLIBS)
 
-test: bin/nanoxgen_tests
+bin/nanoxgen_xgen_read_benchmark: $(CORE) tools/xgen_read_benchmark.cpp $(HEADERS)
+	@mkdir -p bin
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CORE) tools/xgen_read_benchmark.cpp -o $@ $(LDLIBS)
+
+bin/nanoxgen_xgen_package: $(CORE) tools/xgen_package.cpp $(HEADERS)
+	@mkdir -p bin
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(CORE) tools/xgen_package.cpp -o $@ $(LDLIBS)
+
+test: bin/nanoxgen_tests bin/nanoxgen_package_tests
 	./bin/nanoxgen_tests
+	./bin/nanoxgen_package_tests
 
 fast-math-check:
 	./scripts/run_fast_math_comparison.sh
 
 clean:
-	rm -f bin/nanoxgen_demo bin/nanoxgen_tests bin/nanoxgen_benchmark bin/nanoxgen_cache_benchmark bin/nanoxgen_precision bin/nanoxgen_xgen_inspect bin/nanoxgen_xgen_process bin/nanoxgen_xgen_cache
+	rm -f bin/nanoxgen_demo bin/nanoxgen_tests bin/nanoxgen_package_tests bin/nanoxgen_benchmark bin/nanoxgen_cache_benchmark bin/nanoxgen_precision bin/nanoxgen_xgen_inspect bin/nanoxgen_xgen_process bin/nanoxgen_xgen_cache bin/nanoxgen_xgen_read_benchmark bin/nanoxgen_xgen_package

@@ -55,6 +55,21 @@ struct XGenEvaluatedCurves {
     std::vector<std::uint32_t> face_ids;
 };
 
+// Source order avoids the surface-identity sort and is the preferred path for
+// one-shot static rendering. Canonical order is stable across XGen batch/group
+// emission order and is required for reproducible caches and motion matching.
+enum class XGenCurveOrder {
+    Source,
+    Canonical,
+};
+
+// Minimal renderer payload. Widths are converted from XGen diameters to
+// radii while the data is packed.
+struct XGenPackedCurves {
+    std::vector<std::uint32_t> point_counts;
+    std::vector<PackedCurvePoint> points;
+};
+
 struct XGenBuildOptions {
     std::string item_name{"NanoXGenGroom"};
     std::uint64_t target_group_bytes{64u * 1024u * 1024u};
@@ -75,7 +90,17 @@ void save_xgen_document(
     const XGenDocument &document, const std::filesystem::path &path);
 
 [[nodiscard]] XGenEvaluatedCurves materialize_xgen_curves(
-    const XGenDocument &document);
+    const XGenDocument &document,
+    XGenCurveOrder order = XGenCurveOrder::Canonical);
+[[nodiscard]] XGenPackedCurves materialize_xgen_packed_curves(
+    const XGenDocument &document,
+    XGenCurveOrder order = XGenCurveOrder::Source);
+[[nodiscard]] XGenPackedCurves parse_xgen_packed_curves(
+    std::span<const std::byte> bytes,
+    XGenCurveOrder order = XGenCurveOrder::Source);
+[[nodiscard]] XGenPackedCurves load_xgen_packed_curves(
+    const std::filesystem::path &path,
+    XGenCurveOrder order = XGenCurveOrder::Source);
 [[nodiscard]] XGenEvaluatedCurves make_xgen_curves(
     const GeneratedCurves &curves);
 void process_xgen_curves(

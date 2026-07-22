@@ -55,12 +55,15 @@ bool duplicate_identities(const XGenEvaluatedCurves &curves) {
 
 int main(int argc, char **argv) try {
     bool renderer_minimal = false;
+    bool source_order = false;
     std::vector<std::pair<float, std::filesystem::path>> motion_paths;
     std::vector<std::filesystem::path> positional;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if (argument == "--renderer-minimal") {
             renderer_minimal = true;
+        } else if (argument == "--source-order") {
+            source_order = true;
         } else if (argument == "--motion") {
             if (index + 2 >= argc) {
                 throw std::invalid_argument("--motion requires <time> <input.xgen>");
@@ -73,11 +76,35 @@ int main(int argc, char **argv) try {
         }
     }
     if (positional.size() != 2u) {
-        std::cerr << "usage: nanoxgen_xgen_cache [--renderer-minimal] "
+        std::cerr << "usage: nanoxgen_xgen_cache [--renderer-minimal] [--source-order] "
                      "[--motion <time> <motion.xgen>]... <base.xgen> <output.nxc>\n";
         return 2;
     }
+    if (source_order && (!renderer_minimal || !motion_paths.empty())) {
+        throw std::invalid_argument(
+            "--source-order requires --renderer-minimal and cannot be used with motion");
+    }
     const std::uint64_t input_bytes = std::filesystem::file_size(positional[0]);
+    if (source_order) {
+        const XGenPackedCurves packed = load_xgen_packed_curves(
+            positional[0], XGenCurveOrder::Source);
+        const CurveCache cache = build_curve_cache(
+            {packed.point_counts, packed.points, {}, {}, {}, {}, {}, {}});
+        save_curve_cache(cache, positional[1]);
+        const CurveCacheHeader header = cache.view().header();
+        std::cout << std::setprecision(9)
+                  << "{\"input_bytes\":" << input_bytes
+                  << ",\"cache_bytes\":" << header.byte_size
+                  << ",\"curves\":" << header.strand_count
+                  << ",\"points\":" << header.point_count
+                  << ",\"motion_samples\":0"
+                  << ",\"renderer_minimal\":true"
+                  << ",\"source_order\":true"
+                  << ",\"autodesk_runtime\":false"
+                  << ",\"content_hash\":\"0x" << std::hex << header.content_hash
+                  << std::dec << "\"}\n";
+        return 0;
+    }
     const XGenEvaluatedCurves base = materialize_xgen_curves(
         load_xgen_document(positional[0]));
     if (!motion_paths.empty() && duplicate_identities(base)) {
@@ -116,6 +143,7 @@ int main(int argc, char **argv) try {
               << ",\"points\":" << header.point_count
               << ",\"motion_samples\":" << header.motion_sample_count
               << ",\"renderer_minimal\":" << (renderer_minimal ? "true" : "false")
+              << ",\"source_order\":false"
               << ",\"autodesk_runtime\":false"
               << ",\"content_hash\":\"0x" << std::hex << header.content_hash
               << std::dec << "\"}\n";
