@@ -9,8 +9,8 @@ if [[ -z "${XGEN_ROOT}" ]]; then
 fi
 
 headers=(
+  "${XGEN_ROOT}/include/xgen/src/xgsculptcore/api/XgSplineAPI.h"
   "${XGEN_ROOT}/include/XGen/XgSplineAPI.h"
-  "${XGEN_ROOT}/include/xgen/src/xgcore/XgConfig.h"
 )
 header=''
 for candidate in "${headers[@]}"; do
@@ -21,7 +21,7 @@ maya_library="$(dirname "$(dirname "${XGEN_ROOT}")")/lib/libclew.so"
 
 if [[ -z "${header}" || ! -f "${library}" || ! -f "${maya_library}" ]]; then
   echo "not a usable XGen SDK root: ${XGEN_ROOT}" >&2
-  echo "expected XgSplineAPI/XgConfig headers and ${library}" >&2
+  echo "expected XgSplineAPI.h and ${library}" >&2
   exit 1
 fi
 

@@ -1,7 +1,7 @@
 # Finds the XGen SDK shipped inside a full Autodesk Maya installation.
 #
 # Set XGEN_ROOT to a directory such as:
-#   /usr/autodesk/maya2026/plug-ins/xgen
+#   /usr/autodesk/maya2027/plug-ins/xgen
 #
 # Defines:
 #   XGen_FOUND
@@ -17,7 +17,9 @@ set(_XGEN_HINTS
   "/usr/autodesk/maya2025/plug-ins/xgen")
 
 find_path(XGen_INCLUDE_DIR
-  NAMES XGen/XgSplineAPI.h xgen/src/xgcore/XgConfig.h
+  NAMES
+    xgen/src/xgsculptcore/api/XgSplineAPI.h
+    XGen/XgSplineAPI.h
   HINTS ${_XGEN_HINTS}
   PATH_SUFFIXES include)
 

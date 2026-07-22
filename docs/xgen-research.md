@@ -2,11 +2,13 @@
 
 ## Verified SDK boundary
 
-XGen is not distributed as a standalone open-source SDK. The public Maya 2026.3
-DevKit contains `FindXGen.cmake`, but that module searches a full Maya install at
-`<Maya>/plug-ins/xgen` for private/public headers and `libAdskXGen.so`. NanoXGen
-therefore treats Autodesk XGen as an optional import and differential-testing
-bridge. The core format and kernels do not link against Autodesk code.
+XGen is not distributed as a standalone open-source SDK. The public Maya DevKit
+contains `FindXGen.cmake`, but that module searches a full Maya install at
+`<Maya>/plug-ins/xgen` for headers and `libAdskXGen.so`. This was verified
+against the real Maya 2027.1 Linux runtime. In that release the spline header is
+`include/xgen/src/xgsculptcore/api/XgSplineAPI.h`. NanoXGen therefore treats
+Autodesk XGen as an optional import and differential-testing bridge. The core
+format and kernels do not link against Autodesk code.
 
 ## Classic XGen model
 
@@ -52,7 +54,7 @@ influence represented by sweep angles and radii. For a generated primitive:
 | XGen expressions/PTEX | compiled expression IR and texture sampling | planned |
 | Geodesic guide neighborhoods | surface graph / UV-space acceleration | planned |
 | Clump/collision/coil/wind | ordered GPU modifier graph | planned |
-| Interactive Groom BLOB import | optional `XgFnSpline` probe | scaffolded; needs Maya XGen SDK |
+| Interactive Groom BLOB import | `XgFnSpline` validation and canonical summary | validated with Maya 2027.1 |
 
 The v0.1 guide stencil deliberately moves expensive guide selection to asset
 construction. Runtime work is bounded by `strand_count * cvs_per_strand * 8`,
@@ -60,10 +62,30 @@ with one GPU thread per strand. CUDA keeps a direct static mapping; on CPU,
 persistent worker threads dynamically claim CUDA-block-sized strand tiles
 through an atomic counter.
 
+## Maya 2027.1 real-fixture results
+
+The harness creates a two-by-two-unit polygon plane and calls Maya's real
+Interactive Grooming generator. It exports `outRenderData` with
+`xgmExportSplineDataInternal`, then parses the result through the public
+`XgFnSpline` API rather than through a NanoXGen approximation.
+
+| Fixture | Density | Length | Width | CVs/curve | Curves | Vertices | Canonical hash |
+|---|---:|---:|---:|---:|---:|---:|---|
+| baseline A | 4 | 1.0 | 0.02 | 5 | 16 | 80 | `0x8b4b5302edbd4227` |
+| baseline B | 4 | 1.0 | 0.02 | 5 | 16 | 80 | `0x8b4b5302edbd4227` |
+| variant | 2 | 0.5 | 0.03 | 7 | 8 | 56 | `0x7450c27a657d03bb` |
+
+The two baseline exports had different raw file hashes but identical canonical
+geometry. Therefore the serialized container contains nondeterministic bytes,
+while the tested positions, widths, curve texture coordinates, and patch UVs
+were deterministic. The variant also confirmed that density, length, width, and
+CV-count changes propagate through the real runtime as expected. An empty BLOB
+was rejected by `XgFnSpline` with an invalid-stream error.
+
 ## Next implementation phases
 
-1. Build a small licensed Maya fixture set and capture XGen roots, curves,
-   widths, patch UVs, guide connectivity, and modifier outputs.
+1. Expand the licensed fixture set to capture guide interpolation, motion
+   samples, face bindings, and individual modifier outputs.
 2. Replace the isotropic support kernel with UV/geodesic, direction-dependent
    guide regions and validate interpolation error against those fixtures.
 3. Compile a restricted XGen-expression subset to a typed GPU bytecode/IR and
