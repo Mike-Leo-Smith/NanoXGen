@@ -18,6 +18,7 @@ option(NANOXGEN_BUILD_CALIBRATION
 option(NANOXGEN_BUILD_AUTODESK_BRIDGES
   "Build explicit Autodesk XGen/Maya renderer bridges" OFF)
 option(NANOXGEN_ENABLE_CUDA "Build the CUDA generation kernel" OFF)
+option(NANOXGEN_ENABLE_HIP "Build the HIP generation and cache-residency kernels" OFF)
 option(NANOXGEN_NATIVE_ARCH "Tune CPU code for the build host (non-portable binary)" OFF)
 option(NANOXGEN_FAST_MATH "Enable relaxed FP math; incompatible with strict parity" OFF)
 option(NANOXGEN_ENABLE_IPO "Enable interprocedural optimization when supported" OFF)
@@ -191,6 +192,35 @@ if(NANOXGEN_ENABLE_CUDA)
       nanoxgen_cuda_tests PRIVATE nanoxgen_cuda nanoxgen_build_options)
     add_test(NAME nanoxgen_cuda_tests COMMAND nanoxgen_cuda_tests)
     set_tests_properties(nanoxgen_cuda_tests PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
+endif()
+
+if(NANOXGEN_ENABLE_HIP)
+  enable_language(HIP)
+  find_package(hip REQUIRED CONFIG)
+  add_library(nanoxgen_hip STATIC src/hip/generate.hip)
+  set_source_files_properties(src/hip/generate.hip PROPERTIES LANGUAGE HIP)
+  target_include_directories(nanoxgen_hip PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_features(nanoxgen_hip PUBLIC hip_std_20)
+  target_link_libraries(nanoxgen_hip PUBLIC nanoxgen hip::host)
+  if(NANOXGEN_FAST_MATH)
+    target_compile_options(nanoxgen_hip PRIVATE
+      $<$<COMPILE_LANGUAGE:HIP>:-ffast-math>)
+  endif()
+
+  add_executable(nanoxgen_hip_benchmark tools/hip_benchmark.cpp)
+  target_link_libraries(nanoxgen_hip_benchmark PRIVATE nanoxgen_hip)
+
+  add_executable(nanoxgen_hip_cache_benchmark tools/hip_cache_benchmark.cpp)
+  set_source_files_properties(tools/hip_cache_benchmark.cpp PROPERTIES LANGUAGE HIP)
+  target_link_libraries(nanoxgen_hip_cache_benchmark PRIVATE nanoxgen hip::host)
+  target_compile_features(nanoxgen_hip_cache_benchmark PRIVATE hip_std_20)
+
+  if(NANOXGEN_BUILD_TESTS)
+    add_executable(nanoxgen_hip_tests tests/hip_test.cpp)
+    target_link_libraries(nanoxgen_hip_tests PRIVATE nanoxgen_hip nanoxgen_build_options)
+    add_test(NAME nanoxgen_hip_tests COMMAND nanoxgen_hip_tests)
+    set_tests_properties(nanoxgen_hip_tests PROPERTIES SKIP_RETURN_CODE 77)
   endif()
 endif()
 

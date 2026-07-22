@@ -17,12 +17,13 @@ The current prototype provides:
 - width taper and an XGen-compatible 3D gradient-noise core with verified
   magnitude, frequency, correlation, and length preservation plus a
   parallel-transported surface frame;
-- one shared C++/CUDA generation function and a CUDA launch kernel;
-- an executable CPU/CUDA parity suite plus a GPU-resident JSON benchmark;
-- direct CPU/CUDA generation into renderer `float4(position, radius)` and
+- one shared C++/CUDA/HIP generation function with CUDA and AMD HIP launch
+  kernels;
+- executable CPU/GPU parity suites plus GPU-resident JSON benchmarks;
+- direct CPU/CUDA/HIP generation into renderer `float4(position, radius)` and
   fixed `pointCounts` buffers, with checked device capacities and deformation
-  lengths at the public CUDA boundary;
-- persistent CPU workers that claim CUDA-block-sized strand tiles through an
+  lengths at the public GPU boundary;
+- persistent CPU workers that claim GPU-block-sized strand tiles through an
   atomic counter;
 - validation, corruption detection, tests, and an OBJ curve preview;
 - a Maya 2027.1-tested Autodesk XGen Interactive Grooming probe and real-fixture
@@ -67,10 +68,37 @@ Installed consumers can use `find_package(NanoXGen CONFIG REQUIRED)` and link
 `NanoXGen::nanoxgen`; CI builds a separate downstream project to verify that
 export on every change.
 
-Use `debug`, `native-release`, or `cuda-release` in place of `release` for the
-corresponding core configuration. CUDA builds require an installed CUDA
-toolkit; the CUDA test is reported as skipped when the build host has NVCC but
-no usable GPU. None of these presets discovers or links Maya/XGen.
+Use `debug`, `native-release`, `cuda-release`, or `hip-release` in place of
+`release` for the corresponding core configuration. CUDA builds require an
+installed CUDA toolkit. HIP builds require ROCm and may need an explicit local
+compiler/architecture selection, for example:
+
+```bash
+cmake --preset hip-release \
+  -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
+  -DCMAKE_HIP_ARCHITECTURES=gfx1201
+cmake --build --preset hip-release
+ctest --preset hip-release
+```
+
+GPU tests use CTest's skip code when a toolkit is available but no matching
+device is usable. The default CPU presets do not discover or link CUDA, HIP,
+Maya, or XGen; the optional GPU presets do not discover or link Maya/XGen.
+
+The HIP build also provides direct generation and evaluated `.nxc` residency
+benchmarks. The latter accepts multiple caches, so a complete multi-description
+asset can be measured as one upload and validation workload:
+
+```bash
+./build/hip-release/nanoxgen_hip_benchmark groom.nxg \
+  --strands 100000 --cvs 12 --noise
+./build/hip-release/nanoxgen_hip_cache_benchmark \
+  --warmup 3 --repeats 15 /external/rabbit-cache/*.nxc
+```
+
+The cache benchmark reports CPU read/validation, one-time host concatenation,
+host-to-device transfer, and the GPU full-buffer validation/checksum separately.
+It does not claim that HIP accelerates Autodesk Classic description evaluation.
 
 The Makefile is a fallback for minimal CPU-only environments:
 
@@ -124,8 +152,8 @@ cmake --build --preset autodesk-bridge-release
 ./scripts/run_maya_xgen_cache_test.sh
 ```
 
-The default `release`, `debug`, `native-release`, and CUDA presets neither find
-nor link Maya/XGen. Classic authoring packages, Interactive Maya authoring
+The default `release`, `debug`, `native-release`, CUDA, and HIP presets neither
+find nor link Maya/XGen. Classic authoring packages, Interactive Maya authoring
 graphs, evaluated `XgSplineData` renderer BLOBs, and NanoXGen `.nxc` runtime
 caches are four distinct layers; see the production-assets document for their
 support boundaries.

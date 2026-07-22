@@ -50,8 +50,9 @@ intermediate:
 PackedGeneratedCurves curves = generate_packed_cpu(asset, params);
 ```
 
-The checked `launch_generate_packed_cuda` overload provides the same contract
-on a CUDA stream and writes directly into renderer-owned device memory. The
+The checked `launch_generate_packed_cuda` and `launch_generate_packed_hip`
+overloads provide the same contract on CUDA and HIP streams and write directly
+into renderer-owned device memory. The
 descriptor carries capacities because a raw device pointer cannot be inspected
 safely on the host. It rejects undersized buffers, mismatched deformation
 arrays, invalid numeric parameters, and invalid launch geometry before the
@@ -67,6 +68,16 @@ DevicePackedCurveOutputDescriptor output{
     point_capacity, root_capacity, root_uv_capacity, point_count_capacity};
 
 cudaError_t error = launch_generate_packed_cuda(
+    gpu_asset, {}, params, output, {}, stream);
+```
+
+The AMD path uses the same descriptors and replaces only the backend entry
+point and stream/error types:
+
+```cpp
+#include <nanoxgen/hip.h>
+
+hipError_t error = launch_generate_packed_hip(
     gpu_asset, {}, params, output, {}, stream);
 ```
 
@@ -88,7 +99,8 @@ The current native path implements the default linear magnitude-scale ramp.
 Authored ramp curves, expressions, and PTEX/texture masks require additional
 asset sections and are not silently approximated.
 
-`launch_generate_motion_cuda` accepts all shutter overlays together. It first
+`launch_generate_motion_cuda` and `launch_generate_motion_hip` accept all
+shutter overlays together. They first
 validates every deformation descriptor, strictly increasing finite sample
 times, and the complete sample-major output capacity. Only after the whole
 request is valid does it enqueue one position-only kernel per sample on the
@@ -116,12 +128,48 @@ time, and generated-CV throughput. Transfers and renderer submission are
 intentionally outside the timed region; the asset and output allocations stay
 GPU-resident across repetitions.
 
+### AMD HIP validation and benchmarking
+
+Configure the `hip-release` preset with a ROCm HIP compiler and the target AMD
+architecture when CMake cannot infer them. The build creates
+`nanoxgen_hip_tests`, `nanoxgen_hip_benchmark`, and
+`nanoxgen_hip_cache_benchmark`. The parity test exercises packed output,
+deformed geometry, noise/length preservation, and sample-major motion against
+the CPU implementation on a real device; compilation alone is not reported as
+runtime validation.
+
+```bash
+cmake --preset hip-release \
+  -DCMAKE_HIP_COMPILER=/opt/rocm/lib/llvm/bin/clang++ \
+  -DCMAKE_HIP_ARCHITECTURES=gfx1201
+cmake --build --preset hip-release
+ctest --preset hip-release
+./build/hip-release/nanoxgen_hip_benchmark groom.nxg \
+  --strands 100000 --cvs 12 --noise
+```
+
+For already evaluated `.nxc` assets, the residency benchmark keeps performance
+stages explicit:
+
+```bash
+./build/hip-release/nanoxgen_hip_cache_benchmark \
+  --warmup 3 --repeats 15 /external/rabbit-cache/*.nxc
+```
+
+It loads and validates every cache on the CPU, concatenates only point counts
+and renderer `float4` points, uploads them, and runs a GPU kernel over every
+element. The kernel rejects non-finite positions/radii and negative radii,
+sums topology, and computes a deterministic bitwise checksum which must match
+the host. This is a renderer-residency/memory-validation measurement, not a
+claim that HIP evaluates an Autodesk authoring graph.
+
 ## Compiler modes and numerical policy
 
 Release builds use `-O3` by default. `NANOXGEN_NATIVE_ARCH=ON` enables host
 ISA tuning, `NANOXGEN_ENABLE_IPO=ON` enables supported interprocedural
 optimization, and `NANOXGEN_FAST_MATH=ON` enables relaxed floating-point math
-(`--use_fast_math` for CUDA). Keep the distributable library portable unless
+(`--use_fast_math` for CUDA and `-ffast-math` for HIP). Keep the distributable
+library portable unless
 the deployment CPU baseline is known; native ISA builds should be produced per
 render-farm hardware class.
 
@@ -183,10 +231,10 @@ BLOB from the renderer-relevant curve view.
 
 | Renderer requirement | NanoXGen status |
 |---|---|
-| Positions and per-CV radius | implemented, including checked CUDA direct output |
-| Fixed or variable point counts in output | implemented; fixed counts are fused into CUDA generation |
+| Positions and per-CV radius | implemented, including checked CUDA/HIP direct output |
+| Fixed or variable point counts in output | implemented; fixed counts are fused into GPU generation |
 | Root UV, uniform float, uniform color | implemented payload contract |
-| Multiple absolute motion samples | implemented payload contract and checked CUDA sample-major output |
+| Multiple absolute motion samples | implemented payload contract and checked GPU sample-major output |
 | Deformed mesh/normal/guide overlays | implemented on CPU and shared device math |
 | Object-to-world transform | implemented |
 | 65,536-strand chunking | implemented and boundary-tested |

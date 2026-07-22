@@ -89,7 +89,7 @@ enum class DeviceGenerationError : std::uint32_t {
         case DeviceGenerationError::InvalidAssetMetadata: return "device asset metadata is invalid";
         case DeviceGenerationError::AssetCapacityTooSmall: return "device asset allocation is too small";
         case DeviceGenerationError::InvalidGenerationParameters: return "generation parameters are invalid";
-        case DeviceGenerationError::InvalidBlockSize: return "CUDA block size must be in [1, 1024]";
+        case DeviceGenerationError::InvalidBlockSize: return "GPU block size must be in [1, 1024]";
         case DeviceGenerationError::DeformedPositionCountMismatch:
             return "deformed position count does not match the asset";
         case DeviceGenerationError::DeformedNormalCountMismatch:

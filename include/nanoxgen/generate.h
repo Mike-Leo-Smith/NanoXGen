@@ -9,7 +9,7 @@
 namespace nanoxgen {
 
 NXG_HOST_DEVICE inline float nxg_sqrt(float x) noexcept {
-#if defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     return sqrtf(x);
 #else
     return std::sqrt(x);
@@ -17,7 +17,7 @@ NXG_HOST_DEVICE inline float nxg_sqrt(float x) noexcept {
 }
 
 NXG_HOST_DEVICE inline float nxg_sin(float x) noexcept {
-#if defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     return sinf(x);
 #else
     return std::sin(x);
@@ -25,7 +25,7 @@ NXG_HOST_DEVICE inline float nxg_sin(float x) noexcept {
 }
 
 NXG_HOST_DEVICE inline float nxg_cos(float x) noexcept {
-#if defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     return cosf(x);
 #else
     return std::cos(x);
@@ -33,7 +33,7 @@ NXG_HOST_DEVICE inline float nxg_cos(float x) noexcept {
 }
 
 NXG_HOST_DEVICE inline float nxg_acos(float x) noexcept {
-#if defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     return acosf(x);
 #else
     return std::acos(x);
@@ -41,7 +41,7 @@ NXG_HOST_DEVICE inline float nxg_acos(float x) noexcept {
 }
 
 NXG_HOST_DEVICE inline float nxg_floor(float x) noexcept {
-#if defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     return floorf(x);
 #else
     return std::floor(x);
@@ -51,7 +51,7 @@ NXG_HOST_DEVICE inline float nxg_floor(float x) noexcept {
 NXG_HOST_DEVICE inline float nxg_abs(float x) noexcept { return x < 0.0f ? -x : x; }
 
 NXG_HOST_DEVICE inline float nxg_pow(float x, float y) noexcept {
-#if defined(__CUDA_ARCH__)
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
     return powf(x, y);
 #else
     return std::pow(x, y);

@@ -24,7 +24,8 @@
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "NANOXGEN_ENABLE_CUDA": "OFF"
+        "NANOXGEN_ENABLE_CUDA": "OFF",
+        "NANOXGEN_ENABLE_HIP": "OFF"
       }
     },
     {
@@ -57,6 +58,16 @@
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "NANOXGEN_ENABLE_CUDA": "ON"
+      }
+    },
+    {
+      "name": "hip-release",
+      "displayName": "HIP release",
+      "description": "Release build of all CPU and AMD HIP targets",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "NANOXGEN_ENABLE_HIP": "ON"
       }
     },
     {
@@ -102,6 +113,11 @@
       "jobs": 2
     },
     {
+      "name": "hip-release",
+      "configurePreset": "hip-release",
+      "jobs": 2
+    },
+    {
       "name": "calibration-release",
       "configurePreset": "calibration-release",
       "jobs": 2
@@ -137,6 +153,13 @@
     {
       "name": "cuda-release",
       "configurePreset": "cuda-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "hip-release",
+      "configurePreset": "hip-release",
       "output": {
         "outputOnFailure": true
       }

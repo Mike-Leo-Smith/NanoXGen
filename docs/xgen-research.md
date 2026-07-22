@@ -216,8 +216,41 @@ an original-length pass, a noisy-length pass, and a final output pass; each CV
 also performs three eight-corner gradient samples. This CPU result is still far
 below Maya's roughly 550 ms serialization stage, but it is slower than decoding
 an already-produced XGen BLOB. The intended production path for expensive
-modifiers remains the shared CUDA implementation; no GPU throughput is claimed
-until it is compiled and measured on the target renderer hardware.
+modifiers is the shared CUDA/HIP implementation. A measured AMD result is
+recorded below; it does not imply that the currently unsupported authoring
+modules have become native.
+
+### AMD HIP and complete Rabbit cache snapshot
+
+On Arch Linux with ROCm/HIP 7.2, an AMD Radeon RX 9070 XT (`gfx1201`), and a
+Ryzen 9 9950X3D, the real-device HIP parity suite passed. Direct packed
+generation of 100,000 strands / 1.2 million CVs with the verified noise and
+40% length-preservation path took 0.5599 ms median and 0.5886 ms p90 over 31
+timed repetitions after three warm-ups. Asset/output buffers stayed resident;
+the measurement excludes file I/O and transfers and reports a kernel rate, not
+an Autodesk comparison.
+
+The complete local Rabbit Classic example contains nine descriptions. Public
+XGen RenderAPI evaluation produced 2,456,139 curves / 47,421,673 CVs; evaluating
+the descriptions took 155,119.249 ms in aggregate and writing their nine
+renderer-minimal caches took 849.445 ms. The caches total 798,046,252 bytes.
+Those Autodesk stages are CPU authoring/evaluation work and are not accelerated
+by HIP.
+
+The same nine `.nxc` files were then measured together with three warm-ups and
+15 repetitions. Their renderer point-count and `float4` sections occupy
+768,571,324 device bytes. Hot CPU read plus complete cache validation was
+236.1035 ms median / 237.4748 ms p90. The benchmark-only one-time concatenation
+was 59.7063 ms. H2D was 13.9142 / 13.9302 ms by device events and
+13.9287 / 13.9449 ms by wall time. A GPU traversal that validated all 47.4
+million points, summed topology, and matched the host bit checksum
+`0x2c58cba9778dc4a2` took 1.2428 / 1.2529 ms.
+
+The H2D stage is a cache admission cost and should not be paid per frame; a
+renderer should retain unchanged `.nxc` data on the GPU. The checksum kernel is
+a full-buffer correctness and memory-throughput diagnostic, not a render or a
+procedural Rabbit-generation time. It therefore remains separate from both the
+155-second Autodesk evaluation and NanoXGen native procedural generation.
 
 The linear modifier reference is intentionally excluded from speedup claims: it
 starts from official root/tip seeds and performs neither root sampling nor guide
@@ -318,8 +351,8 @@ actual renderer-buffer copy.
 5. Implement remaining modifier passes in authored dependency order: cut/length,
    clump, coil, collision, and wind. Fuse passes where locality permits and use
    explicit intermediate curve buffers where modifiers need neighborhoods.
-6. Compile and benchmark the existing direct CUDA kernel on target renderer
-   GPUs, add a LuisaCompute backend, and compare throughput, memory,
+6. Expand CUDA/HIP device coverage to production renderer hardware, add a
+   LuisaCompute backend, and compare throughput, memory,
    determinism, and strict/fast-math error against the XGen CPU baseline.
 
 ## Interoperability implementation rule

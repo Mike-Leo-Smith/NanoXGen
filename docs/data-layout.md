@@ -35,12 +35,13 @@ the same noise lookup runs on a CPU or GPU without a host global or device
 symbol initialization step.
 
 Generated curves use fixed CV counts in v0.2. Points and widths are strand-major,
-so a CUDA thread owns one contiguous strand. The CUDA kernel keeps its direct
-static mapping. On CPU, a logical work block is a contiguous tile of strands
-with the same default width as a CUDA block (128 strands); persistent CPU worker
+so one CUDA or HIP work item owns one contiguous strand. Both GPU kernels keep
+that direct static mapping. On CPU, a logical work block is a contiguous tile
+of strands with the same default width as a GPU block (128 strands); persistent
+CPU worker
 threads dynamically claim these tiles through a relaxed atomic counter. This
 amortizes scheduling and balances future variable-cost modifiers without
-changing CUDA behavior. A later backend can transpose CV tiles for
+changing GPU behavior. A later backend can transpose CV tiles for
 warp-coalesced modifier passes without changing the source asset format.
 
 Frame-local deformation is an overlay rather than a second asset blob. Optional
