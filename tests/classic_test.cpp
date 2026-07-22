@@ -10,6 +10,7 @@
 #include <cmath>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -486,11 +487,14 @@ void test_xpd3_reader() {
     u32(6u);                  // floats per point
     u32(0u);                  // keys
     u32(0u);                  // key-string bytes
-    u32(1u);                  // faces
-    u32(7u);                  // face ID
-    u32(1u);                  // primitive count
-    constexpr std::uint64_t header_size = 71u;
+    u32(2u);                  // faces
+    u32(7u);                  // populated face ID
+    u32(9u);                  // empty face ID
+    u32(1u);                  // populated primitive count
+    u32(0u);                  // empty primitive count
+    constexpr std::uint64_t header_size = 87u;
     u64(header_size);
+    u64(std::numeric_limits<std::uint64_t>::max());
     for (const float value : {1.0f, 0.25f, 0.75f, 4.0f, 5.0f, 6.0f}) {
         f32(value);
     }
@@ -500,9 +504,11 @@ void test_xpd3_reader() {
                 document.blocks[0].name == "Location" &&
                 document.blocks[0].floats_per_primitive == 6u,
             "XPD block metadata mismatch");
-    require(document.faces.size() == 1u &&
+    require(document.faces.size() == 2u &&
                 document.faces[0].face_id == 7 &&
-                document.faces[0].primitive_count == 1u,
+                document.faces[0].primitive_count == 1u &&
+                document.faces[1].face_id == 9 &&
+                document.faces[1].primitive_count == 0u,
             "XPD face metadata mismatch");
     std::vector<float> record(6u);
     copy_xpd_primitive(document, 0u, 0u, 0u, record);

@@ -159,6 +159,9 @@ XpdDocument parse_xpd_document(
     }
     const std::uint64_t header_end = 4u + reader.offset();
     for (const XpdFaceInfo &face : result.faces) {
+        // Autodesk writes UINT64_MAX for block offsets on empty faces. The
+        // offset is deliberately non-dereferenceable and carries no payload.
+        if (face.primitive_count == 0u) { continue; }
         for (std::size_t block = 0u; block < result.blocks.size(); ++block) {
             const std::uint64_t bytes_per_primitive = checked_product(
                 result.blocks[block].floats_per_primitive, 4u,
@@ -167,8 +170,8 @@ XpdDocument parse_xpd_document(
                 face.primitive_count, bytes_per_primitive,
                 "face payload");
             const std::uint64_t offset = face.block_offsets[block];
-            if ((face.primitive_count != 0u && offset < header_end) ||
-                offset > bytes.size() || payload_size > bytes.size() - offset) {
+            if (offset < header_end || offset > bytes.size() ||
+                payload_size > bytes.size() - offset) {
                 fail("face block points outside the file");
             }
         }
