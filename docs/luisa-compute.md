@@ -52,7 +52,7 @@ reproducible integration boundary.
 
 ## Float-only expression lowering
 
-`nanoxgen_luisa_tests` records a C++ kernel into Luisa AST/XIR, JIT-compiles it,
+`nanoxgen_luisa_tests` records C++ kernels into Luisa AST/XIR, JIT-compiles them,
 uploads 65,536 inputs, evaluates deterministic integer hash and float width
 operations, downloads both outputs, and compares every value with the CPU
 oracle. It also compiles a bounded Classic scalar expression, lowers that SSA
@@ -63,6 +63,13 @@ surrounding generation kernel and does not require a device-side interpreter
 or a temporary expression-input buffer. The test prints compilation time,
 upload/dispatch/download time, expression dispatch time, error bounds, and a
 stable checksum. A second process also exercises LuisaCompute's shader cache.
+
+When HIP is enabled by `luisa-hip-release`, the same test allocates renderer
+points and root records with HIP, runs the native packed generator, imports
+those exact device pointers with LuisaCompute, and executes primitive length,
+reparameterized Cut, and width/taper/ramp kernels without a host copy between
+stages. It compares every final `float4(position, radius)` against the CPU plan.
+The July 2026 RX 9070 XT fixture's maximum absolute error was `4.76837e-7`.
 
 The runtime boundary is deliberately typed: `XgenFloatExpressionProgram`
 contains float immediates and the Luisa lowering accepts only that program
@@ -100,3 +107,52 @@ evaluable.
 Unsupported SeExpr, PTEX, modules, and topology operations remain checked errors
 and select the Autodesk fallback until their CPU oracle and Luisa differential
 tests pass.
+
+## Full Rabbit engineering benchmark
+
+`nanoxgen_luisa_classic_benchmark` measures native HIP packed generation plus
+the supported authored Classic float plan in one HIP stream. All descriptions
+remain resident for each full-asset sample. File I/O, GPU allocation, asset
+upload, JIT compilation, and the final checksum download are reported or
+excluded explicitly; no intermediate point buffer returns to the CPU. The
+repository contains only the runner and counts, not the production assets or
+benchmark JSON:
+
+```bash
+NANOXGEN_CPU_BENCHMARK_REPEATS=3 \
+./scripts/run_rabbit_luisa_benchmark.sh \
+  /external/LuisaCompute-next/build-nanoxgen-hip/bin \
+  /external/rabbit/yxt_rabbit__yxt_test_fur.xgen \
+  /external/generated-rabbit-nxg
+```
+
+On 2026-07-22, the RX 9070 XT `gfx1201` run covered all 2,456,139 strands and
+47,421,673 points. With three warm-ups, the seven-repeat HIP median/p90 was
+`144.434/153.013 ms` (328.33 million points/s); the same partial plan's CPU
+median was `1103.169 ms`, including output allocation, so HIP was 7.64x faster
+than that CPU implementation. A separate 15-repeat run measured
+`148.203/155.541 ms`, showing the expected run-to-run range. GPU allocation,
+asset upload, and all per-description JIT compiles took 7.14 seconds on the
+warm filesystem/driver run and 16.80 seconds on an earlier cold run.
+
+The optional full CPU/GPU differential checked 189,686,692 final position and
+radius components. Final radius matched within the printed float precision;
+the combined RMS error was about `1e-6`, with 28,060 components above `1e-5`
+and 189 above `1e-4`; the maximum was `0.001430`. The outliers are localized
+in base guide interpolation, principally `erduo`, rather than the Luisa
+postprocess: its root triangle identities were exact and root positions were
+within `8e-6`, but spatial support-weight normalization near a support boundary
+amplified that perturbation to `0.001619` before Cut reduced the maximum. This
+is reported as a precision boundary, not hidden behind the small global RMS;
+stable/scene-relative guide-blend acceptance still needs an Autodesk oracle.
+
+These figures are deliberately labeled
+`nanoxgen-native-partial-not-autodesk-equivalent`. Against the measured Maya
+Classic evaluation/copy time of 155.119 seconds, the numerical ratios would be
+about 140.6x for CPU and 1074x for hot HIP, but they are not valid final Maya
+speedups. The native result does not yet reproduce the same positions/radii:
+all nine descriptions retain fallback reasons for Autodesk root sampling and
+authored NoiseFX; the asset also needs description-dependent ClumpingFX, PTEX
+length/width/masks, and the first `erduo` Cut expression. Equality must be
+established by counts, identities, channels, tolerances, and checksums before a
+Maya speedup is claimed.

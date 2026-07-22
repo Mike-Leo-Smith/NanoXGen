@@ -73,3 +73,8 @@ Consequently, timings from this path are engineering measurements for the
 native prototype, not an equal-output Maya speedup claim. A valid Maya
 comparison requires the same roots, surface evaluation, expressions, PTEX,
 modules, curve counts, CV counts, and renderer channels.
+
+The optional Luisa/HIP build now keeps the packed generator and supported
+Classic postprocess on one device stream through external-buffer import. See
+`docs/luisa-compute.md` and `scripts/run_rabbit_luisa_benchmark.sh` for the
+full nine-description Rabbit benchmark and its explicit parity boundary.

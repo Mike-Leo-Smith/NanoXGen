@@ -118,6 +118,13 @@ The cache benchmark reports CPU read/validation, one-time host concatenation,
 host-to-device transfer, and the GPU full-buffer validation/checksum separately.
 It does not claim that HIP accelerates Autodesk Classic description evaluation.
 
+The Luisa/HIP preset additionally builds a zero-host-copy Classic float-plan
+benchmark. `scripts/run_rabbit_luisa_benchmark.sh` runs all nine descriptions
+of the external Rabbit example as one warm batch and reports GPU and CPU
+timings, JIT/setup cost, checksum, and every remaining fallback count. Its
+output is explicitly partial-semantics until Autodesk-equivalent root sampling,
+PTEX, clumping, and authored noise parity are complete.
+
 The Makefile is a fallback for minimal CPU-only environments:
 
 ```bash

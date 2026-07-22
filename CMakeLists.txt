@@ -265,6 +265,15 @@ if(NANOXGEN_ENABLE_LUISA)
   add_executable(nanoxgen_luisa_tests tests/luisa_test.cpp)
   target_link_libraries(
     nanoxgen_luisa_tests PRIVATE nanoxgen_luisa)
+  if(TARGET nanoxgen_hip)
+    target_link_libraries(nanoxgen_luisa_tests PRIVATE nanoxgen_hip)
+    target_compile_definitions(
+      nanoxgen_luisa_tests PRIVATE NANOXGEN_TEST_LUISA_HIP_INTEROP=1)
+    add_executable(
+      nanoxgen_luisa_classic_benchmark tools/luisa_classic_benchmark.cpp)
+    target_link_libraries(
+      nanoxgen_luisa_classic_benchmark PRIVATE nanoxgen_luisa nanoxgen_hip)
+  endif()
   if(NANOXGEN_BUILD_TESTS)
     add_test(NAME nanoxgen_luisa_tests
       COMMAND nanoxgen_luisa_tests

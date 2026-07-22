@@ -4,6 +4,11 @@
 #include "nanoxgen/xgen_classic_runtime.h"
 #include "nanoxgen/xgen_expression.h"
 
+#if defined(NANOXGEN_TEST_LUISA_HIP_INTEROP)
+#include "nanoxgen/hip.h"
+#include <hip/hip_runtime_api.h>
+#endif
+
 #include <luisa/core/logging.h>
 #include <luisa/core/stl/vector.h>
 #include <luisa/dsl/syntax.h>
@@ -30,6 +35,168 @@ namespace {
 float milliseconds(std::chrono::steady_clock::duration duration) {
     return std::chrono::duration<float, std::milli>(duration).count();
 }
+
+#if defined(NANOXGEN_TEST_LUISA_HIP_INTEROP)
+
+void check_hip(hipError_t error, const char *operation) {
+    if (error != hipSuccess) {
+        throw std::runtime_error(
+            std::string{operation} + ": " + hipGetErrorString(error));
+    }
+}
+
+class HipAllocation {
+public:
+    explicit HipAllocation(std::size_t bytes) : _bytes{bytes} {
+        if (bytes != 0u) {
+            check_hip(hipMalloc(&_data, bytes), "hipMalloc");
+        }
+    }
+    HipAllocation(const HipAllocation &) = delete;
+    HipAllocation &operator=(const HipAllocation &) = delete;
+    ~HipAllocation() {
+        if (_data != nullptr) { (void)hipFree(_data); }
+    }
+    [[nodiscard]] void *data() const noexcept { return _data; }
+    [[nodiscard]] std::size_t bytes() const noexcept { return _bytes; }
+private:
+    void *_data{};
+    std::size_t _bytes{};
+};
+
+nanoxgen::Asset make_interop_asset() {
+    nanoxgen::AssetBuildInput input{};
+    input.positions = {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f},
+                       {0.0f, 0.0f, 1.0f}, {1.0f, 0.1f, 1.0f}};
+    input.normals.assign(input.positions.size(), {0.0f, 1.0f, 0.0f});
+    input.texcoords = {{0.0f, 0.0f}, {1.0f, 0.0f},
+                       {0.0f, 1.0f}, {1.0f, 1.0f}};
+    input.triangles = {{0u, 1u, 2u}, {1u, 3u, 2u}};
+    nanoxgen::GuideInput a{};
+    a.triangle_index = 0u;
+    a.barycentric = {0.2f, 0.3f};
+    a.root_normal = {0.0f, 1.0f, 0.0f};
+    a.support_radius = 10.0f;
+    a.cvs = {{0.2f, 0.0f, 0.3f}, {0.18f, 0.3f, 0.33f},
+             {0.25f, 0.7f, 0.38f}, {0.35f, 1.1f, 0.45f}};
+    nanoxgen::GuideInput b{};
+    b.triangle_index = 1u;
+    b.barycentric = {0.35f, 0.25f};
+    b.root_normal = {0.0f, 1.0f, 0.0f};
+    b.support_radius = 10.0f;
+    b.cvs = {{0.75f, 0.05f, 0.6f}, {0.82f, 0.4f, 0.57f},
+             {0.78f, 0.78f, 0.68f}, {0.68f, 1.2f, 0.76f}};
+    input.guides = {std::move(a), std::move(b)};
+    return nanoxgen::build_asset(input);
+}
+
+nanoxgen::ClassicFloatRuntimePlan make_interop_plan() {
+    nanoxgen::ClassicDescription description{};
+    description.name = "luisaHipInterop";
+    description.attributes.push_back({"descriptionId", "7", 1u});
+    description.objects.push_back({"SplinePrimitive", {
+        {"length", "1.25", 1u},
+        {"width", "hash($id+17)*0.02+0.01", 1u},
+        {"taper", "0.5", 1u},
+        {"taperStart", "0.25", 1u},
+        {"widthRamp", "rampUI(0,1,1:1,0.5,1)", 1u},
+        {"fxCVCount", "8", 1u}}, 1u});
+    description.objects.push_back({"CutFXModule", {
+        {"active", "true", 1u}, {"name", "cut", 1u},
+        {"amount", "0.25*$cLength", 1u},
+        {"rebuildType", "1", 1u}}, 1u});
+    auto plan = nanoxgen::compile_xgen_classic_float_runtime_plan(description);
+    if (!plan.lowering_complete() || plan.cuts.size() != 1u) {
+        throw std::runtime_error("HIP interop fixture did not lower completely");
+    }
+    return plan;
+}
+
+float test_hip_external_buffer_pipeline(Device &device, Stream &stream) {
+    constexpr std::uint32_t strand_count = 1024u;
+    constexpr std::uint32_t cvs_per_strand = 8u;
+    constexpr float radius_scale = 1.0f;
+    const nanoxgen::Asset asset = make_interop_asset();
+    const nanoxgen::ClassicFloatRuntimePlan plan = make_interop_plan();
+    nanoxgen::GenerationParams params{};
+    params.strand_count = strand_count;
+    params.cvs_per_strand = cvs_per_strand;
+    params.seed = 0x1234abcdu;
+    params.root_width = 0.03f;
+    params.tip_width = 0.002f;
+    params.noise_amplitude = 0.0f;
+    nanoxgen::PackedGeneratedCurves reference =
+        nanoxgen::generate_packed_cpu(asset, params, radius_scale, {1u, 128u});
+    nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
+        reference, plan, radius_scale);
+
+    HipAllocation device_asset{asset.bytes().size()};
+    HipAllocation points_a{reference.points.size() * sizeof(nanoxgen::PackedCurvePoint)};
+    HipAllocation points_b{reference.points.size() * sizeof(nanoxgen::PackedCurvePoint)};
+    HipAllocation roots{reference.roots.size() * sizeof(nanoxgen::RootSample)};
+    HipAllocation root_uvs{reference.root_uvs.size() * sizeof(nanoxgen::Vec2)};
+    HipAllocation point_counts{reference.point_counts.size() * sizeof(std::uint32_t)};
+    check_hip(hipMemcpy(device_asset.data(), asset.bytes().data(),
+                        asset.bytes().size(), hipMemcpyHostToDevice),
+              "upload interop asset");
+    const auto asset_descriptor = nanoxgen::make_device_asset_descriptor(
+        asset, device_asset.data(), device_asset.bytes());
+    const nanoxgen::DevicePackedCurveOutputDescriptor output{
+        {static_cast<nanoxgen::PackedCurvePoint *>(points_a.data()),
+         static_cast<nanoxgen::RootSample *>(roots.data()),
+         static_cast<nanoxgen::Vec2 *>(root_uvs.data()), radius_scale,
+         static_cast<std::uint32_t *>(point_counts.data())},
+        reference.points.size(), reference.roots.size(),
+        reference.root_uvs.size(), reference.point_counts.size()};
+    check_hip(nanoxgen::launch_generate_packed_hip(
+                  asset_descriptor, {}, params, output, {128u}),
+              "launch native HIP packed generation");
+    check_hip(hipDeviceSynchronize(), "native HIP packed generation sync");
+
+    {
+        auto a = device.import_external_buffer<luisa::float4>(
+            points_a.data(), reference.points.size());
+        auto b = device.import_external_buffer<luisa::float4>(
+            points_b.data(), reference.points.size());
+        auto root_bytes = device.import_external_byte_buffer(
+            roots.data(), roots.bytes());
+        auto states = device.create_buffer<luisa::float4>(strand_count);
+        auto primitive = device.compile(
+            nanoxgen::luisa_backend::make_classic_runtime_primitive_kernel(
+                plan, cvs_per_strand, radius_scale));
+        auto cut = device.compile(
+            nanoxgen::luisa_backend::make_classic_runtime_cut_kernel(
+                plan, plan.cuts.front(), cvs_per_strand));
+        auto width = device.compile(
+            nanoxgen::luisa_backend::make_classic_runtime_width_kernel(
+                plan, cvs_per_strand, radius_scale));
+        stream << primitive(a, b, root_bytes, states).dispatch(strand_count)
+               << cut(b, a, root_bytes, states).dispatch(strand_count)
+               << width(a, root_bytes, states).dispatch(strand_count)
+               << synchronize();
+    }
+
+    std::vector<nanoxgen::PackedCurvePoint> actual(reference.points.size());
+    check_hip(hipMemcpy(actual.data(), points_a.data(), points_a.bytes(),
+                        hipMemcpyDeviceToHost),
+              "download Luisa HIP packed points");
+    float max_error = 0.0f;
+    for (std::size_t i = 0u; i < actual.size(); ++i) {
+        max_error = std::max({max_error,
+            std::abs(actual[i].x - reference.points[i].x),
+            std::abs(actual[i].y - reference.points[i].y),
+            std::abs(actual[i].z - reference.points[i].z),
+            std::abs(actual[i].radius - reference.points[i].radius)});
+    }
+    if (max_error > 1.0e-5f) {
+        throw std::runtime_error(
+            "native HIP -> Luisa external-buffer pipeline mismatch (max=" +
+            std::to_string(max_error) + ")");
+    }
+    return max_error;
+}
+
+#endif
 
 } // namespace
 
@@ -182,6 +349,11 @@ int main(int argc, char **argv) try {
            << synchronize();
     const auto expression_dispatch_end = std::chrono::steady_clock::now();
 
+#if defined(NANOXGEN_TEST_LUISA_HIP_INTEROP)
+    const float hip_interop_max_absolute_error =
+        test_hip_external_buffer_pipeline(device, stream);
+#endif
+
     std::uint64_t checksum = 1469598103934665603ull;
     for (std::uint32_t index = 0u; index < count; ++index) {
         const std::uint32_t expected_hash = nanoxgen::hash32(input[index]);
@@ -238,6 +410,11 @@ int main(int argc, char **argv) try {
               << ",\"xgen_expression_max_ulp\":" << expression_max_ulp
               << ",\"xgen_expression_max_absolute_error\":"
               << expression_max_absolute_error
+#if defined(NANOXGEN_TEST_LUISA_HIP_INTEROP)
+              << ",\"hip_external_buffer_points\":" << (1024u * 8u)
+              << ",\"hip_external_buffer_max_absolute_error\":"
+              << hip_interop_max_absolute_error
+#endif
               << ",\"checksum\":\"0x" << std::hex << checksum
               << "\"}\n";
     return 0;
