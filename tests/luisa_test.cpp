@@ -1,5 +1,7 @@
 #include "nanoxgen/generate.h"
+#include "nanoxgen/luisa/xgen_classic_runtime.h"
 #include "nanoxgen/luisa/xgen_expression.h"
+#include "nanoxgen/xgen_classic_runtime.h"
 #include "nanoxgen/xgen_expression.h"
 
 #include <luisa/core/logging.h>
@@ -93,6 +95,8 @@ int main(int argc, char **argv) try {
                 "$a=hash($id+355) <= .3? rand(0.1,0.7):rand(0.2,0);"
                 "$a*$cLength*rampUI(0,0,3:0.5,1,3:1,0,3)",
                 expression_options));
+    const nanoxgen::ClassicFloatRuntimeExpression classic_expression{
+        "CutFXModule", "Cut1", "amount", expression_program};
     constexpr std::uint32_t expression_count = 4096u;
     std::vector<float> expression_inputs(
         expression_count * expression_program.inputs.size());
@@ -115,18 +119,23 @@ int main(int argc, char **argv) try {
                 2u, "rabbitShape", i % 152u);
         expression_contexts[i + expression_count * 3u] =
             static_cast<float>(i % 257u) / 256.0f;
-        std::vector<float> input_values(expression_program.inputs.size());
+        nanoxgen::ClassicFloatRuntimeContext runtime_context{};
+        runtime_context.id = i;
+        runtime_context.u = expression_contexts[i];
+        runtime_context.v = expression_contexts[i + expression_count];
+        runtime_context.face_seed =
+            expression_contexts[i + expression_count * 2u];
+        runtime_context.t = expression_contexts[i + expression_count * 3u];
         for (std::size_t input_index = 0u;
              input_index < expression_program.inputs.size(); ++input_index) {
-            input_values[input_index] =
-                expression_inputs[i + input_index * expression_count];
+            if (expression_program.inputs[input_index] == "cLength") {
+                runtime_context.c_length =
+                    expression_inputs[i + input_index * expression_count];
+            }
         }
-        expression_reference[i] = nanoxgen::evaluate_xgen_scalar_expression_float(
-            expression_program,
-            {input_values, expression_contexts[i],
-             expression_contexts[i + expression_count],
-             expression_contexts[i + expression_count * 2u],
-             expression_contexts[i + expression_count * 3u]});
+        expression_reference[i] =
+            nanoxgen::evaluate_xgen_classic_float_runtime_expression(
+                classic_expression, runtime_context);
     }
     Buffer<float> expression_input_buffer =
         device.create_buffer<float>(expression_inputs.size());
@@ -134,14 +143,31 @@ int main(int argc, char **argv) try {
         device.create_buffer<float>(expression_contexts.size());
     Buffer<float> expression_output_buffer =
         device.create_buffer<float>(expression_results.size());
+    std::size_t c_length_input = 0u;
+    for (; c_length_input < expression_program.inputs.size(); ++c_length_input) {
+        if (expression_program.inputs[c_length_input] == "cLength") { break; }
+    }
+    if (c_length_input == expression_program.inputs.size()) {
+        throw std::runtime_error("Classic JIT fixture has no cLength input");
+    }
     Kernel1D expression_kernel =
         [&](BufferFloat expression_input, BufferFloat expression_context,
             BufferFloat output) noexcept {
             set_block_size(128u, 1u, 1u);
             UInt index = dispatch_id().x;
-            output.write(index, nanoxgen::luisa_backend::lower_expression(
-                expression_program, index, expression_count, expression_input,
-                expression_context));
+            output.write(
+                index,
+                nanoxgen::luisa_backend::lower_classic_runtime_expression(
+                    classic_expression,
+                    {index,
+                     expression_context.read(index),
+                     expression_context.read(index + expression_count),
+                     expression_context.read(index + expression_count * 2u),
+                     expression_input.read(
+                         index + expression_count *
+                                     static_cast<std::uint32_t>(c_length_input)),
+                     0.0f,
+                     expression_context.read(index + expression_count * 3u)}));
         };
     const auto expression_compile_start = std::chrono::steady_clock::now();
     auto expression_shader = device.compile(expression_kernel);

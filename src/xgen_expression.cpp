@@ -816,6 +816,14 @@ double evaluate_xgen_scalar_expression(
 float evaluate_xgen_scalar_expression_float(
     const XgenFloatExpressionProgram &program,
     const XgenExpressionFloatContext &context) {
+    std::vector<float> scratch(program.instructions.size());
+    return evaluate_xgen_scalar_expression_float(program, context, scratch);
+}
+
+float evaluate_xgen_scalar_expression_float(
+    const XgenFloatExpressionProgram &program,
+    const XgenExpressionFloatContext &context,
+    std::span<float> values) {
     if (context.inputs.size() != program.inputs.size()) {
         throw std::runtime_error("XGen float expression input count mismatch");
     }
@@ -828,8 +836,10 @@ float evaluate_xgen_scalar_expression_float(
             throw std::runtime_error("XGen float expression input is non-finite");
         }
     }
-    std::vector<float> values;
-    values.reserve(program.instructions.size());
+    if (values.size() < program.instructions.size()) {
+        throw std::runtime_error("XGen float expression scratch is too small");
+    }
+    std::size_t value_count = 0u;
     for (const XgenFloatScalarInstruction &instruction : program.instructions) {
         const std::size_t end = static_cast<std::size_t>(instruction.operand_offset) +
                                 instruction.operand_count;
@@ -841,7 +851,7 @@ float evaluate_xgen_scalar_expression_float(
                 throw std::runtime_error("XGen float expression instruction arity mismatch");
             }
             const std::uint32_t value = program.operands[instruction.operand_offset + index];
-            if (value >= values.size()) {
+            if (value >= value_count) {
                 throw std::runtime_error("XGen float expression violates SSA ordering");
             }
             return values[value];
@@ -881,12 +891,18 @@ float evaluate_xgen_scalar_expression_float(
         case XgenScalarOp::select:
             require_arity(3u); value = operand(0u) != 0.0f ? operand(1u) : operand(2u); break;
         case XgenScalarOp::hash: {
-            std::vector<float> arguments;
-            arguments.reserve(instruction.operand_count);
+            std::uint32_t state = 0x9e3779b9u;
             for (std::size_t i = 0u; i < instruction.operand_count; ++i) {
-                arguments.push_back(operand(i));
+                state ^= std::bit_cast<std::uint32_t>(operand(i)) +
+                         0x9e3779b9u + (state << 6u) + (state >> 2u);
+                state ^= state >> 16u;
+                state *= 0x7feb352du;
+                state ^= state >> 15u;
+                state *= 0x846ca68bu;
+                state ^= state >> 16u;
             }
-            value = xgen_runtime_hash(arguments);
+            value = static_cast<float>(state >> 8u) *
+                    (1.0f / 16777216.0f);
             break;
         }
         case XgenScalarOp::random: {
@@ -931,9 +947,9 @@ float evaluate_xgen_scalar_expression_float(
         if (!std::isfinite(value)) {
             throw std::runtime_error("XGen float expression produced a non-finite value");
         }
-        values.push_back(value);
+        values[value_count++] = value;
     }
-    if (program.result >= values.size()) {
+    if (program.result >= value_count) {
         throw std::runtime_error("XGen float expression result index is invalid");
     }
     return values[program.result];

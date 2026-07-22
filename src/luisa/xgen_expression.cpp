@@ -69,9 +69,9 @@ Expr<float> runtime_hash(span<const Expr<float>> arguments) noexcept {
 }
 
 Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
-                             Expr<uint> index, Expr<uint> count,
-                             const BufferFloat &inputs,
-                             const BufferFloat &contexts) noexcept {
+                             span<const Expr<float>> inputs,
+                             Expr<float> u, Expr<float> v,
+                             Expr<float> face_seed, Expr<float> t) noexcept {
     vector<Expr<float>> values;
     values.reserve(program.instructions.size());
     for (const XgenFloatScalarInstruction &instruction : program.instructions) {
@@ -83,7 +83,7 @@ Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
         case XgenScalarOp::constant:
             value = instruction.immediate; break;
         case XgenScalarOp::input:
-            value = inputs.read(index + count * instruction.auxiliary); break;
+            value = inputs[instruction.auxiliary]; break;
         case XgenScalarOp::negate: value = -operand(0u); break;
         case XgenScalarOp::logical_not:
             value = cast<float>(operand(0u) == 0.0f); break;
@@ -125,9 +125,9 @@ Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
         case XgenScalarOp::random: {
             vector<Expr<float>> arguments;
             arguments.reserve(5u);
-            arguments.emplace_back(contexts.read(index));
-            arguments.emplace_back(contexts.read(index + count));
-            arguments.emplace_back(contexts.read(index + count * 2u));
+            arguments.emplace_back(u);
+            arguments.emplace_back(v);
+            arguments.emplace_back(face_seed);
             arguments.emplace_back(instruction.immediate);
             if (instruction.operand_count == 1u ||
                 instruction.operand_count == 3u) {
@@ -153,13 +153,30 @@ Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
             value = lower_ramp(
                 span{program.ramp_points}.subspan(
                     ramp.point_offset, ramp.point_count),
-                contexts.read(index + count * 3u));
+                t);
             break;
         }
         }
         values.emplace_back(value);
     }
     return values[program.result];
+}
+
+Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
+                             Expr<uint> index, Expr<uint> count,
+                             const BufferFloat &inputs,
+                             const BufferFloat &contexts) noexcept {
+    vector<Expr<float>> values;
+    values.reserve(program.inputs.size());
+    for (std::size_t input = 0u; input < program.inputs.size(); ++input) {
+        values.emplace_back(inputs.read(
+            index + count * static_cast<uint>(input)));
+    }
+    return lower_expression(
+        program, values, contexts.read(index),
+        contexts.read(index + count),
+        contexts.read(index + count * 2u),
+        contexts.read(index + count * 3u));
 }
 
 } // namespace nanoxgen::luisa_backend

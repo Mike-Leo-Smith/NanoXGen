@@ -88,6 +88,7 @@ add_library(nanoxgen STATIC
   src/curve_payload.cpp
   src/xgen.cpp
   src/xgen_classic.cpp
+  src/xgen_classic_runtime.cpp
   src/xgen_expression.cpp
   src/xgen_package.cpp)
 add_library(NanoXGen::nanoxgen ALIAS nanoxgen)
@@ -252,7 +253,9 @@ if(NANOXGEN_ENABLE_LUISA)
     message(FATAL_ERROR
       "LuisaCompute backend plug-in not found: ${_nanoxgen_luisa_plugin}")
   endif()
-  add_library(nanoxgen_luisa STATIC src/luisa/xgen_expression.cpp)
+  add_library(nanoxgen_luisa STATIC
+    src/luisa/xgen_expression.cpp
+    src/luisa/xgen_classic_runtime.cpp)
   add_library(NanoXGen::nanoxgen_luisa ALIAS nanoxgen_luisa)
   target_include_directories(
     nanoxgen_luisa PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

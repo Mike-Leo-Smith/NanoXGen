@@ -138,6 +138,13 @@ struct XgenExpressionFloatContext {
     const XgenFloatExpressionProgram &program,
     const XgenExpressionFloatContext &context);
 
+// Allocation-free CPU evaluation for hot runtime-plan loops. Scratch must
+// contain at least program.instructions.size() floats.
+[[nodiscard]] float evaluate_xgen_scalar_expression_float(
+    const XgenFloatExpressionProgram &program,
+    const XgenExpressionFloatContext &context,
+    std::span<float> scratch);
+
 [[nodiscard]] std::uint32_t xgen_runtime_hash32(
     std::span<const float> arguments) noexcept;
 [[nodiscard]] float xgen_runtime_hash(std::span<const float> arguments) noexcept;

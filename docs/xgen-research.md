@@ -346,10 +346,11 @@ actual renderer-buffer copy.
    modifier outputs, not only evaluated final curves.
 3. Replace the isotropic support kernel with UV/geodesic, direction-dependent
    guide regions and validate interpolation error against those fixtures.
-4. Extend the implemented restricted scalar/ramp XGen-expression IR and Luisa
-   HIP lowering, then add PTEX sampling through a texture indirection table.
-5. Implement remaining modifier passes in authored dependency order: cut/length,
-   clump, coil, collision, and wind. Fuse passes where locality permits and use
+4. Extend the implemented float runtime plan and Luisa HIP lowering with PTEX
+   sampling through a texture indirection table.
+5. Implement remaining modifier passes in authored dependency order. Primitive
+   length/width/taper/ramp and reparameterized Cut are now represented; add
+   clump, coil, collision, authored noise, and wind. Fuse passes where locality permits and use
    explicit intermediate curve buffers where modifiers need neighborhoods.
 6. Expand CUDA/HIP device coverage beyond the tested RX 9070 XT and compare
    LuisaCompute throughput, memory, determinism, and strict/float-mode error

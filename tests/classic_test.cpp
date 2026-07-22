@@ -1,4 +1,5 @@
 #include "nanoxgen/xgen_classic.h"
+#include "nanoxgen/xgen_classic_runtime.h"
 
 #include <cmath>
 #include <functional>
@@ -159,12 +160,95 @@ void test_limits() {
     require_fails(fixture(), "source byte limit exceeded", limits);
 }
 
+void test_float_runtime_plan() {
+    const ClassicCollection collection = parse(
+        "FileVersion 18\n"
+        "Palette\n\tname\tpalette\n\tendAttrs\n"
+        "Description\n\tname\tfloatRuntime\n\tdescriptionId\t7\n\tendAttrs\n"
+        "SplinePrimitive\n"
+        "\tlength\t2\n"
+        "\twidth\t0.2\n"
+        "\ttaper\t0.5\n"
+        "\ttaperStart\t0.5\n"
+        "\twidthRamp\trampUI(0,1,1:1,0.5,1)\n"
+        "\tfxCVCount\t3\n"
+        "\tendAttrs\n"
+        "CutFXModule\n"
+        "\tactive\ttrue\n"
+        "\tname\tcut\n"
+        "\tamount\t0.25*$cLength\n"
+        "\trebuildType\t1\n"
+        "\tendAttrs\n"
+        "\tActive\tSplinePrimitive\n");
+    const ClassicFloatRuntimePlan plan =
+        compile_xgen_classic_float_runtime_plan(
+            collection.descriptions.front());
+    require(plan.lowering_complete(),
+            "self-contained float runtime plan unexpectedly needs fallback");
+    require(plan.fx_cv_count == 3u && plan.cuts.size() == 1u,
+            "float runtime plan metadata mismatch");
+
+    PackedGeneratedCurves curves{};
+    curves.strand_count = 1u;
+    curves.cvs_per_strand = 3u;
+    curves.point_counts = {3u};
+    curves.points = {{0.0f, 0.0f, 0.0f, 0.0f},
+                     {1.0f, 0.0f, 0.0f, 0.0f},
+                     {2.0f, 0.0f, 0.0f, 0.0f}};
+    curves.roots.resize(1u);
+    curves.root_uvs.resize(1u);
+    apply_xgen_classic_float_runtime_plan_cpu(curves, plan);
+    require(std::abs(curves.points[1].x - 1.5f) < 1.0e-6f &&
+                std::abs(curves.points[2].x - 3.0f) < 1.0e-6f,
+            "float runtime length/cut result mismatch");
+    require(std::abs(curves.points[0].radius - 0.1f) < 1.0e-6f &&
+                std::abs(curves.points[1].radius - 0.075f) < 1.0e-6f &&
+                std::abs(curves.points[2].radius - 0.025f) < 1.0e-6f,
+            "float runtime width/taper/ramp result mismatch");
+}
+
+void test_float_runtime_fallbacks_and_validation() {
+    ClassicDescription unsupported{};
+    unsupported.name = "unsupported";
+    unsupported.objects.push_back({"SplinePrimitive", {
+        {"width", "$faceid", 1u}}, 1u});
+    const ClassicFloatRuntimePlan fallback =
+        compile_xgen_classic_float_runtime_plan(unsupported);
+    require(!fallback.lowering_complete() && !fallback.width &&
+                !fallback.fallback_reasons.empty(),
+            "unsupported runtime binding was not retained as fallback");
+
+    ClassicDescription negative{};
+    negative.name = "negative";
+    negative.objects.push_back({"SplinePrimitive", {
+        {"width", "-1", 1u}}, 1u});
+    const ClassicFloatRuntimePlan plan =
+        compile_xgen_classic_float_runtime_plan(negative);
+    PackedGeneratedCurves curves{};
+    curves.strand_count = 1u;
+    curves.cvs_per_strand = 2u;
+    curves.point_counts = {2u};
+    curves.points = {{0.0f, 0.0f, 0.0f, 0.1f},
+                     {0.0f, 1.0f, 0.0f, 0.1f}};
+    curves.roots.resize(1u);
+    try {
+        apply_xgen_classic_float_runtime_plan_cpu(curves, plan);
+    } catch (const std::runtime_error &error) {
+        require(std::string{error.what()}.find("negative") != std::string::npos,
+                "negative width diagnostic mismatch");
+        return;
+    }
+    throw std::runtime_error("negative Classic width was accepted");
+}
+
 } // namespace
 
 int main() try {
     test_typed_parse();
     test_validation();
     test_limits();
+    test_float_runtime_plan();
+    test_float_runtime_fallbacks_and_validation();
     std::cout << "Classic XGen parser tests passed\n";
     return 0;
 } catch (const std::exception &error) {

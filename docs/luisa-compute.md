@@ -56,10 +56,13 @@ reproducible integration boundary.
 uploads 65,536 inputs, evaluates deterministic integer hash and float width
 operations, downloads both outputs, and compares every value with the CPU
 oracle. It also compiles a bounded Classic scalar expression, lowers that SSA
-program into the same Luisa kernel, and checks every downloaded result. It
-prints compilation time, upload/dispatch/download time, expression dispatch
-time, error bounds, and a stable checksum. A second process also exercises
-LuisaCompute's shader cache.
+program into the same Luisa kernel, binds it through
+`ClassicFloatRuntimeExpression` (`id`, `cLength`, and `cWidth`), and checks
+every downloaded result. The direct binding form records values from the
+surrounding generation kernel and does not require a device-side interpreter
+or a temporary expression-input buffer. The test prints compilation time,
+upload/dispatch/download time, expression dispatch time, error bounds, and a
+stable checksum. A second process also exercises LuisaCompute's shader cache.
 
 The runtime boundary is deliberately typed: `XgenFloatExpressionProgram`
 contains float immediates and the Luisa lowering accepts only that program
@@ -89,10 +92,11 @@ No match is expected for NanoXGen's kernels. The July 2026 RX 9070 XT
 (`gfx1201`) run produced no FP64 match in either optimized kernel.
 
 This proves that the actual LuisaCompute HIP runtime works on the selected AMD
-device and that the supported bounded scalar IR is JIT-lowered, not interpreted
-on the host. Authored `rampUI` values are parsed into constant control points
-and lowered with flat, linear, smooth, and spline interpolation. This is not yet
-a claim that a complete Classic XGen description is natively evaluable.
+device and that the supported bounded Classic runtime plan is JIT-lowered, not
+interpreted on the host. Authored `rampUI` values are parsed into constant
+control points and lowered with flat, linear, smooth, and spline interpolation.
+This is not yet a claim that a complete Classic XGen description is natively
+evaluable.
 Unsupported SeExpr, PTEX, modules, and topology operations remain checked errors
 and select the Autodesk fallback until their CPU oracle and Luisa differential
 tests pass.

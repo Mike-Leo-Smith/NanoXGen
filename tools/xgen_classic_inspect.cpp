@@ -1,4 +1,5 @@
 #include "nanoxgen/xgen_classic.h"
+#include "nanoxgen/xgen_classic_runtime.h"
 #include "nanoxgen/xgen_expression.h"
 
 #include <algorithm>
@@ -217,6 +218,8 @@ int main(int argc, char **argv) try {
         }
         const std::vector<ExpressionAnalysis> expressions =
             analyze_expressions(description);
+        const ClassicFloatRuntimePlan runtime_plan =
+            compile_xgen_classic_float_runtime_plan(description);
         std::cout << "{\"name\":\"" << escape_json(description.name)
                   << "\",\"object_count\":" << description.objects.size()
                   << ",\"objects\":{";
@@ -248,7 +251,24 @@ int main(int argc, char **argv) try {
             }
             std::cout << '}';
         }
+        const std::size_t primitive_program_count =
+            static_cast<std::size_t>(runtime_plan.length.has_value()) +
+            static_cast<std::size_t>(runtime_plan.width.has_value()) +
+            static_cast<std::size_t>(runtime_plan.taper.has_value()) +
+            static_cast<std::size_t>(runtime_plan.taper_start.has_value()) +
+            static_cast<std::size_t>(runtime_plan.width_ramp.has_value());
         std::cout << ']'
+                  << ",\"float_runtime_plan\":{\"description_id\":"
+                  << runtime_plan.description_id
+                  << ",\"fx_cv_count\":" << runtime_plan.fx_cv_count
+                  << ",\"primitive_program_count\":"
+                  << primitive_program_count
+                  << ",\"cut_program_count\":" << runtime_plan.cuts.size()
+                  << ",\"lowering_complete\":"
+                  << (runtime_plan.lowering_complete() ? "true" : "false")
+                  << ",\"fallback_reasons\":";
+        write_string_array(runtime_plan.fallback_reasons);
+        std::cout << '}'
                   << ",\"native_generation_ready\":false,\"requirements\":";
         write_string_array(requirements(description));
         std::cout << '}';
