@@ -90,7 +90,8 @@ add_library(nanoxgen STATIC
   src/xgen_classic.cpp
   src/xgen_classic_runtime.cpp
   src/xgen_expression.cpp
-  src/xgen_package.cpp)
+  src/xgen_package.cpp
+  src/xpd.cpp)
 add_library(NanoXGen::nanoxgen ALIAS nanoxgen)
 target_include_directories(nanoxgen PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -138,6 +139,9 @@ target_link_libraries(nanoxgen_xgen_package PRIVATE nanoxgen)
 add_executable(nanoxgen_xgen_classic_inspect tools/xgen_classic_inspect.cpp)
 target_link_libraries(nanoxgen_xgen_classic_inspect PRIVATE nanoxgen)
 
+add_executable(nanoxgen_xpd_inspect tools/xpd_inspect.cpp)
+target_link_libraries(nanoxgen_xpd_inspect PRIVATE nanoxgen)
+
 install(TARGETS nanoxgen
   EXPORT NanoXGenTargets
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -156,6 +160,7 @@ install(TARGETS
   nanoxgen_xgen_read_benchmark
   nanoxgen_xgen_package
   nanoxgen_xgen_classic_inspect
+  nanoxgen_xpd_inspect
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(EXPORT NanoXGenTargets
   FILE NanoXGenTargets.cmake

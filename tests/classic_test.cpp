@@ -1,12 +1,17 @@
 #include "nanoxgen/xgen_classic.h"
 #include "nanoxgen/xgen_classic_runtime.h"
+#include "nanoxgen/xpd.h"
 
+#include <bit>
+#include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <functional>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace nanoxgen;
 
@@ -321,6 +326,67 @@ void test_float_runtime_spline_length_binding() {
     }
 }
 
+void test_xpd3_reader() {
+    std::vector<std::byte> bytes;
+    const auto u8 = [&](std::uint8_t value) {
+        bytes.push_back(static_cast<std::byte>(value));
+    };
+    const auto u32 = [&](std::uint32_t value) {
+        for (unsigned int shift = 0u; shift < 32u; shift += 8u) {
+            u8(static_cast<std::uint8_t>(value >> shift));
+        }
+    };
+    const auto u64 = [&](std::uint64_t value) {
+        u32(static_cast<std::uint32_t>(value));
+        u32(static_cast<std::uint32_t>(value >> 32u));
+    };
+    const auto f32 = [&](float value) { u32(std::bit_cast<std::uint32_t>(value)); };
+    for (const char value : std::string{"XPD3"}) { u8(value); }
+    u8(0u);                   // file version
+    u32(0u);                  // Point
+    u8(1u);                   // primitive version
+    f32(0.0f);                // time
+    u32(1u);                  // CVs
+    u32(0u);                  // World
+    u32(1u);                  // blocks
+    u32(9u);                  // block-string bytes
+    for (const char value : std::string{"Location"}) { u8(value); }
+    u8(0u);
+    u32(6u);                  // floats per point
+    u32(0u);                  // keys
+    u32(0u);                  // key-string bytes
+    u32(1u);                  // faces
+    u32(7u);                  // face ID
+    u32(1u);                  // primitive count
+    constexpr std::uint64_t header_size = 71u;
+    u64(header_size);
+    for (const float value : {1.0f, 0.25f, 0.75f, 4.0f, 5.0f, 6.0f}) {
+        f32(value);
+    }
+    require(bytes.size() == header_size + 24u, "XPD fixture size mismatch");
+    const XpdDocument document = parse_xpd_document(bytes);
+    require(document.blocks.size() == 1u &&
+                document.blocks[0].name == "Location" &&
+                document.blocks[0].floats_per_primitive == 6u,
+            "XPD block metadata mismatch");
+    require(document.faces.size() == 1u &&
+                document.faces[0].face_id == 7 &&
+                document.faces[0].primitive_count == 1u,
+            "XPD face metadata mismatch");
+    std::vector<float> record(6u);
+    copy_xpd_primitive(document, 0u, 0u, 0u, record);
+    require(record == std::vector<float>({1.0f, 0.25f, 0.75f,
+                                          4.0f, 5.0f, 6.0f}),
+            "XPD primitive payload mismatch");
+    bytes.pop_back();
+    try {
+        (void)parse_xpd_document(bytes);
+    } catch (const std::exception &) {
+        return;
+    }
+    throw std::runtime_error("truncated XPD payload was accepted");
+}
+
 } // namespace
 
 int main() try {
@@ -331,6 +397,7 @@ int main() try {
     test_float_runtime_fallbacks_and_validation();
     test_float_runtime_cut_culling();
     test_float_runtime_spline_length_binding();
+    test_xpd3_reader();
     std::cout << "Classic XGen parser tests passed\n";
     return 0;
 } catch (const std::exception &error) {

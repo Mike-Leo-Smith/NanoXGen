@@ -18,6 +18,9 @@ ctest --preset classic-alembic-release
 
 ./build/classic-alembic-release/nanoxgen_xgen_ptex_inspect \
   /external/rabbit/xgen/collections/collection/description/paintmaps/map/patch.ptx
+
+./build/release/nanoxgen_xpd_inspect \
+  /external/rabbit/xgen/collections/collection/description/Clumping1/Points/patch.xuv
 ```
 
 The output path must stay outside the repository for production assets. The
@@ -28,6 +31,13 @@ positions/derivatives and a bounded per-face tessellation for root sampling;
 polygon patches use their cage directly. The result passes normal `.nxg`
 validation. Missing or ambiguous patch objects, bad topology, non-finite
 values, invalid guide ranges, and limit overflows are checked errors.
+
+The default core also contains an independent, bounds-checked XPD3 reader for
+XPD/XUV block metadata and little-endian float records. It does not link
+`libAdskXpd`. On Rabbit `mm/Clumping1`, the native inspector and Autodesk's
+public `XpdReader` agree on all 4,040 six-float `Location` records. Reading the
+point file is only the input layer; a package is not declared native-compatible
+until the owning Clumping evaluation is lowered as well.
 
 The same preset builds a float-only, bounds-checked facade over the system Ptex
 reader. It exposes face metadata, normalized face/UV filtering, and unpacked
