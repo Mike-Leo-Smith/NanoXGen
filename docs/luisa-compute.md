@@ -50,17 +50,49 @@ libraries and loads the selected backend plug-in at runtime. It does not use
 source directory while compiling HIPRT, so a standalone upstream build is the
 reproducible integration boundary.
 
-## Current proof and next lowering stage
+## Float-only expression lowering
 
 `nanoxgen_luisa_tests` records a C++ kernel into Luisa AST/XIR, JIT-compiles it,
 uploads 65,536 inputs, evaluates deterministic integer hash and float width
 operations, downloads both outputs, and compares every value with the CPU
-oracle. It prints compilation time, upload/dispatch/download time, and a stable
-checksum. A second process also exercises LuisaCompute's shader cache.
+oracle. It also compiles a bounded Classic scalar expression, lowers that SSA
+program into the same Luisa kernel, and checks every downloaded result. It
+prints compilation time, upload/dispatch/download time, expression dispatch
+time, error bounds, and a stable checksum. A second process also exercises
+LuisaCompute's shader cache.
+
+The runtime boundary is deliberately typed: `XgenFloatExpressionProgram`
+contains float immediates and the Luisa lowering accepts only that program
+type. Device contexts, inputs, expression values, hashes, and random values use
+only `float` and `uint32`. The strict Autodesk/SeExpr calibration evaluator is
+a separate CPU path that retains `double`, because replacing it would make the
+oracle itself inaccurate. It is converted once to the compact float runtime IR
+and is never captured by a Luisa callable or kernel.
+
+The fast float hash/random sequence is NanoXGen-stable but is not bit-compatible
+with Autodesk's double-based SeExpr sequence. This is an explicit execution
+mode, not an unnoticed precision change. Strict Autodesk acceptance tests keep
+using the CPU calibration mode.
+
+For a generated-code audit, LuisaCompute's HIP backend can dump its optimized
+LLVM IR outside the repository:
+
+```bash
+mkdir -p /tmp/nanoxgen-llvm-audit
+cd /tmp/nanoxgen-llvm-audit
+LUISA_DUMP_LLVM_IR=1 \
+  /path/to/nanoxgen_luisa_tests /path/to/luisa/runtime hip
+rg 'double|f64|llvm\.fma\.f64' hip_kernel_after_opt_*.ll
+```
+
+No match is expected for NanoXGen's kernels. The July 2026 RX 9070 XT
+(`gfx1201`) run produced no FP64 match in either optimized kernel.
 
 This proves that the actual LuisaCompute HIP runtime works on the selected AMD
-device; it is not yet a claim that a complete Classic XGen description is
-natively evaluable. The next layer lowers the bounded Classic expression and
-generation IR into Luisa callables/kernels. Unsupported SeExpr, PTEX, module,
-or topology operations remain checked errors and select the Autodesk fallback
-until their CPU oracle and Luisa differential tests pass.
+device and that the supported bounded scalar IR is JIT-lowered, not interpreted
+on the host. Authored `rampUI` values are parsed into constant control points
+and lowered with flat, linear, smooth, and spline interpolation. This is not yet
+a claim that a complete Classic XGen description is natively evaluable.
+Unsupported SeExpr, PTEX, modules, and topology operations remain checked errors
+and select the Autodesk fallback until their CPU oracle and Luisa differential
+tests pass.

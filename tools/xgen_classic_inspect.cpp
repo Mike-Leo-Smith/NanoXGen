@@ -1,4 +1,5 @@
 #include "nanoxgen/xgen_classic.h"
+#include "nanoxgen/xgen_expression.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -93,6 +94,65 @@ std::vector<std::string> requirements(const ClassicDescription &description) {
     return result;
 }
 
+struct ExpressionAnalysis {
+    std::string object_type;
+    std::string attribute;
+    std::string status;
+    std::vector<std::string> inputs;
+    std::size_t instruction_count{};
+    std::string diagnostic;
+};
+
+bool is_expression_candidate(std::string_view value) {
+    constexpr std::string_view functions[]{
+        "hash(", "rand(", "map(", "rampUI(", "noise(", "fit("};
+    if (std::any_of(std::begin(functions), std::end(functions),
+                    [&](std::string_view function) {
+                        return value.find(function) != std::string_view::npos;
+                    })) {
+        return true;
+    }
+    return !value.empty() && value.front() == '$' &&
+           (value.find('=') != std::string_view::npos ||
+            value.find('?') != std::string_view::npos);
+}
+
+std::vector<ExpressionAnalysis> analyze_expressions(
+    const ClassicDescription &description) {
+    std::vector<ExpressionAnalysis> result;
+    auto analyze = [&](std::string_view object_type,
+                       const std::vector<ClassicAttribute> &attributes) {
+        for (const ClassicAttribute &attribute : attributes) {
+            if (!is_expression_candidate(attribute.value)) { continue; }
+            ExpressionAnalysis analysis{};
+            analysis.object_type = object_type;
+            analysis.attribute = attribute.name;
+            try {
+                XgenExpressionCompileOptions options{};
+                options.expression_name = attribute.name;
+                options.object_type = object_type;
+                XgenExpressionProgram program =
+                    compile_xgen_scalar_expression(attribute.value, options);
+                analysis.status = "compiled-scalar";
+                analysis.inputs = std::move(program.inputs);
+                analysis.instruction_count = program.instructions.size();
+            } catch (const std::exception &error) {
+                analysis.diagnostic = error.what();
+                analysis.status = analysis.diagnostic.find("PTEX binding") !=
+                                          std::string::npos
+                                      ? "external-ptex"
+                                      : "unsupported";
+            }
+            result.emplace_back(std::move(analysis));
+        }
+    };
+    analyze("Description", description.attributes);
+    for (const ClassicObject &object : description.objects) {
+        analyze(object.type, object.attributes);
+    }
+    return result;
+}
+
 void write_string_array(const std::vector<std::string> &values) {
     std::cout << '[';
     for (std::size_t index = 0u; index < values.size(); ++index) {
@@ -155,6 +215,8 @@ int main(int argc, char **argv) try {
             guides += patch.guides.size();
             guide_cvs += patch.guide_cvs.size();
         }
+        const std::vector<ExpressionAnalysis> expressions =
+            analyze_expressions(description);
         std::cout << "{\"name\":\"" << escape_json(description.name)
                   << "\",\"object_count\":" << description.objects.size()
                   << ",\"objects\":{";
@@ -168,6 +230,25 @@ int main(int argc, char **argv) try {
                   << ",\"face_id_count\":" << face_ids
                   << ",\"guide_count\":" << guides
                   << ",\"guide_cv_count\":" << guide_cvs
+                  << ",\"expression_analysis\":[";
+        for (std::size_t index = 0u; index < expressions.size(); ++index) {
+            if (index != 0u) { std::cout << ','; }
+            const ExpressionAnalysis &analysis = expressions[index];
+            std::cout << "{\"object_type\":\""
+                      << escape_json(analysis.object_type)
+                      << "\",\"attribute\":\""
+                      << escape_json(analysis.attribute)
+                      << "\",\"status\":\"" << analysis.status
+                      << "\",\"instruction_count\":"
+                      << analysis.instruction_count << ",\"inputs\":";
+            write_string_array(analysis.inputs);
+            if (!analysis.diagnostic.empty()) {
+                std::cout << ",\"diagnostic\":\""
+                          << escape_json(analysis.diagnostic) << '"';
+            }
+            std::cout << '}';
+        }
+        std::cout << ']'
                   << ",\"native_generation_ready\":false,\"requirements\":";
         write_string_array(requirements(description));
         std::cout << '}';

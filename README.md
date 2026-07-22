@@ -21,6 +21,8 @@ The current prototype provides:
   kernels;
 - an explicit LuisaCompute `next` JIT integration, tested through its WIP HIP
   backend on AMD, without adding it to default core dependencies;
+- a bounded scalar Classic-expression SSA compiler with a strict CPU
+  Autodesk/SeExpr calibration mode and a separate float-only Luisa runtime IR;
 - executable CPU/GPU parity suites plus GPU-resident JSON benchmarks;
 - direct CPU/CUDA/HIP generation into renderer `float4(position, radius)` and
   fixed `pointCounts` buffers, with checked device capacities and deformation

@@ -23,6 +23,13 @@ find_path(XGen_INCLUDE_DIR
   HINTS ${_XGEN_HINTS}
   PATH_SUFFIXES include)
 
+# Public core headers such as XgExpression.h include Maya's bundled Ptex
+# headers. Keep that SDK include path scoped to explicit XGen consumers.
+find_path(XGen_MAYA_INCLUDE_DIR
+  NAMES Ptex/PtexVersion.h
+  HINTS ${_XGEN_HINTS}
+  PATH_SUFFIXES ../../include)
+
 find_library(XGen_LIBRARY
   NAMES AdskXGen libAdskXGen
   HINTS ${_XGEN_HINTS}
@@ -35,13 +42,14 @@ find_library(XGen_CLEW_LIBRARY
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(XGen
-  REQUIRED_VARS XGen_INCLUDE_DIR XGen_LIBRARY XGen_CLEW_LIBRARY)
+  REQUIRED_VARS
+    XGen_INCLUDE_DIR XGen_MAYA_INCLUDE_DIR XGen_LIBRARY XGen_CLEW_LIBRARY)
 
 if(XGen_FOUND AND NOT TARGET XGen::XGen)
   add_library(XGen::XGen UNKNOWN IMPORTED)
   set_target_properties(XGen::XGen PROPERTIES
     IMPORTED_LOCATION "${XGen_LIBRARY}"
-    INTERFACE_INCLUDE_DIRECTORIES "${XGen_INCLUDE_DIR}"
+    INTERFACE_INCLUDE_DIRECTORIES "${XGen_INCLUDE_DIR};${XGen_MAYA_INCLUDE_DIR}"
     INTERFACE_LINK_LIBRARIES "${XGen_CLEW_LIBRARY}")
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Autodesk's shared objects carry dependencies supplied by Maya's supported
@@ -67,4 +75,5 @@ if(XGen_FOUND AND NOT TARGET XGen::XGen)
   endif()
 endif()
 
-mark_as_advanced(XGen_INCLUDE_DIR XGen_LIBRARY XGen_CLEW_LIBRARY)
+mark_as_advanced(
+  XGen_INCLUDE_DIR XGen_MAYA_INCLUDE_DIR XGen_LIBRARY XGen_CLEW_LIBRARY)

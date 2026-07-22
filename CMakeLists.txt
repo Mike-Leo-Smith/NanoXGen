@@ -86,6 +86,7 @@ add_library(nanoxgen STATIC
   src/curve_payload.cpp
   src/xgen.cpp
   src/xgen_classic.cpp
+  src/xgen_expression.cpp
   src/xgen_package.cpp)
 add_library(NanoXGen::nanoxgen ALIAS nanoxgen)
 target_include_directories(nanoxgen PUBLIC
@@ -180,6 +181,9 @@ if(NANOXGEN_BUILD_TESTS)
   add_executable(nanoxgen_classic_tests tests/classic_test.cpp)
   target_link_libraries(nanoxgen_classic_tests PRIVATE nanoxgen)
   add_test(NAME nanoxgen_classic_tests COMMAND nanoxgen_classic_tests)
+  add_executable(nanoxgen_expression_tests tests/expression_test.cpp)
+  target_link_libraries(nanoxgen_expression_tests PRIVATE nanoxgen)
+  add_test(NAME nanoxgen_expression_tests COMMAND nanoxgen_expression_tests)
 endif()
 
 if(NANOXGEN_ENABLE_CUDA)
@@ -246,9 +250,16 @@ if(NANOXGEN_ENABLE_LUISA)
     message(FATAL_ERROR
       "LuisaCompute backend plug-in not found: ${_nanoxgen_luisa_plugin}")
   endif()
+  add_library(nanoxgen_luisa STATIC src/luisa/xgen_expression.cpp)
+  add_library(NanoXGen::nanoxgen_luisa ALIAS nanoxgen_luisa)
+  target_include_directories(
+    nanoxgen_luisa PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_features(nanoxgen_luisa PUBLIC cxx_std_20)
+  target_link_libraries(
+    nanoxgen_luisa PUBLIC nanoxgen LuisaComputeNext::DSL)
   add_executable(nanoxgen_luisa_tests tests/luisa_test.cpp)
   target_link_libraries(
-    nanoxgen_luisa_tests PRIVATE nanoxgen LuisaComputeNext::DSL)
+    nanoxgen_luisa_tests PRIVATE nanoxgen_luisa)
   if(NANOXGEN_BUILD_TESTS)
     add_test(NAME nanoxgen_luisa_tests
       COMMAND nanoxgen_luisa_tests
@@ -281,12 +292,16 @@ if(NANOXGEN_BUILD_CALIBRATION)
   add_executable(nanoxgen_xgen_modifier_probe tools/xgen_modifier_probe.cpp)
   target_link_libraries(nanoxgen_xgen_modifier_probe PRIVATE nanoxgen XGen::XGen)
   target_compile_features(nanoxgen_xgen_modifier_probe PRIVATE cxx_std_20)
+  add_executable(nanoxgen_xgen_expression_oracle tools/xgen_expression_oracle.cpp)
+  target_link_libraries(nanoxgen_xgen_expression_oracle PRIVATE XGen::XGen)
+  target_compile_features(nanoxgen_xgen_expression_oracle PRIVATE cxx_std_20)
   set_target_properties(
     nanoxgen_xgen_probe
     nanoxgen_xgen_parity
     nanoxgen_xgen_benchmark
     nanoxgen_xgen_cache_oracle
     nanoxgen_xgen_modifier_probe
+    nanoxgen_xgen_expression_oracle
     PROPERTIES SKIP_BUILD_RPATH TRUE)
 endif()
 

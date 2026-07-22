@@ -244,7 +244,7 @@ BLOB from the renderer-relevant curve view.
 | Cut and width taper parity | verified on linear official fixtures |
 | XGen noise core | implemented and oracle-verified; scalar mask/default linear magnitude ramp only |
 | XGen clump/coil/collision | not implemented |
-| XGen expressions and PTEX | not implemented |
+| XGen expressions and PTEX | bounded scalar/ramp IR and float-only Luisa lowering implemented; PTEX and full generator wiring remain |
 | Camera-frustum generation culling | not implemented |
 | Classic archive/card/sphere primitives | outside the current curve-only scope |
 
