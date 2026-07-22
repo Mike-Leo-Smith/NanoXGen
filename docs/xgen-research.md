@@ -121,6 +121,34 @@ identical. Noise remains an oracle-only fixture because NanoXGen's current
 sinusoidal noise is not XGen's random field; clump and guide modifiers remain
 future parity work.
 
+## Modifier-identification harness
+
+`scripts/run_xgen_modifier_study.sh` isolates official IGS modifier behavior
+without inspecting private code or in-memory layouts. It first dumps the public
+Maya attribute schemas for noise, cut, clump, coil, and collision candidate
+nodes. This prevents implementation from being built around guessed node or
+attribute names.
+
+The initial matrix varies noise magnitude, frequency, correlation, and
+`preserveLength`, repeats an identical fixture, and evaluates both
+`noise -> cut` and `cut -> noise`. The companion differential probe canonically
+matches curves by `faceId + faceUV + patchUV` and reports:
+
+- root drift and deterministic displacement hashes;
+- per-CV displacement envelopes;
+- tangent and normal displacement components;
+- base/target arc-length ratios and relative errors;
+- width changes;
+- distance-binned cosine correlation between tip displacement vectors.
+
+The verifier asserts only model-independent invariants: zero magnitude is an
+identity, roots remain fixed, identical fixtures repeat, magnitude scales
+displacement monotonically, parameters change the field, full length
+preservation does not worsen arc-length error, and modifier order is observable.
+These measurements are intended to falsify candidate noise models before any
+one model is promoted to a parity implementation. Clump experiments will be
+constructed from the captured public schema rather than hard-coded guesses.
+
 ## CPU and renderer-payload performance snapshot
 
 Measured in one shared container with 9 logical CPUs, optimized builds, 12 CVs

@@ -31,6 +31,12 @@ def main() -> None:
     parser.add_argument("--noise-frequency", type=float, default=1.0)
     parser.add_argument("--noise-correlation", type=float, default=0.0)
     parser.add_argument("--noise-preserve-length", type=float, default=0.0)
+    parser.add_argument(
+        "--modifier-order",
+        choices=("noise-cut", "cut-noise"),
+        default="noise-cut",
+        help="evaluation order when both noise and cut are present",
+    )
     args = parser.parse_args()
     args.output = args.output.resolve()
     if args.scene:
@@ -94,30 +100,31 @@ def main() -> None:
                 cmds.setAttr(f"{node}.{attribute}", value)
             return node
 
-        modifiers = []
+        modifier_specs = {}
         if args.noise_magnitude is not None:
-            modifiers.append(
-                insert_modifier(
-                    "xgmModifierNoise",
-                    {
-                        "magnitude": args.noise_magnitude,
-                        "frequency": args.noise_frequency,
-                        "correlation": args.noise_correlation,
-                        "preserveLength": args.noise_preserve_length,
-                    },
-                )
+            modifier_specs["noise"] = (
+                "xgmModifierNoise",
+                {
+                    "magnitude": args.noise_magnitude,
+                    "frequency": args.noise_frequency,
+                    "correlation": args.noise_correlation,
+                    "preserveLength": args.noise_preserve_length,
+                },
             )
         if args.cut_percent is not None:
-            modifiers.append(
-                insert_modifier(
-                    "xgmModifierCut",
-                    {
-                        "cutMode": 1,
-                        "percentage": args.cut_percent,
-                        "redistributingCV": True,
-                    },
-                )
+            modifier_specs["cut"] = (
+                "xgmModifierCut",
+                {
+                    "cutMode": 1,
+                    "percentage": args.cut_percent,
+                    "redistributingCV": True,
+                },
             )
+        modifiers = []
+        for modifier_name in args.modifier_order.split("-"):
+            if modifier_name in modifier_specs:
+                node_type, attributes = modifier_specs[modifier_name]
+                modifiers.append(insert_modifier(node_type, attributes))
         plug = f"{description}.outRenderData"
 
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -146,6 +153,7 @@ def main() -> None:
                     "blob_bytes": args.output.stat().st_size,
                     "mesh": args.mesh,
                     "modifiers": modifiers,
+                    "modifier_order": args.modifier_order,
                     "fixture_ms": (time.perf_counter_ns() - fixture_start) / 1.0e6,
                     "export_ms": export_ms,
                 },

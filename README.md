@@ -63,6 +63,18 @@ per-attribute comparisons. The complex case contains 244 nine-CV strands on a
 wave surface with cut and width taper. Maya and its generated BLOBs remain
 external to this repository.
 
+Run the clean-room modifier-identification matrix separately:
+
+```bash
+./scripts/run_xgen_modifier_study.sh
+```
+
+It records the public Maya schemas for noise, cut, clump, coil, and collision
+nodes, then sweeps noise magnitude, frequency, correlation, length preservation,
+and noise/cut order. A differential probe reports root drift, per-CV
+displacement, tangent/normal components, arc-length change, width change, and
+spatial correlation. Generated Autodesk BLOBs stay under ignored build output.
+
 Run the benchmark separately:
 
 ```bash

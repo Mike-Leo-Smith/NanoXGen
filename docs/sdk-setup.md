@@ -75,6 +75,11 @@ the public API's BLOB load/execute/iteration stages. The Maya export number
 includes serialization and fixed host overhead and is not an apples-to-apples
 kernel timing.
 
+To identify modifier semantics through controlled public input/output tests,
+run `scripts/run_xgen_modifier_study.sh`. It also writes
+`modifier-schema.json` from Maya's public node attributes, avoiding guessed
+clump/coil/collision parameter names before those fixture families are added.
+
 To profile the exact renderer bridge (`asMObject`, `writeBinary`, load,
 execute, and materialization) inside Maya, run:
 
