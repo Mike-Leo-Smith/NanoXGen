@@ -92,12 +92,16 @@ subdivision, PTEX binding, and modifier parity boundary.
 
 The combined Luisa/Classic preset builds a no-shader-cache cold benchmark from
 the authoring collection, Alembic patch, PTEX density, exact roots and guide
-associations through the final renderer points. The Rabbit eyelash description
-currently completes this path with no Autodesk fallback, matches Maya's
-1514-curve/25738-point topology, and passes the recorded geometry tolerance.
-Seven other Rabbit descriptions expose ClumpingFX and map-expression gaps;
-`head_A` lowers but fails its final NoiseFX geometry oracle, so it is also not
-reported as native-compatible.
+associations through the final renderer points. The Rabbit `eyelash`
+description currently completes this path with no Autodesk fallback, matches
+Maya's 1514-curve/25738-point topology, and passes the recorded geometry
+tolerance. `head_A` also runs all four Noise/Cut passes with no fallback and
+matches its 307791-curve/5232447-point topology. Its CPU result has about
+`4.13e-6` position RMS error against Maya, but a subdivision-boundary strand
+reaches `3.16e-3`, so it still fails the strict `1e-3` maximum-error gate.
+Seven other Rabbit descriptions retain explicit ClumpingFX, PTEX-expression,
+or unsupported-expression fallbacks; the complete Rabbit package is not yet
+claimed as native-compatible.
 
 The Makefile is a fallback for minimal CPU-only environments:
 

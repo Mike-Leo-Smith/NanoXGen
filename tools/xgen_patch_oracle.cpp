@@ -500,6 +500,7 @@ int main(int argc, char **argv) try {
         for (const Sample &sample : samples) {
             primitive->setActivePatchFace(*matched_patch, sample.face);
             if (primitive_id) { primitive->setId(*primitive_id); }
+            primitive->findGuidesAndWeights(sample.u, sample.v);
             primitive->makeGeometry(sample.u, sample.v, stop_at);
             if (apply_fx) { primitive->applyFXModules(stop_at); }
             const auto &points = primitive->getGeom();

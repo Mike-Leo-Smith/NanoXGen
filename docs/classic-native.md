@@ -69,14 +69,16 @@ per-face primitive IDs, exact SeExpr random prefixes, and directional guide
 association. Classic guide CVs are interpreted in XGen's local
 `(tangent, normal, binormal)` patch frame and uniformly rebuilt before blending.
 
-On the local Rabbit eyelash description this produces 1519 roots and, after
+On the local Rabbit `eyelash` description this produces 1519 roots and, after
 NoiseFX/CutFX culling and renderer endpoints, exactly 1514 curves and 25738
 points like Maya, with no fallback, and stays within the recorded geometry
-tolerance. Seven other descriptions retain explicit ClumpingFX,
+tolerance. `head_A` lowers all four scalar/Noise/Cut passes with no fallback and
+matches Maya's 307791-curve/5232447-point topology. Matching XGen's internal
+Noise coordinate units and fixed `SgCurve::length` sampling reduced its full
+CPU result to about `4.13e-6` RMS position error, with a `3.16e-3` maximum on a
+subdivision-boundary strand. It therefore remains outside the strict `1e-3`
+maximum-error gate. Seven other descriptions retain explicit ClumpingFX,
 PTEX-backed primitive length/width, or unsupported-expression fallbacks.
-`head_A` currently lowers all of its scalar/Noise/Cut passes and matches Maya's
-307791-curve/5232447-point topology, but its first NoiseFX stage fails the
-geometry oracle; it is therefore not treated as native-compatible.
 
 ## Current parity boundary
 

@@ -293,6 +293,34 @@ void test_float_runtime_cut_culling() {
             "fully cut Classic strand was not culled");
 }
 
+void test_float_runtime_spline_length_binding() {
+    ClassicDescription description{};
+    description.name = "splineLength";
+    description.objects.push_back({"SplinePrimitive", {
+        {"fxCVCount", "4", 1u}, {"width", "$cLength", 2u}}, 1u});
+    const ClassicFloatRuntimePlan plan =
+        compile_xgen_classic_float_runtime_plan(description);
+    require(plan.lowering_complete(),
+            "spline-length binding fixture unexpectedly needs fallback");
+    PackedGeneratedCurves curves{};
+    curves.strand_count = 1u;
+    curves.cvs_per_strand = 4u;
+    curves.point_counts = {4u};
+    curves.points = {{0.0f, 0.0f, 0.0f, 0.0f},
+                     {1.0f, 1.0f, 0.0f, 0.0f},
+                     {2.0f, -1.0f, 0.0f, 0.0f},
+                     {3.0f, 0.0f, 0.0f, 0.0f}};
+    curves.roots.resize(1u);
+    apply_xgen_classic_float_runtime_plan_cpu(curves, plan);
+    // Autodesk SgCurve::length uses exactly 2*N+4 fixed intervals and raw
+    // endpoint CVs. This oracle is 0.5 * 3.796864797465667; the control
+    // polygon would incorrectly produce a radius near 2.53225.
+    for (const PackedCurvePoint point : curves.points) {
+        require(std::abs(point.radius - 1.8984324f) < 2.0e-6f,
+                "Classic $cLength did not use SgCurve fixed sampling");
+    }
+}
+
 } // namespace
 
 int main() try {
@@ -302,6 +330,7 @@ int main() try {
     test_float_runtime_plan();
     test_float_runtime_fallbacks_and_validation();
     test_float_runtime_cut_culling();
+    test_float_runtime_spline_length_binding();
     std::cout << "Classic XGen parser tests passed\n";
     return 0;
 } catch (const std::exception &error) {

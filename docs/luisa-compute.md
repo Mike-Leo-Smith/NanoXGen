@@ -142,11 +142,19 @@ Maya typed evaluation/copy median was 259.81 ms (p90 263.85 ms). Thus portable
 CPU is 2.81x and native+LTO CPU is 2.86x faster than Maya for this description.
 Cold HIP and Vulkan are 3.43x and 2.87x slower than Maya because JIT consumes
 748 and 641 ms respectively. Warm GPU dispatch is intentionally not presented
-as the requested cold speedup. Full Rabbit remains incomplete: seven
-descriptions have explicit ClumpingFX/PTEX/expression fallbacks, while `head_A`
-lowers and matches topology
-but fails its first NoiseFX geometry oracle. A zero lowering-fallback count is
-therefore reported separately from `oracle_within_tolerance`.
+as the requested cold speedup.
+
+After matching the internal Noise coordinate unit and Autodesk's fixed
+`SgCurve::length` approximation, a fresh no-cache HIP run of Rabbit `head_A`
+processed 307791 curves / 5232447 renderer points with all four effects and
+`fallback_count=0`. It measured 4784.1 ms cold, including 4304.1 ms allocation
+and JIT, and 10.78 ms warm median. HIP differed from the native CPU path by at
+most `1.78e-3`; both reached about `3.16e-3` maximum position error against the
+Maya oracle because of the same subdivision-boundary outlier. Thus `head_A`
+still fails the strict `1e-3` maximum-error gate even though the CPU RMS error is
+about `4.13e-6`. Full Rabbit remains incomplete: seven descriptions have
+explicit ClumpingFX/PTEX/expression fallbacks. A zero lowering-fallback count is
+reported separately from `oracle_within_tolerance`.
 
 The Luisa `fallback` backend built against system LLVM 22/Embree 4.4.1 on this
 Arch host but crashed in its generated worker code even for the small parity

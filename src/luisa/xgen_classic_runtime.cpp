@@ -6,6 +6,7 @@
 #include <luisa/core/stl/vector.h>
 #include <luisa/dsl/constant.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -48,18 +49,6 @@ ClassicFloatRuntimeLuisaContext make_context(
             root_runtime.read(strand * 2u + 1u), true};
 }
 
-Float polyline_length(const BufferFloat4 &points, Expr<uint> first,
-                      std::uint32_t cvs_per_strand) noexcept {
-    Float length{0.0f};
-    Float3 previous = points.read(first).xyz();
-    for (std::uint32_t cv = 1u; cv < cvs_per_strand; ++cv) {
-        const Float3 current = points.read(first + cv).xyz();
-        length += sqrt(dot(current - previous, current - previous));
-        previous = current;
-    }
-    return length;
-}
-
 Float3 xgen_curve_eval(const BufferFloat4 &points, Expr<uint> first,
                        Expr<float> parameter,
                        std::uint32_t cvs_per_strand) noexcept {
@@ -89,6 +78,89 @@ Float3 xgen_curve_eval(const BufferFloat4 &points, Expr<uint> first,
         (p0 * b0 + p1 * b1 + p2 * b2 + p3 * b3) * (1.0f / 6.0f);
     return ite(parameter < 1.0e-7f, first_point,
                ite(parameter > 1.0f - 1.0e-7f, last_point, cubic));
+}
+
+Float polyline_length(const BufferFloat4 &points, Expr<uint> first,
+                      std::uint32_t cvs_per_strand) noexcept {
+    Float length{0.0f};
+    Float3 previous = points.read(first).xyz();
+    for (std::uint32_t cv = 1u; cv < cvs_per_strand; ++cv) {
+        const Float3 current = points.read(first + cv).xyz();
+        const Float3 delta = current - previous;
+        length += sqrt(dot(delta, delta));
+        previous = current;
+    }
+    return length;
+}
+
+Float polyline_length(const vector<Expr<float3>> &points) noexcept {
+    Float length{0.0f};
+    for (std::uint32_t cv = 1u; cv < points.size(); ++cv) {
+        const Float3 delta = points[cv] - points[cv - 1u];
+        length += sqrt(dot(delta, delta));
+    }
+    return length;
+}
+
+Float xgen_curve_length(const BufferFloat4 &points, Expr<uint> first,
+                        std::uint32_t cvs_per_strand) noexcept {
+    const std::uint32_t interval_count = 2u * cvs_per_strand + 4u;
+    const float step = 1.0f / static_cast<float>(interval_count);
+    Float3 previous = points.read(first).xyz();
+    Float length{0.0f};
+    for (std::uint32_t sample = 1u; sample < interval_count; ++sample) {
+        const Float3 current = xgen_curve_eval(
+            points, first, step * static_cast<float>(sample),
+            cvs_per_strand);
+        const Float3 delta = current - previous;
+        length += sqrt(dot(delta, delta));
+        previous = current;
+    }
+    const Float3 delta =
+        points.read(first + cvs_per_strand - 1u).xyz() - previous;
+    return length + sqrt(dot(delta, delta));
+}
+
+Float3 xgen_curve_eval(const vector<Expr<float3>> &points,
+                       float parameter) noexcept {
+    const std::uint32_t spans = static_cast<std::uint32_t>(points.size() - 1u);
+    const float scaled = parameter * static_cast<float>(spans);
+    const std::uint32_t span = std::min(
+        static_cast<std::uint32_t>(scaled), spans - 1u);
+    const float f = scaled - static_cast<float>(span);
+    const float f2 = f * f;
+    const float f3 = f2 * f;
+    const float one_minus_f = 1.0f - f;
+    const float b0 = one_minus_f * one_minus_f * one_minus_f;
+    const float b1 = 3.0f * f3 - 6.0f * f2 + 4.0f;
+    const float b2 = -3.0f * f3 + 3.0f * f2 + 3.0f * f + 1.0f;
+    const float b3 = f3;
+    const Float3 p0 = span == 0u
+        ? Float3{points[0u] * 2.0f - points[1u]}
+        : Float3{points[span - 1u]};
+    const Float3 p1 = points[span];
+    const Float3 p2 = points[span + 1u];
+    const Float3 p3 = span + 2u == points.size()
+        ? Float3{points.back() * 2.0f - points[points.size() - 2u]}
+        : Float3{points[span + 2u]};
+    return (p0 * b0 + p1 * b1 + p2 * b2 + p3 * b3) * (1.0f / 6.0f);
+}
+
+Float xgen_curve_length(const vector<Expr<float3>> &points) noexcept {
+    const std::uint32_t interval_count =
+        2u * static_cast<std::uint32_t>(points.size()) + 4u;
+    const float step = 1.0f / static_cast<float>(interval_count);
+    Float3 previous = points.front();
+    Float length{0.0f};
+    for (std::uint32_t sample = 1u; sample < interval_count; ++sample) {
+        const Float3 current = xgen_curve_eval(
+            points, step * static_cast<float>(sample));
+        const Float3 delta = current - previous;
+        length += sqrt(dot(delta, delta));
+        previous = current;
+    }
+    const Float3 delta = points.back() - previous;
+    return length + sqrt(dot(delta, delta));
 }
 
 Float xgen_noise(const Constant<float> &gradients,
@@ -192,7 +264,8 @@ ClassicRuntimePrimitiveKernel make_classic_runtime_primitive_kernel(
         const UInt strand = dispatch_id().x;
         const UInt first = strand * cvs_per_strand;
         const Float4 root_point = source.read(first);
-        const Float base_length = polyline_length(source, first, cvs_per_strand);
+        const Float base_length = xgen_curve_length(
+            source, first, cvs_per_strand);
         const auto base_context = make_context(
             plan, strand, roots, root_runtime, base_length,
             radius_scale > 0.0f ? 2.0f * root_point.w / radius_scale : 0.0f,
@@ -247,7 +320,8 @@ ClassicRuntimeCutKernel make_classic_runtime_cut_kernel(
         set_block_size(128u, 1u, 1u);
         const UInt strand = dispatch_id().x;
         const UInt first = strand * cvs_per_strand;
-        const Float input_length = polyline_length(source, first, cvs_per_strand);
+        const Float input_length = xgen_curve_length(
+            source, first, cvs_per_strand);
         const Float4 state = states.read(strand);
         const auto context = make_context(
             plan, strand, roots, root_runtime,
@@ -285,22 +359,19 @@ ClassicRuntimeCutKernel make_classic_runtime_cut_kernel(
             previous_parameter = ite(was_finished, previous_parameter, parameter);
             previous = ite(was_finished, previous, current);
         }
-        Float3 previous_output = source.read(first).xyz();
-        Float rebuilt_length{0.0f};
+        vector<Expr<float3>> rebuilt;
+        rebuilt.reserve(cvs_per_strand);
         for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
             const Float parameter = cut_parameter *
                 (static_cast<float>(cv) /
                  static_cast<float>(cvs_per_strand - 1u));
             const Float3 sampled = xgen_curve_eval(
                 source, first, parameter, cvs_per_strand);
-            if (cv != 0u) {
-                rebuilt_length += sqrt(dot(
-                    sampled - previous_output, sampled - previous_output));
-            }
-            previous_output = sampled;
+            rebuilt.emplace_back(sampled);
             destination.write(first + cv,
                               make_float4(sampled, source.read(first + cv).w));
         }
+        const Float rebuilt_length = xgen_curve_length(rebuilt);
         states.write(strand, make_float4(
             ite(cut_parameter < 1.0e-4f, -1.0f, rebuilt_length),
             state.y, state.z, state.w));
@@ -332,11 +403,13 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
         const Float3 surface_normal = roots.read<float3>(
             root_offset + static_cast<uint>(offsetof(RootSample, normal)));
         const Float4 state = states.read(strand);
+        const Float c_length = xgen_curve_length(
+            source, first, cvs_per_strand);
         const Float original_length = polyline_length(
             source, first, cvs_per_strand);
         auto context = make_context(
             plan, strand, roots, root_runtime,
-            original_length, state.y, 0.0f);
+            c_length, state.y, 0.0f);
         const Float mask = clamp(
             lower_classic_runtime_expression(noise.mask, context), 0.0f, 1.0f);
         const Float frequency = max(
@@ -358,7 +431,8 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
             100.0f * decorrelation * decorrelation;
         const Float3 root = source.read(first).xyz();
         const Float3 domain =
-            (root + make_float3(0.419276f, 0.184247f, 0.805721f)) *
+            (root * 0.1f +
+             make_float3(0.419276f, 0.184247f, 0.805721f)) *
             domain_scale;
         const Float3 normalized_surface_normal = safe_normalize(
             surface_normal, make_float3(0.0f, 1.0f, 0.0f));
@@ -407,7 +481,7 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
             const Float3 tangent = cross(binormal, normal);
             const auto cv_context = make_context(
                 plan, strand, roots, root_runtime,
-                original_length, state.y,
+                c_length, state.y,
                 static_cast<float>(cv) /
                     static_cast<float>(cvs_per_strand - 1u));
             const Float magnitude = max(
@@ -435,11 +509,7 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
             prior_tangent = next_tangent;
             previous_base = current_base;
         }
-        Float noisy_length{0.0f};
-        for (std::uint32_t cv = 1u; cv < cvs_per_strand; ++cv) {
-            const Float3 delta = displaced[cv] - displaced[cv - 1u];
-            noisy_length += sqrt(dot(delta, delta));
-        }
+        const Float noisy_length = polyline_length(displaced);
         const Float target_length = original_length * preserve +
                                     noisy_length * (1.0f - preserve);
         const Bool rescale = (preserve > 0.001f) & (noisy_length > 0.0f) &
@@ -447,7 +517,8 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
         const Float length_scale = ite(
             rescale, target_length / max(noisy_length, 1.0e-20f), 1.0f);
         for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
-            const Float3 output = root + (displaced[cv] - root) * length_scale;
+            const Float3 output =
+                root + (displaced[cv] - root) * length_scale;
             destination.write(first + cv, make_float4(
                 output, source.read(first + cv).w));
         }
@@ -471,7 +542,8 @@ ClassicRuntimeWidthKernel make_classic_runtime_width_kernel(
         set_block_size(128u, 1u, 1u);
         const UInt strand = dispatch_id().x;
         const UInt first = strand * cvs_per_strand;
-        const Float c_length = polyline_length(points, first, cvs_per_strand);
+        const Float c_length = xgen_curve_length(
+            points, first, cvs_per_strand);
         const Float4 state = states.read(strand);
         for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
             const float t_constant = static_cast<float>(cv) /

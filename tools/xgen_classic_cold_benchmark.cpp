@@ -39,6 +39,7 @@ struct Options {
     std::optional<std::filesystem::path> output_nxc;
     std::uint32_t dump_guides{};
     std::optional<std::uint32_t> dump_runtime;
+    std::optional<std::uint32_t> effect_count;
     std::uint32_t probe_face{};
     nanoxgen::Vec2 probe_uv{};
     bool probe{};
@@ -63,7 +64,7 @@ Options parse_options(int argc, char **argv) {
             "ARCHIVE_DIRECTORY DESCRIPTIONS_ROOT [--description NAME] "
             "[--generate] [--base-only] [--cvs N] [--face-counts] [--dump-roots N] "
             "[--dump-face ID] [--dump-guides N] [--probe FACE,U,V] "
-            "[--nxc OUTPUT]");
+            "[--effect-count N] [--nxc OUTPUT]");
     }
     Options result{};
     result.collection = argv[1];
@@ -82,6 +83,7 @@ Options parse_options(int argc, char **argv) {
                    argument == "--dump-roots" || argument == "--dump-face" ||
                    argument == "--dump-guides" ||
                    argument == "--dump-runtime" ||
+                   argument == "--effect-count" ||
                    argument == "--probe" || argument == "--nxc") {
             if (++index >= argc) {
                 throw std::invalid_argument(
@@ -104,6 +106,8 @@ Options parse_options(int argc, char **argv) {
                 result.dump_guides = parse_u32(argv[index], "guide count");
             } else if (argument == "--dump-runtime") {
                 result.dump_runtime = parse_u32(argv[index], "runtime strand");
+            } else if (argument == "--effect-count") {
+                result.effect_count = parse_u32(argv[index], "effect count");
             } else {
                 const std::string value{argv[index]};
                 const std::size_t first = value.find(',');
@@ -234,8 +238,15 @@ int main(int argc, char **argv) try {
         const Clock::time_point roots_end = Clock::now();
         const nanoxgen::Asset asset = nanoxgen::build_asset(imported.asset);
         const Clock::time_point asset_end = Clock::now();
-        const nanoxgen::ClassicFloatRuntimePlan runtime =
+        nanoxgen::ClassicFloatRuntimePlan runtime =
             nanoxgen::compile_xgen_classic_float_runtime_plan(description);
+        if (options.effect_count) {
+            if (*options.effect_count > runtime.effects.size()) {
+                throw std::runtime_error(
+                    "effect count exceeds the compiled runtime plan");
+            }
+            runtime.effects.resize(*options.effect_count);
+        }
         if (options.dump_runtime) {
             if (*options.dump_runtime >= roots.roots.size()) {
                 throw std::runtime_error("runtime strand is out of range");
@@ -243,10 +254,10 @@ int main(int argc, char **argv) try {
             const std::uint32_t strand = *options.dump_runtime;
             const nanoxgen::RootSample &root = roots.roots[strand];
             const nanoxgen::Vec3 noise_domain =
-                (root.position + nanoxgen::Vec3{0.419276f, 0.184247f,
-                                                0.805721f}) * 100.0f;
+                (root.position * 0.1f +
+                 nanoxgen::Vec3{0.419276f, 0.184247f, 0.805721f}) * 100.0f;
             nanoxgen::ClassicFloatRuntimeContext context{};
-            context.id = strand;
+            context.id = roots.primitive_ids[strand];
             context.u = root.uv.x;
             context.v = root.uv.y;
             context.face_seed = nanoxgen::xgen_runtime_face_seed(
@@ -256,10 +267,19 @@ int main(int argc, char **argv) try {
             context.random_prefix = roots.random_prefixes[strand];
             context.has_random_prefix = true;
             const std::array<float, 1u> runtime_hash_input{
-                static_cast<float>(strand)};
+                static_cast<float>(context.id)};
             const std::array<double, 1u> exact_hash_input{
-                static_cast<double>(strand)};
-            std::cout << "runtime " << strand << " hash "
+                static_cast<double>(context.id)};
+            std::cout << "runtime " << strand << " primitive_id "
+                      << context.id << " prefix " << context.random_prefix
+                      << " face " << root.surface_face_id << " uv "
+                      << root.uv.x << ' ' << root.uv.y << " position "
+                      << root.position.x << ' ' << root.position.y << ' '
+                      << root.position.z << " normal " << root.normal.x << ' '
+                      << root.normal.y << ' ' << root.normal.z << " tangent "
+                      << roots.surface_tangents[strand].x << ' '
+                      << roots.surface_tangents[strand].y << ' '
+                      << roots.surface_tangents[strand].z << " hash "
                       << nanoxgen::xgen_runtime_hash(runtime_hash_input)
                       << " exact_hash "
                       << nanoxgen::xgen_seexpr_hash(exact_hash_input)

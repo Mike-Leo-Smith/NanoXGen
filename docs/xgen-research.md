@@ -196,11 +196,15 @@ matrix.
 Current procedural boundaries remain explicit: the bounded Classic IR supports
 authored scalar expressions and ramp interpolation, but not arbitrary SeExpr or
 all texture/PTEX bindings. The IGS oracle matrix covers straight hairs on flat
-and wave surfaces. Rabbit `head_A` shows that the Classic first-NoiseFX result
-on a curved authored guide field is not yet equivalent even though its scalar
-random correlation value is exact; that case is rejected by its geometry
-oracle. Clump experiments will be constructed from the captured public schema
-rather than hard-coded guesses.
+and wave surfaces. Rabbit `head_A` established two otherwise undocumented
+details: NoiseFX evaluates its spatial domain in XGen's internal length units,
+and `$cLength` uses a fixed `2*N+4`-interval `SgCurve::length` approximation
+rather than the control polygon. With both reproduced, all four effects run
+without fallback and the full CPU output reaches about `4.13e-6` position RMS
+error against Maya. A subdivision-boundary strand still reaches `3.16e-3`, so
+the strict maximum-error oracle continues to reject the case. Clump experiments
+will be constructed from the captured public schema rather than hard-coded
+guesses.
 
 ## CPU and renderer-payload performance snapshot
 

@@ -141,17 +141,6 @@ float evaluate_runtime_expression(
         scratch);
 }
 
-float curve_length(std::span<const PackedCurvePoint> points) {
-    float result = 0.0f;
-    for (std::size_t index = 1u; index < points.size(); ++index) {
-        const Vec3 previous{points[index - 1u].x, points[index - 1u].y,
-                            points[index - 1u].z};
-        const Vec3 current{points[index].x, points[index].y, points[index].z};
-        result += std::sqrt(length_squared(current - previous));
-    }
-    return result;
-}
-
 void scale_curve(std::span<PackedCurvePoint> points, float scale) {
     const Vec3 root{points.front().x, points.front().y, points.front().z};
     for (PackedCurvePoint &point : points) {
@@ -188,6 +177,68 @@ Vec3 xgen_curve_eval(std::span<const Vec3> points, float t) {
         ? points.back() * 2.0f - points[points.size() - 2u]
         : points[span + 2u];
     return (p0 * b0 + p1 * b1 + p2 * b2 + p3 * b3) * (1.0f / 6.0f);
+}
+
+Vec3 xgen_curve_eval(std::span<const PackedCurvePoint> points, float t) {
+    constexpr float epsilon = 1.0e-7f;
+    const auto value = [](const PackedCurvePoint &point) {
+        return Vec3{point.x, point.y, point.z};
+    };
+    if (t < epsilon) { return value(points.front()); }
+    if (t > 1.0f - epsilon) { return value(points.back()); }
+    const std::uint32_t spans =
+        static_cast<std::uint32_t>(points.size() - 1u);
+    const float scaled = t * static_cast<float>(spans);
+    const std::uint32_t span = static_cast<std::uint32_t>(scaled);
+    const float f = scaled - static_cast<float>(span);
+    const float f2 = f * f;
+    const float f3 = f2 * f;
+    const float one_minus_f = 1.0f - f;
+    const float b0 = one_minus_f * one_minus_f * one_minus_f;
+    const float b1 = 3.0f * f3 - 6.0f * f2 + 4.0f;
+    const float b2 = -3.0f * f3 + 3.0f * f2 + 3.0f * f + 1.0f;
+    const float b3 = f3;
+    const Vec3 p0 = span == 0u
+        ? value(points[0u]) * 2.0f - value(points[1u])
+        : value(points[span - 1u]);
+    const Vec3 p1 = value(points[span]);
+    const Vec3 p2 = value(points[span + 1u]);
+    const Vec3 p3 = span + 2u == points.size()
+        ? value(points.back()) * 2.0f - value(points[points.size() - 2u])
+        : value(points[span + 2u]);
+    return (p0 * b0 + p1 * b1 + p2 * b2 + p3 * b3) * (1.0f / 6.0f);
+}
+
+float curve_spline_length(std::span<const PackedCurvePoint> points) {
+    // Match SgCurve::length: subdivide the normalized domain into 2*N + 4
+    // intervals, join every interior spline sample, and use the raw endpoint
+    // CVs at both ends. cLength-dependent effects are sensitive to this exact
+    // fixed approximation (it is deliberately not a converged arc length).
+    const std::uint32_t interval_count =
+        static_cast<std::uint32_t>(points.size()) * 2u + 4u;
+    const float step = 1.0f / static_cast<float>(interval_count);
+    Vec3 previous{points.front().x, points.front().y, points.front().z};
+    float result = 0.0f;
+    for (std::uint32_t sample = 1u; sample < interval_count; ++sample) {
+        const Vec3 current = xgen_curve_eval(
+            points, step * static_cast<float>(sample));
+        result += std::sqrt(length_squared(current - previous));
+        previous = current;
+    }
+    const Vec3 last{points.back().x, points.back().y, points.back().z};
+    result += std::sqrt(length_squared(last - previous));
+    return result;
+}
+
+float curve_polyline_length(std::span<const PackedCurvePoint> points) {
+    float result = 0.0f;
+    for (std::size_t index = 1u; index < points.size(); ++index) {
+        const Vec3 previous{points[index - 1u].x, points[index - 1u].y,
+                            points[index - 1u].z};
+        const Vec3 current{points[index].x, points[index].y, points[index].z};
+        result += std::sqrt(length_squared(current - previous));
+    }
+    return result;
 }
 
 float cut_from_tip_and_rebuild(std::span<PackedCurvePoint> points,
@@ -306,7 +357,7 @@ void apply_noise(
         throw std::runtime_error(
             "Classic NoiseFX produced a non-finite parameter");
     }
-    const float original_length = curve_length(points);
+    const float original_length = curve_polyline_length(points);
     const float effective_frequency = original_length > 0.0f
         ? std::max(0.5f / original_length, frequency)
         : frequency;
@@ -314,7 +365,7 @@ void apply_noise(
     const float domain_scale = 100.0f * decorrelation * decorrelation;
     const Vec3 root{points.front().x, points.front().y, points.front().z};
     const Vec3 domain =
-        (root + Vec3{0.419276f, 0.184247f, 0.805721f}) * domain_scale;
+        (root * 0.1f + Vec3{0.419276f, 0.184247f, 0.805721f}) * domain_scale;
     if (!(length_squared(surface_tangent) > 1.0e-20f)) {
         surface_tangent = fallback_surface_u(surface_normal);
     } else {
@@ -388,7 +439,7 @@ void apply_noise(
         }
     }
     if (preserve > 0.001f) {
-        const float noisy_length = curve_length(points);
+        const float noisy_length = curve_polyline_length(points);
         if (noisy_length > 0.0f) {
             const float target = original_length * preserve +
                                  noisy_length * (1.0f - preserve);
@@ -649,7 +700,7 @@ void apply_xgen_classic_float_runtime_plan_cpu(
         context.random_prefix = random_prefixes.empty()
             ? 0u : random_prefixes[strand];
         context.has_random_prefix = !random_prefixes.empty();
-        context.c_length = curve_length(points);
+        context.c_length = curve_spline_length(points);
         if (plan.length) {
             const float length_scale = evaluate(*plan.length, context);
             if (!std::isfinite(length_scale) || length_scale < 0.0f) {
@@ -676,7 +727,7 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                 }
                 apply_noise(points, plan.noises[effect.module_index], context,
                             root.normal, surface_tangents[strand], scratch);
-                context.c_length = curve_length(points);
+                context.c_length = curve_spline_length(points);
             } else {
                 if (effect.module_index >= plan.cuts.size()) {
                     throw std::invalid_argument(
@@ -692,7 +743,7 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                 const float cut_parameter = cut_from_tip_and_rebuild(
                     points, std::max(amount, 0.0f), cut_source, resampled);
                 if (cut_parameter < 1.0e-4f) { keep[strand] = 0u; }
-                context.c_length = curve_length(points);
+                context.c_length = curve_spline_length(points);
             }
         }
         const float taper = plan.taper
