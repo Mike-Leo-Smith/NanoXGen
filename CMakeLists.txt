@@ -15,6 +15,8 @@ find_package(ZLIB REQUIRED)
 option(NANOXGEN_BUILD_TESTS "Build NanoXGen tests" ON)
 option(NANOXGEN_BUILD_CALIBRATION
   "Build Autodesk XGen calibration/oracle tools (requires a licensed XGen runtime)" OFF)
+option(NANOXGEN_BUILD_AUTODESK_BRIDGES
+  "Build explicit Autodesk XGen/Maya renderer bridges" OFF)
 option(NANOXGEN_ENABLE_CUDA "Build the CUDA generation kernel" OFF)
 option(NANOXGEN_NATIVE_ARCH "Tune CPU code for the build host (non-portable binary)" OFF)
 option(NANOXGEN_FAST_MATH "Enable relaxed FP math; incompatible with strict parity" OFF)
@@ -192,9 +194,12 @@ if(NANOXGEN_ENABLE_CUDA)
   endif()
 endif()
 
-if(NANOXGEN_BUILD_CALIBRATION)
+if(NANOXGEN_BUILD_CALIBRATION OR NANOXGEN_BUILD_AUTODESK_BRIDGES)
   list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
   find_package(XGen REQUIRED)
+endif()
+
+if(NANOXGEN_BUILD_CALIBRATION)
   add_executable(nanoxgen_xgen_probe tools/xgen_probe.cpp)
   target_link_libraries(nanoxgen_xgen_probe PRIVATE XGen::XGen)
   target_compile_features(nanoxgen_xgen_probe PRIVATE cxx_std_17)
@@ -217,4 +222,12 @@ if(NANOXGEN_BUILD_CALIBRATION)
     nanoxgen_xgen_cache_oracle
     nanoxgen_xgen_modifier_probe
     PROPERTIES SKIP_BUILD_RPATH TRUE)
+endif()
+
+if(NANOXGEN_BUILD_AUTODESK_BRIDGES)
+  add_executable(nanoxgen_xgen_classic_typed tools/xgen_classic_typed.cpp)
+  target_link_libraries(nanoxgen_xgen_classic_typed PRIVATE nanoxgen XGen::XGen)
+  target_compile_features(nanoxgen_xgen_classic_typed PRIVATE cxx_std_20)
+  set_target_properties(
+    nanoxgen_xgen_classic_typed PROPERTIES SKIP_BUILD_RPATH TRUE)
 endif()

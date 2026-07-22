@@ -2,12 +2,14 @@
 #include "nanoxgen/curve_cache.h"
 #include "nanoxgen/curve_payload.h"
 #include "nanoxgen/xgen.h"
+#include "../tools/xgen_classic_typed_validation.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -735,6 +737,100 @@ void test_self_contained_xgen_round_trip() {
     require(rejected, "XGen parser must reject a corrupt compressed group");
 }
 
+void test_classic_typed_batch_validation() {
+    struct Position {
+        float x;
+        float y;
+        float z;
+    };
+    const std::vector<int> counts{2, 3};
+    std::vector<Position> positions{
+        {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.0f}, {1.0f, 2.0f, 0.0f}};
+    std::vector<float> widths{0.2f, 0.1f, 0.4f, 0.2f, 0.0f};
+    std::vector<float> u{0.25f, 0.75f};
+    std::vector<float> v{0.5f, 0.125f};
+    std::vector<int> face_ids{3, 9};
+    classic_typed::Curves curves;
+    classic_typed::append_batch<Position>(
+        counts, positions, widths, std::nullopt, u, v, face_ids, curves);
+    require(curves.point_counts == std::vector<std::uint32_t>({2u, 3u}) &&
+                curves.points.size() == positions.size() &&
+                curves.points[0].radius == 0.1f &&
+                curves.points[2].radius == 0.2f &&
+                curves.face_uvs[1].x == 0.75f && curves.face_ids[1] == 9u,
+            "Classic typed conversion must directly pack topology, radius, U/V, and FaceID");
+
+    classic_typed::Curves constant_curves;
+    classic_typed::append_batch<Position>(
+        counts, positions, {}, 0.3f, u, v, face_ids, constant_curves);
+    require(constant_curves.points.front().radius == 0.15f &&
+                constant_curves.points.back().radius == 0.15f,
+            "Classic typed conversion must support a validated constant width");
+    classic_typed::Curves varying_curves;
+    classic_typed::append_batch<Position>(
+        std::vector<int>{4},
+        std::vector<Position>{{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f},
+                              {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},
+        std::vector<float>{0.2f, 0.4f}, std::nullopt,
+        std::vector<float>{0.5f}, std::vector<float>{0.25f},
+        std::vector<int>{7}, varying_curves);
+    require(varying_curves.points[0].radius == 0.1f &&
+                varying_curves.points[1].radius == 0.1f &&
+                varying_curves.points[2].radius == 0.2f &&
+                varying_curves.points[3].radius == 0.2f,
+            "Classic B-spline varying widths must expand duplicated endpoints");
+
+    const auto rejects = [&](const std::vector<int> &test_counts,
+                             const std::vector<Position> &test_positions,
+                             const std::vector<float> &test_widths,
+                             std::optional<float> constant_width,
+                             const std::vector<float> &test_u,
+                             const std::vector<float> &test_v,
+                             const std::vector<int> &test_face_ids) {
+        classic_typed::Curves rejected_output;
+        try {
+            classic_typed::append_batch<Position>(
+                test_counts, test_positions, test_widths, constant_width,
+                test_u, test_v, test_face_ids, rejected_output);
+        } catch (const std::runtime_error &) {
+            return rejected_output.point_counts.empty() && rejected_output.points.empty();
+        }
+        return false;
+    };
+
+    std::vector<Position> bad_positions = positions;
+    bad_positions[1].x = std::numeric_limits<float>::quiet_NaN();
+    require(rejects(counts, bad_positions, widths, std::nullopt, u, v, face_ids),
+            "Classic typed conversion must reject NaN positions transactionally");
+    bad_positions = positions;
+    bad_positions[1].z = std::numeric_limits<float>::infinity();
+    require(rejects(counts, bad_positions, widths, std::nullopt, u, v, face_ids),
+            "Classic typed conversion must reject infinite positions");
+    std::vector<float> bad_widths = widths;
+    bad_widths[2] = -0.1f;
+    require(rejects(counts, positions, bad_widths, std::nullopt, u, v, face_ids),
+            "Classic typed conversion must reject negative widths");
+    bad_widths = widths;
+    bad_widths[2] = std::numeric_limits<float>::infinity();
+    require(rejects(counts, positions, bad_widths, std::nullopt, u, v, face_ids),
+            "Classic typed conversion must reject infinite widths");
+    std::vector<float> bad_u = u;
+    bad_u[0] = std::numeric_limits<float>::quiet_NaN();
+    require(rejects(counts, positions, widths, std::nullopt, bad_u, v, face_ids),
+            "Classic typed conversion must reject non-finite U/V");
+    require(rejects(counts, positions, {0.2f, 0.1f}, std::nullopt, u, v, face_ids),
+            "Classic typed conversion must reject inconsistent width cardinality");
+    require(rejects({2, 4}, positions, widths, std::nullopt, u, v, face_ids),
+            "Classic typed conversion must reject inconsistent point topology");
+    require(rejects({1, 4}, positions, widths, std::nullopt, u, v, face_ids),
+            "Classic typed conversion must reject one-vertex curves");
+    require(rejects(counts, positions, widths, std::nullopt, {0.25f}, v, face_ids),
+            "Classic typed conversion must reject inconsistent U cardinality");
+    require(rejects(counts, positions, {}, -0.1f, u, v, face_ids),
+            "Classic typed conversion must reject a negative constant width");
+}
+
 } // namespace
 
 int main() try {
@@ -752,6 +848,7 @@ int main() try {
     test_renderer_curve_payload_64k_boundary();
     test_exact_curve_cache();
     test_self_contained_xgen_round_trip();
+    test_classic_typed_batch_validation();
     std::cout << "all NanoXGen tests passed\n";
     return 0;
 } catch (const std::exception &e) {

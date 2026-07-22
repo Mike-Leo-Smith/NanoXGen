@@ -68,6 +68,16 @@
       "cacheVariables": {
         "NANOXGEN_BUILD_CALIBRATION": "ON"
       }
+    },
+    {
+      "name": "autodesk-bridge-release",
+      "displayName": "Autodesk bridge release",
+      "description": "Optional Classic and Interactive Autodesk renderer bridges",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "NANOXGEN_BUILD_AUTODESK_BRIDGES": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -94,6 +104,11 @@
     {
       "name": "calibration-release",
       "configurePreset": "calibration-release",
+      "jobs": 2
+    },
+    {
+      "name": "autodesk-bridge-release",
+      "configurePreset": "autodesk-bridge-release",
       "jobs": 2
     }
   ],
@@ -129,6 +144,13 @@
     {
       "name": "calibration-release",
       "configurePreset": "calibration-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "autodesk-bridge-release",
+      "configurePreset": "autodesk-bridge-release",
       "output": {
         "outputOnFailure": true
       }

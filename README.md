@@ -42,6 +42,8 @@ The current prototype provides:
   evaluated BLOBs by content, resolves path variables, reports missing/external
   dependencies, refuses symlink traversal, and selects a native, Classic typed,
   or Interactive Maya backend;
+- an optional Classic curve bridge that consumes public XGen RenderAPI typed
+  callbacks directly and can write `.nxc` without an intermediate renderer BLOB;
 - source-order and canonical renderer-minimal ingestion plus a staged direct-read
   benchmark for evaluated snapshots;
 - optional native ISA, SIMD-width, IPO/LTO, and precision-gated fast-math modes.
@@ -109,6 +111,20 @@ With a licensed full Maya installation, run the real XGen suite on Linux:
 export MAYA_LOCATION=/usr/autodesk/maya2027
 ./scripts/run_xgen_real_tests.sh
 ```
+
+Classic collection evaluation is a separate, explicitly Autodesk-linked path:
+
+```bash
+cmake --preset autodesk-bridge-release -DXGEN_ROOT="$XGEN_ROOT"
+cmake --build --preset autodesk-bridge-release
+./scripts/run_xgen_classic_typed_test.sh --help
+```
+
+The default `release`, `debug`, `native-release`, and CUDA presets neither find
+nor link Maya/XGen. Classic authoring packages, Interactive Maya authoring
+graphs, evaluated `XgSplineData` renderer BLOBs, and NanoXGen `.nxc` runtime
+caches are four distinct layers; see the production-assets document for their
+support boundaries.
 
 The suite uses Maya only to create official fixtures and provide an oracle. It
 compares NanoXGen's independent parser hash with `XgFnSpline`, requires the

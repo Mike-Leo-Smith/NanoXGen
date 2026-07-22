@@ -90,3 +90,11 @@ full-channel result with an Autodesk benchmark that only copies point counts and
 The Autodesk bridges are optional build products and must remain absent from the
 default core dependency graph. Real production packages are still required to
 calibrate PTEX, custom plugin, archive, deformation, motion, and failure paths.
+
+The implemented Classic curve bridge is built only by
+`autodesk-bridge-release`. It validates finite positions and U/V, finite
+non-negative widths, channel cardinality and topology inside the callback. It
+accepts XGen's B-spline varying-width layout (`NumVertices - 2` per curve),
+expands endpoint values while writing the final packed buffer, and converts
+diameter to radius exactly once. Autodesk palette cleanup is owned by a
+single-run guard across success, empty, and error paths.

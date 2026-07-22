@@ -55,6 +55,36 @@ standalone NanoXGen core does not need Maya or XGen at build or runtime. The
 calibration probe uses `XgFnSpline` only to verify the independent decoder and
 writer against a licensed reference implementation.
 
+### Classic typed renderer bridge
+
+The separate `autodesk-bridge-release` preset builds the Classic curve bridge.
+It uses the public `XGenRenderAPI::PatchRenderer` and `FaceRenderer` callbacks,
+reads `PrimitiveCache` point counts, positions, widths, U/V and face IDs, and
+writes final `float4(position, radius)` values directly. XGen widths are full
+diameters; the cache stores half-width radii. It does not create an evaluated
+Interactive `.xgen` BLOB.
+
+```bash
+cmake --preset autodesk-bridge-release \
+  -DXGEN_ROOT="$XGEN_ROOT" \
+  -DNANOXGEN_COMPAT_LIB_DIR="${NANOXGEN_COMPAT_LIB_DIR:-}"
+cmake --build --preset autodesk-bridge-release
+
+./scripts/run_xgen_classic_typed_test.sh \
+  --xgen-file /outside/repository/collection.xgen \
+  --palette collection_name \
+  --geom /outside/repository/patches.abc \
+  --patch patch_name \
+  --description description_name
+```
+
+The script keeps its generated `.nxc` under ignored `build/` output unless an
+external `--output` is given, verifies runtime linkage with `ldd`, executes the
+typed bridge, and reads the cache back through the Autodesk-free validator.
+Missing dependencies reported by the collection remain XGen errors; a missing
+patch or empty result is a checked bridge failure rather than a crash. Classic
+archive/card/sphere primitives are outside this curve-only bridge.
+
 For the complete reproducible test, run:
 
 ```bash
