@@ -16,6 +16,24 @@ content rather than the suffix alone.
 | Interactive Groom authoring state in `.ma/.mb` | File inventory only; Maya DG owns the dependency graph | Maya/Autodesk required |
 | PTEX, CAF, XUV/XPD/XGC, Alembic, archives, textures and plugins | Typed inventory and dependency reporting | Depends on the owning Classic/Interactive graph |
 
+Classic text structure can also be inspected without Autodesk:
+
+```bash
+./build/release/nanoxgen_xgen_classic_inspect \
+  --description descriptionName /external/collection.xgen
+```
+
+This parser is intentionally bounded by source, line, object, attribute, patch,
+face, guide, interpolation, and CV limits. It validates declared counts,
+duplicate description/patch/guide identities, finite numeric guide data, and
+guide-to-patch face membership. Unknown object and patch attributes remain in
+the typed IR. Guide interpolation values and root-relative CVs use packed
+storage; the implicit zero root is materialized once in that storage for later
+CPU/GPU evaluation. Parsing this authoring state is not the same as evaluating
+its generator, expressions, PTEX maps, and FX modules, so the package planner
+continues to select Autodesk whenever the complete native execution chain is
+not implemented and proven.
+
 The core does not claim to reproduce arbitrary SeExpr, PTEX lookup, custom
 modules, archive/card/sphere primitives, or Interactive Groom modifier graphs.
 Those cases must select an Autodesk backend and cache the evaluated result.

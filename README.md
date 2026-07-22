@@ -43,6 +43,8 @@ The current prototype provides:
   evaluated BLOBs by content, resolves path variables, reports missing/external
   dependencies, refuses symlink traversal, and emits a typed manifest plus a
   native, Classic typed, or Interactive Maya backend execution plan;
+- a bounded, Autodesk-free Classic collection parser with typed descriptions,
+  ordered modules, bindings, patch faces, and packed embedded-guide data;
 - an optional Classic curve bridge that consumes public XGen RenderAPI typed
   callbacks directly and can write `.nxc` without an intermediate renderer BLOB;
 - an optional Interactive Maya command that serializes `outRenderData` to
@@ -125,12 +127,17 @@ production asset normally includes many sidecars.
 ./build/release/nanoxgen_xgen_cache groom.xgen groom.nxc
 ./build/release/nanoxgen_xgen_read_benchmark groom.xgen
 ./build/release/nanoxgen_xgen_package --require-complete /show/asset/xgen
+./build/release/nanoxgen_xgen_classic_inspect \
+  --description fur /show/asset/collection.xgen
 ```
 
 The demo also writes a new `.xgen` directly from NanoXGen procedural output.
 See [`docs/xgen-format.md`](docs/xgen-format.md) for the container contract.
 See [`docs/xgen-production-assets.md`](docs/xgen-production-assets.md) for the
 package boundary, dependency scanner, and Autodesk fallback architecture.
+The Classic inspector validates collection structure and reports the exact
+generation requirements it finds. It does not claim that every reported FX or
+expression is natively evaluable yet.
 
 See [`docs/sdk-setup.md`](docs/sdk-setup.md). The official Maya DevKit is
 downloadable without sign-in, but Autodesk ships the actual XGen headers and
