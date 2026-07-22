@@ -38,7 +38,25 @@ struct ClassicFloatNoiseModule {
     std::uint32_t mode{};
 };
 
+struct ClassicFloatClumpModule {
+    std::string name;
+    ClassicFloatRuntimeExpression mask;
+    ClassicFloatRuntimeExpression clump;
+    ClassicFloatRuntimeExpression clump_scale;
+};
+
+// Geometry binding for one compiled ClumpingFX module. Axes are stored
+// guide-major with exactly cvs_per_guide float3 values per guide. A strand
+// index of kInvalidIndex means the point-map selected no clump guide.
+struct ClassicClumpRuntimeData {
+    std::string module_name;
+    std::uint32_t cvs_per_guide{};
+    std::vector<Vec3> guide_axes;
+    std::vector<std::uint32_t> strand_guide_indices;
+};
+
 enum class ClassicFloatEffectType : std::uint8_t {
+    Clump,
     Noise,
     Cut,
 };
@@ -60,6 +78,7 @@ struct ClassicFloatRuntimePlan {
     std::optional<ClassicFloatRuntimeExpression> taper_start;
     std::optional<ClassicFloatRuntimeExpression> width_ramp;
     std::vector<ClassicFloatNoiseModule> noises;
+    std::vector<ClassicFloatClumpModule> clumps;
     std::vector<ClassicFloatCutModule> cuts;
     std::vector<ClassicFloatEffect> effects;
     // Requirements outside this plan (for example PTEX or an authored FX
@@ -105,7 +124,8 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     float radius_scale = 1.0f,
     std::span<const Vec3> surface_tangents = {},
     std::span<const std::uint32_t> random_prefixes = {},
-    std::span<const std::uint32_t> primitive_ids = {});
+    std::span<const std::uint32_t> primitive_ids = {},
+    std::span<const ClassicClumpRuntimeData> clump_data = {});
 
 // Match the Classic renderer cache convention by adding one extrapolated
 // endpoint before and after every fixed-CV spline. Call after all FX modules

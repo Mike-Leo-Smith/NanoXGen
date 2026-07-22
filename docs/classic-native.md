@@ -37,7 +37,11 @@ XPD/XUV block metadata and little-endian float records. It does not link
 `libAdskXpd`. On Rabbit `mm/Clumping1`, the native inspector and Autodesk's
 public `XpdReader` agree on all 4,040 six-float `Location` records. Reading the
 point file is only the input layer; a package is not declared native-compatible
-until the owning Clumping evaluation is lowered as well.
+until the owning Clumping evaluation is lowered as well. The optional Classic
+native target now binds a basic ClumpingFX module directly from its XPD3
+`Location` block and encoded PTEX guide-ID map. It generates guide axes from
+the same explicit patch roots, and the backend-neutral runtime applies the
+float clump expressions without Autodesk or an intermediate renderer BLOB.
 
 The same preset builds a float-only, bounds-checked facade over the system Ptex
 reader. It exposes face metadata, normalized face/UV filtering, and unpacked
@@ -63,8 +67,11 @@ parser and Autodesk/SeExpr calibration oracle keep their higher-precision
 source representation outside the render hot path.
 
 The current plan applies SplinePrimitive `length`, `width`, `taper`,
-`taperStart`, and `widthRamp`, plus mode-0 `NoiseFXModule` and
-`CutFXModule` in authored order. Noise uses the SeExpr gradient table and
+`taperStart`, and `widthRamp`, plus basic `ClumpingFXModule`, mode-0
+`NoiseFXModule`, and `CutFXModule` in authored order. Basic clumping currently
+means zero variance/cut/copy/curl/offset/flatness/noise, no control maps, and
+no volumizing; other authored controls remain explicit fallbacks. Noise uses
+the SeExpr gradient table and
 XGen's transported surface frame. `rebuildType=1` cuts use the cubic
 `SgCurve::cutFromTip` search/rebuild convention, including fully-cut culling.
 Width evaluation stores half the final diameter in renderer
@@ -87,17 +94,22 @@ matches Maya's 307791-curve/5232447-point topology. Matching XGen's internal
 Noise coordinate units and fixed `SgCurve::length` sampling reduced its full
 CPU result to about `4.13e-6` RMS position error, with a `3.16e-3` maximum on a
 subdivision-boundary strand. It therefore remains outside the strict `1e-3`
-maximum-error gate. Seven other descriptions retain explicit ClumpingFX,
+maximum-error gate. For Rabbit `mm/Clumping1`, the native CPU result matches
+Maya's complete 3526-curve/59942-renderer-point topology; a controlled
+zero-clump differential has `1.14e-5` maximum and `1.77e-6` RMS position
+error. Its second, noise and control-map driven ClumpingFX module remains a
+fallback. The other incomplete descriptions retain advanced ClumpingFX,
 PTEX-backed primitive length/width, or unsupported-expression fallbacks.
 
 ## Current parity boundary
 
 The OpenSubdiv path evaluates current and reference limit patches and retains
 stable coarse-face identities, but boundary/crease metadata is absent when an
-Alembic file stores the Maya patch as a plain `PolyMesh`. PTEX density masks are
-bound for RandomGenerator. PTEX-backed primitive/FX attributes, ClumpingFX,
-and the remaining SeExpr method/operator forms are the current Rabbit-wide
-parity boundary.
+Alembic file stores the Maya patch as a plain `PolyMesh`. PTEX density masks
+are bound for RandomGenerator, and point-filtered encoded guide maps are bound
+for basic ClumpingFX. PTEX-backed primitive/FX scalar attributes, advanced
+ClumpingFX controls, and the remaining SeExpr method/operator forms are the
+current Rabbit-wide parity boundary.
 
 Consequently, timings from this path are engineering measurements for the
 native prototype, not an equal-output Maya speedup claim. A valid Maya

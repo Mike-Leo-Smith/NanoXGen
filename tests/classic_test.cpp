@@ -2,9 +2,11 @@
 #include "nanoxgen/xgen_classic_runtime.h"
 #include "nanoxgen/xpd.h"
 
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cmath>
 #include <functional>
 #include <iostream>
@@ -326,6 +328,94 @@ void test_float_runtime_spline_length_binding() {
     }
 }
 
+void test_float_runtime_clump() {
+    ClassicDescription description{};
+    description.name = "clump";
+    description.objects.push_back({"SplinePrimitive", {
+        {"fxCVCount", "3", 1u}}, 1u});
+    description.objects.push_back({"ClumpingFXModule", {
+        {"active", "true", 2u}, {"name", "Clumping1", 3u},
+        {"mask", "1", 4u}, {"clump", "1", 5u},
+        {"clumpScale", "rampUI(0,0,1:1,0,1)", 6u},
+        {"clumpVariance", "0", 7u}, {"cut", "0", 8u},
+        {"copy", "0", 9u}, {"copyVariance", "0", 10u},
+        {"curl", "0", 11u}, {"offset", "0", 12u},
+        {"flatness", "0", 13u}, {"frame", "0", 14u},
+        {"noise", "0", 15u}, {"useControlMaps", "0", 16u},
+        {"clumpVolumize", "false", 17u}}, 2u});
+    const ClassicFloatRuntimePlan plan =
+        compile_xgen_classic_float_runtime_plan(description);
+    require(plan.lowering_complete() && plan.clumps.size() == 1u &&
+                plan.effects.size() == 1u &&
+                plan.effects[0].type == ClassicFloatEffectType::Clump,
+            "basic ClumpingFX module did not lower");
+    PackedGeneratedCurves curves{};
+    curves.strand_count = 1u;
+    curves.cvs_per_strand = 3u;
+    curves.point_counts = {3u};
+    curves.roots.resize(1u);
+    curves.points = {{0.0f, 0.0f, 0.0f, 0.0f},
+                     {0.0f, 1.0f, 0.0f, 0.0f},
+                     {0.0f, 2.0f, 0.0f, 0.0f}};
+    ClassicClumpRuntimeData data{};
+    data.module_name = "Clumping1";
+    data.cvs_per_guide = 3u;
+    data.guide_axes = {{1.0f, 0.0f, 0.0f},
+                       {1.0f, 1.0f, 0.0f},
+                       {1.0f, 2.0f, 0.0f}};
+    data.strand_guide_indices = {0u};
+    const std::array bindings{std::move(data)};
+    apply_xgen_classic_float_runtime_plan_cpu(
+        curves, plan, 1.0f, {}, {}, {}, bindings);
+    require(curves.points[0].x == 0.0f &&
+                std::abs(curves.points[1].x - 1.0f) < 1.0e-6f &&
+                std::abs(curves.points[2].x - 1.0f) < 1.0e-6f,
+            "basic ClumpingFX geometry mismatch");
+
+    for (ClassicAttribute &attribute : description.objects[1].attributes) {
+        if (attribute.name == "clump") { attribute.value = "0"; }
+    }
+    const ClassicFloatRuntimePlan rebuild_plan =
+        compile_xgen_classic_float_runtime_plan(description);
+    PackedGeneratedCurves curved{};
+    curved.strand_count = 1u;
+    curved.cvs_per_strand = 4u;
+    curved.point_counts = {4u};
+    curved.roots.resize(1u);
+    curved.points = {{0.0f, 0.0f, 0.0f, 0.0f},
+                     {0.5f, 0.7f, 0.0f, 0.0f},
+                     {-0.2f, 1.4f, 0.0f, 0.0f},
+                     {0.0f, 2.0f, 0.0f, 0.0f}};
+    ClassicClumpRuntimeData long_guide{};
+    long_guide.module_name = "Clumping1";
+    long_guide.cvs_per_guide = 4u;
+    long_guide.guide_axes = {{0.0f, 0.0f, 0.0f},
+                             {0.0f, 2.0f, 0.0f},
+                             {0.0f, 4.0f, 0.0f},
+                             {0.0f, 6.0f, 0.0f}};
+    long_guide.strand_guide_indices = {0u};
+    const std::array rebuild_binding{long_guide};
+    const std::vector<PackedCurvePoint> original = curved.points;
+    apply_xgen_classic_float_runtime_plan_cpu(
+        curved, rebuild_plan, 1.0f, {}, {}, {}, rebuild_binding);
+    require(curved.points.front().x == original.front().x &&
+                curved.points.back().x == original.back().x &&
+                std::abs(curved.points[1].x - original[1].x) > 1.0e-3f,
+            "ClumpingFX did not rebuild a full-length affected curve");
+
+    for (ClassicAttribute &attribute : description.objects[1].attributes) {
+        if (attribute.name == "mask") { attribute.value = "0"; }
+    }
+    const ClassicFloatRuntimePlan masked_plan =
+        compile_xgen_classic_float_runtime_plan(description);
+    curved.points = original;
+    apply_xgen_classic_float_runtime_plan_cpu(
+        curved, masked_plan, 1.0f, {}, {}, {}, rebuild_binding);
+    require(std::memcmp(curved.points.data(), original.data(),
+                        original.size() * sizeof(PackedCurvePoint)) == 0,
+            "zero ClumpingFX mask modified curve CVs");
+}
+
 void test_xpd3_reader() {
     std::vector<std::byte> bytes;
     const auto u8 = [&](std::uint8_t value) {
@@ -397,6 +487,7 @@ int main() try {
     test_float_runtime_fallbacks_and_validation();
     test_float_runtime_cut_culling();
     test_float_runtime_spline_length_binding();
+    test_float_runtime_clump();
     test_xpd3_reader();
     std::cout << "Classic XGen parser tests passed\n";
     return 0;

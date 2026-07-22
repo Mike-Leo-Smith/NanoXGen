@@ -57,6 +57,29 @@ std::uint32_t parse_uint_attribute(const ClassicAttribute *attribute,
     return result;
 }
 
+bool scalar_attribute_is_zero(
+    const ClassicObject &object, std::string_view name) {
+    const ClassicAttribute *attribute = find_classic_attribute(
+        object.attributes, name);
+    if (attribute == nullptr || attribute->value.empty()) { return true; }
+    float value{};
+    const char *begin = attribute->value.data();
+    const char *end = begin + attribute->value.size();
+    const auto converted = std::from_chars(begin, end, value);
+    return converted.ec == std::errc{} && converted.ptr == end &&
+           std::isfinite(value) && value == 0.0f;
+}
+
+const ClassicAttribute &required_attribute(
+    const ClassicObject &object, std::string_view name) {
+    const ClassicAttribute *attribute = find_classic_attribute(
+        object.attributes, name);
+    if (attribute == nullptr || attribute->value.empty()) {
+        throw std::runtime_error("missing " + std::string{name} + " expression");
+    }
+    return *attribute;
+}
+
 ClassicFloatRuntimeExpression compile_expression(
     const ClassicObject &object, const ClassicAttribute &attribute) {
     XgenExpressionCompileOptions options{};
@@ -230,6 +253,22 @@ float curve_spline_length(std::span<const PackedCurvePoint> points) {
     return result;
 }
 
+float curve_spline_length(std::span<const Vec3> points) {
+    const std::uint32_t interval_count =
+        static_cast<std::uint32_t>(points.size()) * 2u + 4u;
+    const float step = 1.0f / static_cast<float>(interval_count);
+    Vec3 previous = points.front();
+    float result = 0.0f;
+    for (std::uint32_t sample = 1u; sample < interval_count; ++sample) {
+        const Vec3 current = xgen_curve_eval(
+            points, step * static_cast<float>(sample));
+        result += std::sqrt(length_squared(current - previous));
+        previous = current;
+    }
+    result += std::sqrt(length_squared(points.back() - previous));
+    return result;
+}
+
 float curve_polyline_length(std::span<const PackedCurvePoint> points) {
     float result = 0.0f;
     for (std::size_t index = 1u; index < points.size(); ++index) {
@@ -293,6 +332,61 @@ float cut_from_tip_and_rebuild(std::span<PackedCurvePoint> points,
         points[index].z = resampled[index].z;
     }
     return cut_parameter;
+}
+
+// Match SgCurve::cutToLength followed by SgCurve::cut(..., true). Unlike a
+// CutFX amount, the clump guide limits the retained distance measured forward
+// from the root. Autodesk searches the same fixed 2*N+4 spline samples used by
+// SgCurve::length and then rebuilds the original CV count on [0, cutParam].
+void cut_to_length_and_rebuild(std::span<PackedCurvePoint> points,
+                               float target_length,
+                               std::vector<Vec3> &source,
+                               std::vector<Vec3> &resampled) {
+    source.resize(points.size());
+    resampled.resize(points.size());
+    for (std::size_t index = 0u; index < points.size(); ++index) {
+        source[index] = {points[index].x, points[index].y, points[index].z};
+    }
+    if (target_length <= 1.0e-10f) {
+        std::fill(resampled.begin(), resampled.end(), source.front());
+    } else {
+        const std::uint32_t interval_count =
+            static_cast<std::uint32_t>(points.size()) * 2u + 4u;
+        const float step = 1.0f / static_cast<float>(interval_count);
+        float previous_parameter = 0.0f;
+        Vec3 previous = source.front();
+        float accumulated = 0.0f;
+        float cut_parameter = 1.0f;
+        for (std::uint32_t sample = 1u; sample <= interval_count; ++sample) {
+            const float parameter = sample == interval_count
+                ? 1.0f : step * static_cast<float>(sample);
+            const Vec3 current = sample == interval_count
+                ? source.back() : xgen_curve_eval(source, parameter);
+            const float segment_length =
+                std::sqrt(length_squared(current - previous));
+            accumulated += segment_length;
+            if (accumulated >= target_length && segment_length > 0.0f) {
+                cut_parameter = parameter -
+                    ((accumulated - target_length) / segment_length) *
+                        (parameter - previous_parameter);
+                break;
+            }
+            previous_parameter = parameter;
+            previous = current;
+        }
+        const float rebuild_step = cut_parameter /
+            static_cast<float>(points.size() - 1u);
+        resampled.front() = source.front();
+        for (std::size_t index = 1u; index < points.size(); ++index) {
+            resampled[index] = xgen_curve_eval(
+                source, rebuild_step * static_cast<float>(index));
+        }
+    }
+    for (std::size_t index = 0u; index < points.size(); ++index) {
+        points[index].x = resampled[index].x;
+        points[index].y = resampled[index].y;
+        points[index].z = resampled[index].z;
+    }
 }
 
 } // namespace
@@ -541,6 +635,66 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
             }
             continue;
         }
+        if (object.type == "ClumpingFXModule") {
+            const std::string name = object_name(object);
+            const std::string_view unsupported_zero_attributes[]{
+                "clumpVariance", "cut", "copy", "copyVariance", "curl",
+                "offset", "flatness", "frame", "noise"};
+            std::string unsupported;
+            for (const std::string_view attribute :
+                 unsupported_zero_attributes) {
+                if (!scalar_attribute_is_zero(object, attribute)) {
+                    if (!unsupported.empty()) { unsupported += ", "; }
+                    unsupported += attribute;
+                }
+            }
+            const std::uint32_t use_control_maps = parse_uint_attribute(
+                find_classic_attribute(object.attributes, "useControlMaps"),
+                0u, "ClumpingFXModule useControlMaps");
+            if (use_control_maps != 0u) {
+                if (!unsupported.empty()) { unsupported += ", "; }
+                unsupported += "useControlMaps";
+            }
+            const ClassicAttribute *volumize = find_classic_attribute(
+                object.attributes, "clumpVolumize");
+            if (volumize && volumize->value != "false" &&
+                volumize->value != "False" && volumize->value != "0") {
+                if (!unsupported.empty()) { unsupported += ", "; }
+                unsupported += "clumpVolumize";
+            }
+            if (!unsupported.empty()) {
+                result.fallback_reasons.push_back(
+                    "ClumpingFXModule " + name +
+                    ": unsupported authored controls: " + unsupported);
+                continue;
+            }
+            try {
+                ClassicFloatClumpModule clump{
+                    name,
+                    compile_expression(
+                        object, required_attribute(object, "mask")),
+                    compile_expression(
+                        object, required_attribute(object, "clump")),
+                    compile_expression(
+                        object, required_attribute(object, "clumpScale"))};
+                bool valid = true;
+                valid &= validate_inputs(clump.mask, result.fallback_reasons);
+                valid &= validate_inputs(clump.clump, result.fallback_reasons);
+                valid &= validate_inputs(
+                    clump.clump_scale, result.fallback_reasons);
+                if (valid) {
+                    const std::uint32_t index = static_cast<std::uint32_t>(
+                        result.clumps.size());
+                    result.clumps.emplace_back(std::move(clump));
+                    result.effects.push_back(
+                        {ClassicFloatEffectType::Clump, index});
+                }
+            } catch (const std::exception &error) {
+                result.fallback_reasons.push_back(
+                    "ClumpingFXModule " + name + ": " + error.what());
+            }
+            continue;
+        }
         if (object.type != "CutFXModule") {
             result.fallback_reasons.push_back(
                 object.type + " " + object_name(object) +
@@ -596,7 +750,8 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     float radius_scale,
     std::span<const Vec3> surface_tangents,
     std::span<const std::uint32_t> random_prefixes,
-    std::span<const std::uint32_t> primitive_ids) {
+    std::span<const std::uint32_t> primitive_ids,
+    std::span<const ClassicClumpRuntimeData> clump_data) {
     if (curves.strand_count == 0u || curves.cvs_per_strand < 2u ||
         curves.point_counts.size() != curves.strand_count ||
         curves.roots.size() != curves.strand_count ||
@@ -635,6 +790,11 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             noise.correlation.program.random_call_count != 0u ||
             noise.preserve_length.program.random_call_count != 0u;
     }
+    for (const ClassicFloatClumpModule &clump : plan.clumps) {
+        needs_random_prefix |= clump.mask.program.random_call_count != 0u ||
+            clump.clump.program.random_call_count != 0u ||
+            clump.clump_scale.program.random_call_count != 0u;
+    }
     if (needs_random_prefix &&
         random_prefixes.size() != curves.strand_count) {
         throw std::invalid_argument(
@@ -644,6 +804,33 @@ void apply_xgen_classic_float_runtime_plan_cpu(
         primitive_ids.size() != curves.strand_count) {
         throw std::invalid_argument(
             "Classic runtime needs one primitive ID per strand");
+    }
+    if (clump_data.size() != plan.clumps.size()) {
+        throw std::invalid_argument(
+            "Classic runtime needs one geometry binding per ClumpingFX module");
+    }
+    for (std::size_t module = 0u; module < clump_data.size(); ++module) {
+        const ClassicClumpRuntimeData &data = clump_data[module];
+        if (data.module_name != plan.clumps[module].name ||
+            data.cvs_per_guide != curves.cvs_per_strand ||
+            data.strand_guide_indices.size() != curves.strand_count ||
+            data.guide_axes.size() % curves.cvs_per_strand != 0u) {
+            throw std::invalid_argument(
+                "Classic ClumpingFX geometry binding is inconsistent");
+        }
+    }
+    std::vector<std::vector<float>> clump_guide_lengths(clump_data.size());
+    for (std::size_t module = 0u; module < clump_data.size(); ++module) {
+        const ClassicClumpRuntimeData &data = clump_data[module];
+        const std::size_t guide_count =
+            data.guide_axes.size() / curves.cvs_per_strand;
+        std::vector<float> &lengths = clump_guide_lengths[module];
+        lengths.resize(guide_count);
+        for (std::size_t guide = 0u; guide < guide_count; ++guide) {
+            lengths[guide] = curve_spline_length(std::span<const Vec3>{
+                data.guide_axes.data() + guide * curves.cvs_per_strand,
+                curves.cvs_per_strand});
+        }
     }
     std::vector<Vec3> cut_source;
     std::vector<Vec3> resampled;
@@ -669,6 +856,14 @@ void apply_xgen_classic_float_runtime_plan_cpu(
         const ClassicFloatRuntimeExpression *expressions[] = {
             &noise.mask, &noise.magnitude, &noise.magnitude_scale,
             &noise.frequency, &noise.correlation, &noise.preserve_length};
+        for (const ClassicFloatRuntimeExpression *expression : expressions) {
+            scratch_size = std::max(
+                scratch_size, expression->program.instructions.size());
+        }
+    }
+    for (const ClassicFloatClumpModule &clump : plan.clumps) {
+        const ClassicFloatRuntimeExpression *expressions[] = {
+            &clump.mask, &clump.clump, &clump.clump_scale};
         for (const ClassicFloatRuntimeExpression *expression : expressions) {
             scratch_size = std::max(
                 scratch_size, expression->program.instructions.size());
@@ -720,7 +915,65 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                 "Classic width expression produced a negative value");
         }
         for (const ClassicFloatEffect effect : plan.effects) {
-            if (effect.type == ClassicFloatEffectType::Noise) {
+            if (effect.type == ClassicFloatEffectType::Clump) {
+                if (effect.module_index >= plan.clumps.size()) {
+                    throw std::invalid_argument(
+                        "Classic ClumpingFX operation index is invalid");
+                }
+                const ClassicFloatClumpModule &clump =
+                    plan.clumps[effect.module_index];
+                const ClassicClumpRuntimeData &data =
+                    clump_data[effect.module_index];
+                const std::uint32_t guide_index =
+                    data.strand_guide_indices[strand];
+                const std::uint32_t guide_count = static_cast<std::uint32_t>(
+                    data.guide_axes.size() / curves.cvs_per_strand);
+                if (guide_index != kInvalidIndex) {
+                    if (guide_index >= guide_count) {
+                        throw std::invalid_argument(
+                            "Classic ClumpingFX guide index is invalid");
+                    }
+                    const std::span<const Vec3> axis{
+                        data.guide_axes.data() +
+                            static_cast<std::size_t>(guide_index) *
+                                curves.cvs_per_strand,
+                        curves.cvs_per_strand};
+                    context.t = 0.0f;
+                    const float mask = std::clamp(
+                        evaluate(clump.mask, context), 0.0f, 1.0f);
+                    if (mask <= 0.0f) { continue; }
+                    const float guide_length =
+                        clump_guide_lengths[effect.module_index][guide_index];
+                    // Clumping always rebuilds an affected curve, even when
+                    // the guide is longer and the retained parameter is 1.
+                    // That spline-to-CV resampling is observable in Autodesk
+                    // output and is not equivalent to leaving the CVs alone.
+                    cut_to_length_and_rebuild(
+                        points, guide_length, cut_source, resampled);
+                    context.c_length = curve_spline_length(points);
+                    const float amount = std::clamp(
+                        evaluate(clump.clump, context), 0.0f, 1.0f);
+                    for (std::uint32_t cv = 1u;
+                         cv < curves.cvs_per_strand; ++cv) {
+                        context.t = static_cast<float>(cv) /
+                            static_cast<float>(curves.cvs_per_strand - 1u);
+                        const float scale = evaluate(clump.clump_scale, context);
+                        if (!std::isfinite(scale)) {
+                            throw std::runtime_error(
+                                "Classic ClumpingFX scale is non-finite");
+                        }
+                        const Vec3 goal = xgen_curve_eval(axis, context.t);
+                        const Vec3 current{
+                            points[cv].x, points[cv].y, points[cv].z};
+                        const Vec3 output = current + (goal - current) *
+                            (mask * amount * (1.0f - 2.0f * scale));
+                        points[cv].x = output.x;
+                        points[cv].y = output.y;
+                        points[cv].z = output.z;
+                    }
+                    context.c_length = curve_spline_length(points);
+                }
+            } else if (effect.type == ClassicFloatEffectType::Noise) {
                 if (effect.module_index >= plan.noises.size()) {
                     throw std::invalid_argument(
                         "Classic NoiseFX operation index is invalid");
@@ -728,7 +981,7 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                 apply_noise(points, plan.noises[effect.module_index], context,
                             root.normal, surface_tangents[strand], scratch);
                 context.c_length = curve_spline_length(points);
-            } else {
+            } else if (effect.type == ClassicFloatEffectType::Cut) {
                 if (effect.module_index >= plan.cuts.size()) {
                     throw std::invalid_argument(
                         "Classic CutFX operation index is invalid");
@@ -744,6 +997,9 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                     points, std::max(amount, 0.0f), cut_source, resampled);
                 if (cut_parameter < 1.0e-4f) { keep[strand] = 0u; }
                 context.c_length = curve_spline_length(points);
+            } else {
+                throw std::invalid_argument(
+                    "Classic runtime effect type is invalid");
             }
         }
         const float taper = plan.taper

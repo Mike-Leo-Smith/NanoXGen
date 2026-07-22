@@ -292,6 +292,7 @@ endif()
 
 if(NANOXGEN_ENABLE_ALEMBIC AND NANOXGEN_ENABLE_PTEX)
   add_library(nanoxgen_classic_native STATIC
+    src/xgen_classic_clump.cpp
     src/xgen_classic_roots.cpp
     src/xgen_samples.cpp)
   add_library(NanoXGen::nanoxgen_classic_native ALIAS nanoxgen_classic_native)

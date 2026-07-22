@@ -99,8 +99,11 @@ tolerance. `head_A` also runs all four Noise/Cut passes with no fallback and
 matches its 307791-curve/5232447-point topology. Its CPU result has about
 `4.13e-6` position RMS error against Maya, but a subdivision-boundary strand
 reaches `3.16e-3`, so it still fails the strict `1e-3` maximum-error gate.
-Seven other Rabbit descriptions retain explicit ClumpingFX, PTEX-expression,
-or unsupported-expression fallbacks; the complete Rabbit package is not yet
+Basic Classic ClumpingFX is also decoded from XPD3 point records plus its PTEX
+guide-ID map and runs in the CPU float runtime. Rabbit `mm/Clumping1` matches
+Maya's full 3526-curve/59942-point topology within `1.14e-5` maximum and
+`1.77e-6` RMS position error. Advanced clump controls and PTEX-expression
+bindings remain explicit fallbacks, so the complete Rabbit package is not yet
 claimed as native-compatible.
 
 The Makefile is a fallback for minimal CPU-only environments:

@@ -2,6 +2,7 @@
 #include "nanoxgen/curve_cache.h"
 #include "nanoxgen/xgen_classic.h"
 #include "nanoxgen/xgen_classic_alembic.h"
+#include "nanoxgen/xgen_classic_clump.h"
 #include "nanoxgen/xgen_classic_roots.h"
 #include "nanoxgen/xgen_classic_runtime.h"
 
@@ -273,6 +274,17 @@ int main(int argc, char **argv) try {
             }
             runtime.effects.resize(*options.effect_count);
         }
+        std::vector<nanoxgen::ClassicClumpRuntimeData> clump_data;
+        clump_data.reserve(runtime.clumps.size());
+        const std::uint32_t runtime_cvs = options.cvs != 0u
+            ? options.cvs
+            : (runtime.fx_cv_count >= 2u ? runtime.fx_cv_count : 8u);
+        for (const nanoxgen::ClassicFloatClumpModule &clump : runtime.clumps) {
+            clump_data.push_back(
+                nanoxgen::build_xgen_classic_clump_runtime_data(
+                    description, imported, description_directory, roots,
+                    clump, runtime_cvs));
+        }
         if (options.dump_runtime) {
             if (*options.dump_runtime >= roots.roots.size()) {
                 throw std::runtime_error("runtime strand is out of range");
@@ -358,6 +370,35 @@ int main(int argc, char **argv) try {
                                  noise.preserve_length, context)
                           << '\n';
             }
+            for (std::size_t module_index = 0u;
+                 module_index < runtime.clumps.size(); ++module_index) {
+                const auto &clump = runtime.clumps[module_index];
+                const auto &binding = clump_data[module_index];
+                const std::uint32_t guide =
+                    binding.strand_guide_indices[strand];
+                std::cout << "runtime " << strand << " clump "
+                          << clump.name << " guide " << guide << " mask "
+                          << nanoxgen::evaluate_xgen_classic_float_runtime_expression(
+                                 clump.mask, context)
+                          << " amount "
+                          << nanoxgen::evaluate_xgen_classic_float_runtime_expression(
+                                 clump.clump, context)
+                          << '\n';
+                if (guide != nanoxgen::kInvalidIndex) {
+                    const std::size_t offset =
+                        static_cast<std::size_t>(guide) *
+                        binding.cvs_per_guide;
+                    for (std::uint32_t cv = 0u;
+                         cv < binding.cvs_per_guide; ++cv) {
+                        const nanoxgen::Vec3 point =
+                            binding.guide_axes[offset + cv];
+                        std::cout << "runtime " << strand
+                                  << " clump_axis " << cv << ' '
+                                  << point.x << ' ' << point.y << ' '
+                                  << point.z << '\n';
+                    }
+                }
+            }
         }
         const Clock::time_point compile_end = Clock::now();
         std::uint64_t output_checksum{};
@@ -371,9 +412,7 @@ int main(int argc, char **argv) try {
             nanoxgen::GenerationParams params{};
             params.strand_count =
                 static_cast<std::uint32_t>(roots.roots.size());
-            params.cvs_per_strand = options.cvs != 0u
-                ? options.cvs
-                : (runtime.fx_cv_count >= 2u ? runtime.fx_cv_count : 8u);
+            params.cvs_per_strand = runtime_cvs;
             nanoxgen::PackedGeneratedCurves curves =
                 roots.influence_offsets.empty()
                     ? nanoxgen::generate_packed_roots_cpu(
@@ -383,7 +422,7 @@ int main(int argc, char **argv) try {
             if (!options.base_only) {
                 nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
                     curves, runtime, 1.0f, roots.surface_tangents,
-                    roots.random_prefixes, roots.primitive_ids);
+                    roots.random_prefixes, roots.primitive_ids, clump_data);
             }
             nanoxgen::add_xgen_classic_renderer_endpoints(curves);
             if (options.output_nxc) {

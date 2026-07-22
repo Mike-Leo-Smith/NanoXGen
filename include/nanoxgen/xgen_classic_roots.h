@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -52,6 +53,13 @@ struct ClassicRootPlan {
     std::uint64_t guide_rejected_count{};
 };
 
+struct ClassicExplicitRoot {
+    std::uint32_t face_id{};
+    Vec2 uv{};
+    Vec3 position{};
+    std::uint32_t primitive_id{};
+};
+
 // Raw XGen guide-association weight before normalization. Exposed for
 // calibration/differential tests; production callers normally use the root
 // planner, which rejects samples whose complete guide-weight sum is empty.
@@ -73,6 +81,15 @@ struct ClassicRootPlan {
     const ClassicAlembicAssetInput &surface,
     const std::filesystem::path &description_directory,
     const ClassicRootGenerationLimits &limits = {});
+
+// Associate caller-provided patch locations with the description's authored
+// guides. This is used by XPD clump points, whose world-space roots and
+// face-local primitive IDs are already fixed by the authoring cache.
+[[nodiscard]] ClassicRootPlan build_xgen_classic_explicit_root_plan(
+    const ClassicDescription &description,
+    const ClassicAlembicAssetInput &surface,
+    std::string_view patch_name,
+    std::span<const ClassicExplicitRoot> samples);
 
 // Rebuild each authored guide using XGen's uniform SgCurve convention, then
 // blend guide offsets with the exact associations retained by the root plan.

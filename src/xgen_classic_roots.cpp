@@ -708,6 +708,70 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
     return result;
 }
 
+ClassicRootPlan build_xgen_classic_explicit_root_plan(
+    const ClassicDescription &description,
+    const ClassicAlembicAssetInput &surface,
+    std::string_view patch_name,
+    std::span<const ClassicExplicitRoot> samples) {
+    if (!surface.reference_surface) {
+        fail("explicit roots require an imported subdivision surface");
+    }
+    GuideSupportIndex guide_support{surface.asset};
+    if (!guide_support.enabled()) {
+        fail("explicit roots require Classic guide support metadata");
+    }
+    ClassicRootPlan result{};
+    result.roots.reserve(samples.size());
+    result.surface_tangents.reserve(samples.size());
+    result.primitive_ids.reserve(samples.size());
+    result.random_prefixes.reserve(samples.size());
+    result.influence_offsets.reserve(samples.size() + 1u);
+    result.influence_offsets.push_back(0u);
+    std::vector<ClassicGuideInfluence> influences;
+    for (const ClassicExplicitRoot &sample : samples) {
+        if (!std::isfinite(sample.uv.x) || !std::isfinite(sample.uv.y) ||
+            sample.uv.x < 0.0f || sample.uv.x > 1.0f ||
+            sample.uv.y < 0.0f || sample.uv.y > 1.0f ||
+            !std::isfinite(sample.position.x) ||
+            !std::isfinite(sample.position.y) ||
+            !std::isfinite(sample.position.z)) {
+            fail("explicit root contains a non-finite or out-of-range value");
+        }
+        const ClassicReferenceSurfaceSample reference =
+            surface.reference_surface->evaluate(
+                patch_name, sample.face_id, sample.uv.x, sample.uv.y);
+        const ClassicReferenceSurfaceSample current =
+            surface.reference_surface->evaluate_current(
+                patch_name, sample.face_id, sample.uv.x, sample.uv.y);
+        guide_support.gather(
+            reference.position, reference.normal, influences);
+        if (influences.empty()) {
+            fail("explicit root has no associated guide");
+        }
+        result.roots.push_back({
+            sample.position, current.normal, sample.uv, 0u, {},
+            sample.face_id});
+        result.surface_tangents.push_back(current.tangent);
+        result.primitive_ids.push_back(sample.primitive_id);
+        const std::array random_arguments{
+            static_cast<double>(sample.uv.x),
+            static_cast<double>(sample.uv.y),
+            xgen_face_seed(description_id(description), patch_name,
+                           sample.face_id)};
+        result.random_prefixes.push_back(
+            xgen_seexpr_hash_prefix(random_arguments));
+        result.influences.insert(
+            result.influences.end(), influences.begin(), influences.end());
+        if (result.influences.size() >
+            std::numeric_limits<std::uint32_t>::max()) {
+            fail("explicit guide influence count exceeds uint32");
+        }
+        result.influence_offsets.push_back(
+            static_cast<std::uint32_t>(result.influences.size()));
+    }
+    return result;
+}
+
 namespace {
 
 struct ClassicDouble3 {
