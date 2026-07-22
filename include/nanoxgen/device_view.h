@@ -24,6 +24,7 @@ public:
         return at<std::uint32_t>(header().triangle_guides_offset);
     }
 
+    NXG_HOST_DEVICE const void *data() const noexcept { return _base; }
     NXG_HOST_DEVICE explicit operator bool() const noexcept { return _base != nullptr; }
 
 private:

@@ -332,6 +332,7 @@ NXG_HOST_DEVICE inline void generate_packed_strand(
         asset, deformed, params, strand);
     if (output.roots) { output.roots[strand] = state.root; }
     if (output.root_uvs) { output.root_uvs[strand] = state.root.uv; }
+    if (output.point_counts) { output.point_counts[strand] = params.cvs_per_strand; }
     for (std::uint32_t cv = 0u; cv < params.cvs_per_strand; ++cv) {
         Vec3 point{};
         float width = 0.0f;

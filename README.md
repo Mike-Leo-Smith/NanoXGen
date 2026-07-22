@@ -14,7 +14,9 @@ The current prototype provides:
 - root-relative guide interpolation with compact support weights;
 - width taper and a first strand-stable noise modifier;
 - one shared C++/CUDA generation function and a CUDA launch kernel;
-- direct CPU/CUDA generation into renderer `float4(position, radius)` buffers;
+- direct CPU/CUDA generation into renderer `float4(position, radius)` and
+  fixed `pointCounts` buffers, with checked device capacities and deformation
+  lengths at the public CUDA boundary;
 - persistent CPU workers that claim CUDA-block-sized strand tiles through an
   atomic counter;
 - validation, corruption detection, tests, and an OBJ curve preview;

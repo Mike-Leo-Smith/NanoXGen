@@ -318,6 +318,19 @@ Asset load_asset(const std::filesystem::path &path) {
     return Asset{std::move(bytes)};
 }
 
+DeviceAssetDescriptor make_device_asset_descriptor(
+    const Asset &asset,
+    const void *device_data,
+    std::uint64_t device_byte_capacity) {
+    const std::string error = validate_asset(asset.bytes());
+    if (!error.empty()) { throw std::invalid_argument("invalid asset: " + error); }
+    if (!device_data) { throw std::invalid_argument("device asset pointer is null"); }
+    if (device_byte_capacity < asset.bytes().size()) {
+        throw std::invalid_argument("device asset allocation is smaller than the asset");
+    }
+    return {DeviceAssetView{device_data}, asset.view().header(), device_byte_capacity};
+}
+
 GeneratedCurves generate_cpu(
     const Asset &asset, const GenerationParams &params, const CpuGenerationOptions &options) {
     return generate_deformed_cpu(asset, params, DeformedGeometryView{}, options);
@@ -376,10 +389,12 @@ PackedGeneratedCurves generate_packed_deformed_cpu(
     const std::size_t point_count =
         static_cast<std::size_t>(params.strand_count) * params.cvs_per_strand;
     curves.points.resize(point_count);
+    curves.point_counts.resize(params.strand_count);
     curves.roots.resize(params.strand_count);
     curves.root_uvs.resize(params.strand_count);
     const DevicePackedCurveOutputView output{
-        curves.points.data(), curves.roots.data(), curves.root_uvs.data(), radius_scale};
+        curves.points.data(), curves.roots.data(), curves.root_uvs.data(), radius_scale,
+        curves.point_counts.data()};
     const DeviceAssetView asset_view = asset.view();
     parallel_for_strands(params.strand_count, options, [&](std::uint32_t strand) {
         generate_packed_strand(asset_view, params, strand, output, device_deformed);

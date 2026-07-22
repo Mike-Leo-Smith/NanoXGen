@@ -2,6 +2,7 @@
 #include "nanoxgen/curve_cache.h"
 #include "nanoxgen/curve_payload.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -293,11 +294,73 @@ void test_direct_packed_generation_math() {
         generate_packed_cpu(asset, params, 1.5f, {1u, 128u});
     require(public_output.points.size() == packed.size(),
             "public packed generation point count");
+    require(public_output.point_counts.size() == params.strand_count &&
+            std::all_of(public_output.point_counts.begin(), public_output.point_counts.end(),
+                        [&](std::uint32_t count) { return count == params.cvs_per_strand; }),
+            "public packed generation must materialize renderer point counts");
     require(public_output.root_uvs.size() == params.strand_count,
             "public packed generation UV count");
     require(std::memcmp(public_output.points.data(), packed.data(),
                         packed.size() * sizeof(PackedCurvePoint)) == 0,
             "public packed generation must use shared device math");
+}
+
+void test_checked_device_generation_contract() {
+    const Asset asset = build_asset(fixture());
+    const DeviceAssetDescriptor device_asset = make_device_asset_descriptor(
+        asset, asset.bytes().data(), asset.bytes().size());
+    GenerationParams params{};
+    params.strand_count = 7u;
+    params.cvs_per_strand = 5u;
+    const std::uint64_t point_count =
+        static_cast<std::uint64_t>(params.strand_count) * params.cvs_per_strand;
+    std::vector<PackedCurvePoint> points(point_count);
+    std::vector<RootSample> roots(params.strand_count);
+    std::vector<Vec2> root_uvs(params.strand_count);
+    std::vector<std::uint32_t> point_counts(params.strand_count);
+    DevicePackedCurveOutputDescriptor output{
+        {points.data(), roots.data(), root_uvs.data(), 1.0f, point_counts.data()},
+        points.size(), roots.size(), root_uvs.size(), point_counts.size()};
+
+    require(validate_device_packed_generation_request(
+                device_asset, {}, params, output) == DeviceGenerationError::None,
+            "valid checked device request");
+
+    output.point_capacity = point_count - 1u;
+    require(validate_device_packed_generation_request(
+                device_asset, {}, params, output) ==
+                DeviceGenerationError::PointCapacityTooSmall,
+            "checked device point capacity");
+    output.point_capacity = point_count;
+
+    DeviceDeformedGeometryDescriptor bad_deformation{};
+    bad_deformation.geometry.positions = asset.view().positions();
+    bad_deformation.position_count = asset.view().header().vertex_count - 1u;
+    require(validate_device_packed_generation_request(
+                device_asset, bad_deformation, params, output) ==
+                DeviceGenerationError::DeformedPositionCountMismatch,
+            "checked device deformation size");
+
+    DeviceLaunchConfig bad_config{};
+    bad_config.block_size = 0u;
+    require(validate_device_packed_generation_request(
+                device_asset, {}, params, output, bad_config) ==
+                DeviceGenerationError::InvalidBlockSize,
+            "checked device launch geometry");
+
+    output.output.radius_scale = std::numeric_limits<float>::quiet_NaN();
+    require(validate_device_packed_generation_request(
+                device_asset, {}, params, output) ==
+                DeviceGenerationError::InvalidRadiusScale,
+            "checked device radius scale");
+
+    const DeviceAssetDescriptor short_asset{
+        device_asset.asset, device_asset.header, device_asset.header.byte_size - 1u};
+    output.output.radius_scale = 1.0f;
+    require(validate_device_packed_generation_request(
+                short_asset, {}, params, output) ==
+                DeviceGenerationError::AssetCapacityTooSmall,
+            "checked device asset capacity");
 }
 
 void test_renderer_curve_payload_64k_boundary() {
@@ -382,6 +445,7 @@ int main() try {
     test_linear_compatibility_generation();
     test_renderer_curve_payload();
     test_direct_packed_generation_math();
+    test_checked_device_generation_contract();
     test_renderer_curve_payload_64k_boundary();
     test_exact_curve_cache();
     std::cout << "all NanoXGen tests passed\n";

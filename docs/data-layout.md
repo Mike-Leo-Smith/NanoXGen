@@ -37,6 +37,11 @@ aligned `float4(position, radius)` values, root UVs, motion positions, and
 face-uniform primvars. Keeping transport data out of the asset avoids baking a
 specific renderer ABI into the persistent format.
 
+GPU launch descriptors keep a validated host mirror of the asset header plus
+the device allocation capacity. Deformation and output views carry explicit
+element counts, so the public checked launch can reject a stale mesh overlay or
+undersized renderer buffer without dereferencing device memory.
+
 `.nxc` is a separate evaluated-curve cache, not an authoring/procedural asset.
 Its pointer-free header references per-curve counts, aligned
 `float4(position, radius)`, optional public XGen attributes, and optional

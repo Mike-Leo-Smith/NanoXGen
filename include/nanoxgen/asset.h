@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nanoxgen/device_contract.h"
 #include "nanoxgen/generate.h"
 
 #include <filesystem>
@@ -53,6 +54,7 @@ struct GeneratedCurves {
 struct PackedGeneratedCurves {
     std::uint32_t strand_count{};
     std::uint32_t cvs_per_strand{};
+    std::vector<std::uint32_t> point_counts;
     std::vector<PackedCurvePoint> points;
     std::vector<RootSample> roots;
     std::vector<Vec2> root_uvs;
@@ -99,6 +101,12 @@ struct DeformedGeometryView {
 [[nodiscard]] std::string validate_asset(std::span<const std::byte> bytes);
 void save_asset(const Asset &asset, const std::filesystem::path &path);
 [[nodiscard]] Asset load_asset(const std::filesystem::path &path);
+// Build the checked host descriptor after copying asset.bytes() to device_data.
+// device_byte_capacity is the allocation size, not merely the copied size.
+[[nodiscard]] DeviceAssetDescriptor make_device_asset_descriptor(
+    const Asset &asset,
+    const void *device_data,
+    std::uint64_t device_byte_capacity);
 [[nodiscard]] GeneratedCurves generate_cpu(const Asset &asset, const GenerationParams &params);
 [[nodiscard]] GeneratedCurves generate_cpu(
     const Asset &asset, const GenerationParams &params, const CpuGenerationOptions &options);

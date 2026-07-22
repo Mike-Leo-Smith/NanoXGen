@@ -158,6 +158,7 @@ struct DevicePackedCurveOutputView {
     RootSample *roots{};
     Vec2 *root_uvs{};
     float radius_scale{1.0f};
+    std::uint32_t *point_counts{};
 };
 
 } // namespace nanoxgen

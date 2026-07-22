@@ -44,8 +44,29 @@ intermediate:
 PackedGeneratedCurves curves = generate_packed_cpu(asset, params);
 ```
 
-`launch_generate_packed_cuda` provides the same contract on a CUDA stream and
-can write into renderer-owned device memory.
+The checked `launch_generate_packed_cuda` overload provides the same contract
+on a CUDA stream and writes directly into renderer-owned device memory. The
+descriptor carries capacities because a raw device pointer cannot be inspected
+safely on the host. It rejects undersized buffers, mismatched deformation
+arrays, invalid numeric parameters, and invalid launch geometry before the
+kernel is enqueued. The packed kernel writes fixed `pointCounts`, root UVs, and
+`float4(position, radius)` in the same strand pass.
+
+```cpp
+// d_asset already contains an exact copy of asset.bytes().
+DeviceAssetDescriptor gpu_asset = make_device_asset_descriptor(
+    asset, d_asset, d_asset_capacity);
+DevicePackedCurveOutputDescriptor output{
+    {d_points, d_roots, d_root_uvs, radius_scale, d_point_counts},
+    point_capacity, root_capacity, root_uv_capacity, point_count_capacity};
+
+cudaError_t error = launch_generate_packed_cuda(
+    gpu_asset, {}, params, output, {}, stream);
+```
+
+The original raw-pointer overload remains available for tightly controlled
+internal code, but it cannot prove allocation sizes and should not be used at
+the renderer boundary.
 
 ## Compiler modes and numerical policy
 
@@ -111,8 +132,8 @@ while procedural parity is expanded.
 
 | Renderer requirement | NanoXGen status |
 |---|---|
-| Positions and per-CV radius | implemented |
-| Fixed or variable point counts in output | implemented |
+| Positions and per-CV radius | implemented, including checked CUDA direct output |
+| Fixed or variable point counts in output | implemented; fixed counts are fused into CUDA generation |
 | Root UV, uniform float, uniform color | implemented payload contract |
 | Multiple absolute motion samples | implemented payload contract |
 | Deformed mesh/normal/guide overlays | implemented on CPU and shared device math |
