@@ -14,7 +14,7 @@ content rather than the suffix alone.
 | `.nxc` evaluated curve cache | Validate and consume | Native |
 | Classic collection/description package | Inventory and text-reference closure | Autodesk Classic typed bridge required for arbitrary procedural evaluation |
 | Interactive Groom authoring state in `.ma/.mb` | File inventory only; Maya DG owns the dependency graph | Maya/Autodesk required |
-| PTEX, CAF, XUV/XPD/XGC, Alembic, archives, textures and plugins | Typed inventory and dependency reporting | Depends on the owning Classic/Interactive graph |
+| PTEX, CAF, XUV/XPD/XGC, Alembic, archives, textures and plugins | Typed inventory; optional Alembic patch/guide import | Depends on the owning Classic/Interactive graph |
 
 Classic text structure can also be inspected without Autodesk:
 
@@ -33,6 +33,13 @@ CPU/GPU evaluation. Parsing this authoring state is not the same as evaluating
 its generator, expressions, PTEX maps, and FX modules, so the package planner
 continues to select Autodesk whenever the complete native execution chain is
 not implemented and proven.
+
+An explicit `classic-alembic-release` preset additionally imports Classic patch
+sample zero and embedded guides through the system Alembic library, then builds
+a validated `.nxg` asset. This is a native input milestone, not complete
+Classic evaluation: current quad-cage interpolation is not the exact Subd limit
+surface, and PTEX plus the authored FX chain still require fallback. See
+[`classic-native.md`](classic-native.md).
 
 The core does not claim to reproduce arbitrary SeExpr, PTEX lookup, custom
 modules, archive/card/sphere primitives, or Interactive Groom modifier graphs.

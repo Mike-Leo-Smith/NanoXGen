@@ -21,6 +21,8 @@ option(NANOXGEN_ENABLE_CUDA "Build the CUDA generation kernel" OFF)
 option(NANOXGEN_ENABLE_HIP "Build the HIP generation and cache-residency kernels" OFF)
 option(NANOXGEN_ENABLE_LUISA
   "Build the optional LuisaCompute next JIT execution bridge" OFF)
+option(NANOXGEN_ENABLE_ALEMBIC
+  "Build the optional Classic XGen Alembic patch importer" OFF)
 set(NANOXGEN_LUISA_BACKEND "hip" CACHE STRING
   "LuisaCompute runtime backend used by the optional parity test")
 set_property(CACHE NANOXGEN_LUISA_BACKEND PROPERTY STRINGS hip vk cpu fallback)
@@ -264,6 +266,38 @@ if(NANOXGEN_ENABLE_LUISA)
     add_test(NAME nanoxgen_luisa_tests
       COMMAND nanoxgen_luisa_tests
         "${LuisaComputeNext_RUNTIME_DIR}" "${NANOXGEN_LUISA_BACKEND}")
+  endif()
+endif()
+
+if(NANOXGEN_ENABLE_ALEMBIC)
+  find_package(Alembic CONFIG REQUIRED)
+  add_library(nanoxgen_classic_alembic STATIC src/xgen_classic_alembic.cpp)
+  add_library(NanoXGen::nanoxgen_classic_alembic ALIAS nanoxgen_classic_alembic)
+  target_include_directories(
+    nanoxgen_classic_alembic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_features(nanoxgen_classic_alembic PUBLIC cxx_std_20)
+  target_link_libraries(
+    nanoxgen_classic_alembic PUBLIC nanoxgen Alembic::Alembic)
+  target_link_libraries(
+    nanoxgen_classic_alembic PRIVATE nanoxgen_build_options)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(
+      nanoxgen_classic_alembic PRIVATE -Wall -Wextra -Wpedantic)
+  elseif(MSVC)
+    target_compile_options(nanoxgen_classic_alembic PRIVATE /W4)
+  endif()
+  add_executable(
+    nanoxgen_xgen_classic_asset tools/xgen_classic_asset.cpp)
+  target_link_libraries(
+    nanoxgen_xgen_classic_asset PRIVATE nanoxgen_classic_alembic)
+  if(NANOXGEN_BUILD_TESTS)
+    add_executable(
+      nanoxgen_classic_alembic_tests tests/classic_alembic_test.cpp)
+    target_link_libraries(
+      nanoxgen_classic_alembic_tests PRIVATE nanoxgen_classic_alembic)
+    add_test(
+      NAME nanoxgen_classic_alembic_tests
+      COMMAND nanoxgen_classic_alembic_tests)
   endif()
 endif()
 

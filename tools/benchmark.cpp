@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <numeric>
@@ -124,13 +125,24 @@ Timing measure_packed(std::uint32_t repeats, Function &&function) {
 
 int main(int argc, char **argv) try {
     std::uint32_t repeats = 7u;
+    std::uint32_t cvs_per_strand = 12u;
     bool xgen_noise = false;
+    std::filesystem::path asset_path;
     std::vector<std::uint32_t> counts;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--repeats") {
             if (++i >= argc) { throw std::invalid_argument("missing repeat count"); }
             repeats = static_cast<std::uint32_t>(std::stoul(argv[i]));
+        } else if (arg == "--cvs") {
+            if (++i >= argc) { throw std::invalid_argument("missing CV count"); }
+            cvs_per_strand = static_cast<std::uint32_t>(std::stoul(argv[i]));
+            if (cvs_per_strand < 2u) {
+                throw std::invalid_argument("CV count must be at least two");
+            }
+        } else if (arg == "--asset") {
+            if (++i >= argc) { throw std::invalid_argument("missing asset path"); }
+            asset_path = argv[i];
         } else if (arg == "--xgen-noise") {
             xgen_noise = true;
         } else {
@@ -140,17 +152,20 @@ int main(int argc, char **argv) try {
     if (counts.empty()) { counts = {10000u, 100000u}; }
     if (repeats == 0u) { throw std::invalid_argument("repeat count must be positive"); }
 
-    const Asset asset = make_asset();
+    const Asset asset = asset_path.empty() ? make_asset() : load_asset(asset_path);
     std::cout << std::setprecision(9)
               << "{\n  \"logical_cpus\": " << std::max(1u, std::thread::hardware_concurrency())
               << ",\n  \"repeats\": " << repeats
+              << ",\n  \"asset\": \""
+              << (asset_path.empty() ? "synthetic" : asset_path.string()) << "\""
+              << ",\n  \"cvs_per_strand\": " << cvs_per_strand
               << ",\n  \"xgen_noise\": " << (xgen_noise ? "true" : "false")
               << ",\n  \"cases\": [\n";
     for (std::size_t case_index = 0u; case_index < counts.size(); ++case_index) {
         const std::uint32_t count = counts[case_index];
         GenerationParams native_params{};
         native_params.strand_count = count;
-        native_params.cvs_per_strand = 12u;
+        native_params.cvs_per_strand = cvs_per_strand;
         native_params.seed = 23u;
         native_params.root_width = 0.02f;
         native_params.tip_width = 0.02f;
@@ -172,13 +187,13 @@ int main(int argc, char **argv) try {
 
         const std::vector<LinearCurveSeed> seeds = make_linear_seeds(count);
         LinearModifierReferenceParams reference_params{};
-        reference_params.cvs_per_strand = 12u;
+        reference_params.cvs_per_strand = cvs_per_strand;
         const Timing reference = measure(repeats, [&] {
             return generate_linear_modifier_reference_cpu(seeds, reference_params);
         });
-        const double cvs = static_cast<double>(count) * 12.0;
+        const double cvs = static_cast<double>(count) * cvs_per_strand;
         std::cout << "    {\"strands\": " << count << ", \"cvs\": "
-                  << static_cast<std::uint64_t>(count) * 12u
+                  << static_cast<std::uint64_t>(count) * cvs_per_strand
                   << ", \"native_ms\": {\"min\": " << native.minimum_ms
                   << ", \"median\": " << native.median_ms
                   << ", \"p90\": " << native.p90_ms

@@ -49,6 +49,8 @@ The current prototype provides:
   native, Classic typed, or Interactive Maya backend execution plan;
 - a bounded, Autodesk-free Classic collection parser with typed descriptions,
   ordered modules, bindings, patch faces, and packed embedded-guide data;
+- an optional system-Alembic Classic input stage that imports selected patch
+  faces and embedded guides into validated `.nxg` assets without Maya/XGen;
 - an optional Classic curve bridge that consumes public XGen RenderAPI typed
   callbacks directly and can write `.nxc` without an intermediate renderer BLOB;
 - an optional Interactive Maya command that serializes `outRenderData` to
@@ -95,6 +97,11 @@ LuisaCompute is a separate optional execution backend. Its moving `next`
 checkout and build stay outside this repository; see
 [`docs/luisa-compute.md`](docs/luisa-compute.md) for the tested revision, AMD
 HIP build, cache behavior, and explicit `luisa-hip-release` preset.
+
+The Classic Alembic input stage is also explicit and optional. See
+[`docs/classic-native.md`](docs/classic-native.md) for its
+`classic-alembic-release` preset, external-asset command, and current
+subdivision/PTEX/modifier parity boundary.
 
 The HIP build also provides direct generation and evaluated `.nxc` residency
 benchmarks. The latter accepts multiple caches, so a complete multi-description

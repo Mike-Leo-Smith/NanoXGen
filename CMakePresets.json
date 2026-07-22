@@ -84,6 +84,16 @@
       }
     },
     {
+      "name": "classic-alembic-release",
+      "displayName": "Classic Alembic import release",
+      "description": "Release build with the optional system Alembic patch importer",
+      "inherits": "release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "NANOXGEN_ENABLE_ALEMBIC": "ON"
+      }
+    },
+    {
       "name": "calibration-release",
       "displayName": "XGen calibration release",
       "description": "Optional Autodesk-backed oracle and conversion tools",
@@ -136,6 +146,11 @@
       "jobs": 2
     },
     {
+      "name": "classic-alembic-release",
+      "configurePreset": "classic-alembic-release",
+      "jobs": 2
+    },
+    {
       "name": "calibration-release",
       "configurePreset": "calibration-release",
       "jobs": 2
@@ -185,6 +200,13 @@
     {
       "name": "luisa-hip-release",
       "configurePreset": "luisa-hip-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "classic-alembic-release",
+      "configurePreset": "classic-alembic-release",
       "output": {
         "outputOnFailure": true
       }
