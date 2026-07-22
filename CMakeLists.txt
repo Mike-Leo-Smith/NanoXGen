@@ -156,7 +156,10 @@ install(FILES
 if(NANOXGEN_BUILD_TESTS)
   enable_testing()
   add_executable(nanoxgen_tests tests/test_main.cpp)
-  target_link_libraries(nanoxgen_tests PRIVATE nanoxgen)
+  # test_main exercises the public host/device inline generation functions
+  # directly and compares them bit-for-bit with the library entry points. Keep
+  # both translation units on the same native/SIMD/fast-math contract.
+  target_link_libraries(nanoxgen_tests PRIVATE nanoxgen nanoxgen_build_options)
   add_test(NAME nanoxgen_tests COMMAND nanoxgen_tests)
   add_executable(nanoxgen_package_tests tests/package_test.cpp)
   target_link_libraries(nanoxgen_package_tests PRIVATE nanoxgen)
@@ -182,7 +185,8 @@ if(NANOXGEN_ENABLE_CUDA)
 
   if(NANOXGEN_BUILD_TESTS)
     add_executable(nanoxgen_cuda_tests tests/cuda_test.cpp)
-    target_link_libraries(nanoxgen_cuda_tests PRIVATE nanoxgen_cuda)
+    target_link_libraries(
+      nanoxgen_cuda_tests PRIVATE nanoxgen_cuda nanoxgen_build_options)
     add_test(NAME nanoxgen_cuda_tests COMMAND nanoxgen_cuda_tests)
     set_tests_properties(nanoxgen_cuda_tests PROPERTIES SKIP_RETURN_CODE 77)
   endif()
