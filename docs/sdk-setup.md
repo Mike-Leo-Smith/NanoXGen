@@ -75,6 +75,23 @@ the public API's BLOB load/execute/iteration stages. The Maya export number
 includes serialization and fixed host overhead and is not an apples-to-apples
 kernel timing.
 
+To profile the exact renderer bridge (`asMObject`, `writeBinary`, load,
+execute, and materialization) inside Maya, run:
+
+```bash
+./scripts/run_xgen_bridge_profile.sh
+```
+
+With CMake and XGen available, `nanoxgen_xgen_cache` converts evaluated output
+to an Autodesk-free runtime cache. Motion samples are separate official
+evaluations and are canonicalized before storage:
+
+```bash
+./build/nanoxgen_xgen_cache --renderer-minimal \
+  --motion 0.5 /tmp/shutter-close.xgen /tmp/base.xgen /tmp/groom.nxc
+./build/nanoxgen_cache_benchmark --repeats 15 /tmp/groom.nxc
+```
+
 Maya's supported RHEL/Rocky systems should provide the required libraries. On
 another Linux distribution, a workspace-local compatibility directory can be
 appended without modifying the system:

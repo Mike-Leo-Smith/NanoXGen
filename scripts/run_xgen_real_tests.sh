@@ -13,6 +13,7 @@ BUILD_DIR="${NANOXGEN_XGEN_BUILD_DIR:-${ROOT}/build/xgen-real}"
 MAYAPY="${MAYA_LOCATION}/bin/mayapy"
 PROBE="${BUILD_DIR}/nanoxgen_xgen_probe"
 PARITY="${BUILD_DIR}/nanoxgen_xgen_parity"
+CACHE="${BUILD_DIR}/nanoxgen_xgen_cache"
 
 "${ROOT}/scripts/check_xgen_sdk.sh" "${XGEN_ROOT}"
 if [[ ! -x "${MAYAPY}" ]]; then
@@ -39,6 +40,12 @@ fi
   -L"${XGEN_ROOT}/lib" -L"${MAYA_LOCATION}/lib" \
   -Wl,--allow-shlib-undefined \
   -lAdskXGen -lclew -o "${PARITY}"
+"${CXX:-c++}" -std=c++20 -O2 -Wall -Wextra -Wpedantic \
+  -I"${ROOT}/include" -I"${XGEN_ROOT}/include" \
+  "${ROOT}/src/curve_cache.cpp" "${ROOT}/tools/xgen_cache.cpp" \
+  -L"${XGEN_ROOT}/lib" -L"${MAYA_LOCATION}/lib" \
+  -Wl,--allow-shlib-undefined \
+  -lAdskXGen -lclew -o "${CACHE}"
 
 run_fixture() {
   local name="$1"
@@ -92,6 +99,11 @@ LD_LIBRARY_PATH="${RUNTIME_LIBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
   "${PARITY}" "${BUILD_DIR}/complex-base.xgen" "${BUILD_DIR}/complex-cut-taper.xgen" \
   --length-scale 0.73 --width-taper 0.8 --width-taper-start 0.25 \
   > "${BUILD_DIR}/parity-cut-taper.json"
+LD_LIBRARY_PATH="${RUNTIME_LIBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "${CACHE}" --renderer-minimal \
+  --motion 0.5 "${BUILD_DIR}/complex-base-repeat.xgen" \
+  "${BUILD_DIR}/complex-base.xgen" "${BUILD_DIR}/complex-motion.nxc" \
+  > "${BUILD_DIR}/complex-motion-cache.json"
 
 python3 -c 'from pathlib import Path; Path(__import__("sys").argv[1]).write_bytes(b"")' \
   "${BUILD_DIR}/malformed.xgen"

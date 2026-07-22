@@ -6,6 +6,7 @@
 /.cache/
 NanoXGen-prototype-*.tar.gz
 *.nxg
+*.nxc
 *.obj
 *.xgen
 __pycache__/

@@ -14,14 +14,21 @@ The current prototype provides:
 - root-relative guide interpolation with compact support weights;
 - width taper and a first strand-stable noise modifier;
 - one shared C++/CUDA generation function and a CUDA launch kernel;
+- direct CPU/CUDA generation into renderer `float4(position, radius)` buffers;
 - persistent CPU workers that claim CUDA-block-sized strand tiles through an
   atomic counter;
 - validation, corruption detection, tests, and an OBJ curve preview;
 - a Maya 2027.1-tested Autodesk XGen Interactive Grooming probe and real-fixture
   differential harness;
-- an XGen-compatible linear base/cut/taper path with strict per-curve parity
-  checks on a subdivided wave surface;
-- reproducible in-process NanoXGen and real XGen performance benchmarks.
+- a linear modifier reference path with strict XGen base/cut/taper checks on a
+  subdivided wave surface (not a complete generation benchmark);
+- reproducible in-process NanoXGen and real XGen performance benchmarks;
+- a renderer-facing curve payload with radius conversion, motion samples,
+  root UV/custom primvars, affine transforms, resampling, and 64K batching;
+- frame-local deformed mesh/normal/guide overlays with stable root identities;
+- a bit-exact evaluated-curve `.nxc` cache with canonical motion matching, for
+  bypassing Maya/XGen on repeated static renders;
+- optional native ISA, SIMD-width, IPO/LTO, and precision-gated fast-math modes.
 
 ## Build and run without CMake
 
@@ -60,15 +67,28 @@ Run the benchmark separately:
 ./scripts/run_xgen_benchmark.sh
 ```
 
-It reports NanoXGen native and XGen-compatible in-memory generation separately
-from Maya BLOB export and `XgFnSpline` load/execute costs. These stages are not
-collapsed into one misleading speedup number.
+It reports complete NanoXGen generation, renderer payload packing, the narrow
+linear modifier reference, Maya BLOB export, and `XgFnSpline`
+load/execute/materialization as separate stages. These stages are not collapsed
+into one misleading speedup number.
+
+`nanoxgen_xgen_cache` converts already-evaluated official spline BLOBs to the
+runtime-only `.nxc` cache. `--renderer-minimal` stores only the topology and
+bit-exact renderer points; `--motion` adds separately evaluated shutter samples
+after canonical face/UV matching. The converter is built only when a licensed
+XGen SDK is available; loading `.nxc` does not require Autodesk libraries.
+
+For production compiler experiments, run `make fast-math-check`. The test
+compares every float from strict and fast builds and fails if its documented
+relaxed error budget is exceeded.
 
 ## Research status
 
 See [`docs/xgen-research.md`](docs/xgen-research.md) for the verified XGen model,
 documented interpolation algorithm, current approximations, and clean-room plan.
 See [`docs/data-layout.md`](docs/data-layout.md) for the GPU blob layout.
+See [`docs/renderer-integration.md`](docs/renderer-integration.md) for the exact
+curve payload contract and coverage relative to the Maya renderer paths.
 
 ## Continuous integration
 

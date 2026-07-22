@@ -125,6 +125,73 @@ bool section_fits(const AssetHeader &h, std::uint64_t offset, std::uint64_t coun
     return size <= h.byte_size - offset;
 }
 
+template<typename Function>
+void parallel_for_strands(
+    std::uint32_t strand_count,
+    const CpuGenerationOptions &options,
+    Function &&function) {
+    if (options.strands_per_work_block == 0u) {
+        throw std::invalid_argument("CPU work block must contain at least one strand");
+    }
+    const std::uint32_t logical_block_count = static_cast<std::uint32_t>(
+        (static_cast<std::uint64_t>(strand_count) +
+         options.strands_per_work_block - 1u) / options.strands_per_work_block);
+    std::uint32_t worker_count = options.worker_count;
+    if (worker_count == 0u) {
+        worker_count = std::max(1u, std::thread::hardware_concurrency());
+        const std::uint32_t useful_workers = (logical_block_count + 3u) / 4u;
+        worker_count = std::min(worker_count, std::max(1u, useful_workers));
+    }
+    worker_count = std::min(worker_count, logical_block_count);
+
+    std::atomic<std::uint32_t> next_block{0u};
+    const auto worker = [&] {
+        for (;;) {
+            const std::uint32_t block = next_block.fetch_add(1u, std::memory_order_relaxed);
+            if (block >= logical_block_count) { return; }
+            const std::uint64_t first =
+                static_cast<std::uint64_t>(block) * options.strands_per_work_block;
+            const std::uint32_t end = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                first + options.strands_per_work_block, strand_count));
+            for (std::uint32_t strand = static_cast<std::uint32_t>(first);
+                 strand < end; ++strand) {
+                function(strand);
+            }
+        }
+    };
+    if (worker_count == 1u) {
+        worker();
+        return;
+    }
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count);
+    for (std::uint32_t i = 0u; i < worker_count; ++i) { workers.emplace_back(worker); }
+    for (auto &thread : workers) { thread.join(); }
+}
+
+DeviceDeformedGeometryView validate_generation_input(
+    const Asset &asset,
+    const GenerationParams &params,
+    const DeformedGeometryView &deformed) {
+    const std::string error = validate_asset(asset.bytes());
+    if (!error.empty()) { throw std::invalid_argument("invalid asset: " + error); }
+    if (params.strand_count == 0u || params.cvs_per_strand < 2u) {
+        throw std::invalid_argument("generation needs strands and at least two CVs");
+    }
+    const DeviceAssetView asset_view = asset.view();
+    const AssetHeader &header = asset_view.header();
+    if ((!deformed.positions.empty() && deformed.positions.size() != header.vertex_count) ||
+        (!deformed.normals.empty() && deformed.normals.size() != header.vertex_count) ||
+        (!deformed.guide_cvs.empty() && deformed.guide_cvs.size() != header.guide_cv_count)) {
+        throw std::invalid_argument("deformed geometry array size does not match the asset");
+    }
+    return {
+        deformed.positions.empty() ? nullptr : deformed.positions.data(),
+        deformed.normals.empty() ? nullptr : deformed.normals.data(),
+        deformed.guide_cvs.empty() ? nullptr : deformed.guide_cvs.data(),
+    };
+}
+
 } // namespace
 
 Asset build_asset(const AssetBuildInput &input) {
@@ -253,14 +320,17 @@ Asset load_asset(const std::filesystem::path &path) {
 
 GeneratedCurves generate_cpu(
     const Asset &asset, const GenerationParams &params, const CpuGenerationOptions &options) {
-    const std::string error = validate_asset(asset.bytes());
-    if (!error.empty()) { throw std::invalid_argument("invalid asset: " + error); }
-    if (params.strand_count == 0u || params.cvs_per_strand < 2u) {
-        throw std::invalid_argument("generation needs strands and at least two CVs");
-    }
-    if (options.strands_per_work_block == 0u) {
-        throw std::invalid_argument("CPU work block must contain at least one strand");
-    }
+    return generate_deformed_cpu(asset, params, DeformedGeometryView{}, options);
+}
+
+GeneratedCurves generate_deformed_cpu(
+    const Asset &asset,
+    const GenerationParams &params,
+    const DeformedGeometryView &deformed,
+    const CpuGenerationOptions &options) {
+    const DeviceDeformedGeometryView device_deformed =
+        validate_generation_input(asset, params, deformed);
+    const DeviceAssetView asset_view = asset.view();
     GeneratedCurves curves{};
     curves.strand_count = params.strand_count;
     curves.cvs_per_strand = params.cvs_per_strand;
@@ -270,42 +340,9 @@ GeneratedCurves generate_cpu(
     curves.roots.resize(params.strand_count);
     const GeneratedOutputView output{curves.points.data(), curves.widths.data(), curves.roots.data()};
 
-    const std::uint32_t logical_block_count = static_cast<std::uint32_t>(
-        (static_cast<std::uint64_t>(params.strand_count) +
-         options.strands_per_work_block - 1u) / options.strands_per_work_block);
-    std::uint32_t worker_count = options.worker_count;
-    if (worker_count == 0u) {
-        worker_count = std::max(1u, std::thread::hardware_concurrency());
-        // Keep enough blocks per worker to amortize thread creation. Callers
-        // with a reusable external pool can request a larger worker count.
-        const std::uint32_t useful_workers = (logical_block_count + 3u) / 4u;
-        worker_count = std::min(worker_count, std::max(1u, useful_workers));
-    }
-    worker_count = std::min(worker_count, logical_block_count);
-
-    std::atomic<std::uint32_t> next_block{0u};
-    const auto worker = [&] {
-        for (;;) {
-            const std::uint32_t block = next_block.fetch_add(1u, std::memory_order_relaxed);
-            if (block >= logical_block_count) { return; }
-            const std::uint64_t first =
-                static_cast<std::uint64_t>(block) * options.strands_per_work_block;
-            const std::uint32_t end = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                first + options.strands_per_work_block, params.strand_count));
-            for (std::uint32_t strand = static_cast<std::uint32_t>(first); strand < end; ++strand) {
-                generate_strand(asset.view(), params, strand, output);
-            }
-        }
-    };
-
-    if (worker_count == 1u) {
-        worker();
-    } else {
-        std::vector<std::thread> workers;
-        workers.reserve(worker_count);
-        for (std::uint32_t i = 0u; i < worker_count; ++i) { workers.emplace_back(worker); }
-        for (auto &thread : workers) { thread.join(); }
-    }
+    parallel_for_strands(params.strand_count, options, [&](std::uint32_t strand) {
+        generate_strand(asset_view, params, strand, output, device_deformed);
+    });
     return curves;
 }
 
@@ -313,9 +350,46 @@ GeneratedCurves generate_cpu(const Asset &asset, const GenerationParams &params)
     return generate_cpu(asset, params, CpuGenerationOptions{});
 }
 
-GeneratedCurves generate_linear_cpu(
+PackedGeneratedCurves generate_packed_cpu(
+    const Asset &asset,
+    const GenerationParams &params,
+    float radius_scale,
+    const CpuGenerationOptions &options) {
+    return generate_packed_deformed_cpu(
+        asset, params, DeformedGeometryView{}, radius_scale, options);
+}
+
+PackedGeneratedCurves generate_packed_deformed_cpu(
+    const Asset &asset,
+    const GenerationParams &params,
+    const DeformedGeometryView &deformed,
+    float radius_scale,
+    const CpuGenerationOptions &options) {
+    if (!std::isfinite(radius_scale) || radius_scale < 0.0f) {
+        throw std::invalid_argument("curve radius scale must be finite and non-negative");
+    }
+    const DeviceDeformedGeometryView device_deformed =
+        validate_generation_input(asset, params, deformed);
+    PackedGeneratedCurves curves{};
+    curves.strand_count = params.strand_count;
+    curves.cvs_per_strand = params.cvs_per_strand;
+    const std::size_t point_count =
+        static_cast<std::size_t>(params.strand_count) * params.cvs_per_strand;
+    curves.points.resize(point_count);
+    curves.roots.resize(params.strand_count);
+    curves.root_uvs.resize(params.strand_count);
+    const DevicePackedCurveOutputView output{
+        curves.points.data(), curves.roots.data(), curves.root_uvs.data(), radius_scale};
+    const DeviceAssetView asset_view = asset.view();
+    parallel_for_strands(params.strand_count, options, [&](std::uint32_t strand) {
+        generate_packed_strand(asset_view, params, strand, output, device_deformed);
+    });
+    return curves;
+}
+
+GeneratedCurves generate_linear_modifier_reference_cpu(
     std::span<const LinearCurveSeed> seeds,
-    const LinearGenerationParams &params,
+    const LinearModifierReferenceParams &params,
     const CpuGenerationOptions &options) {
     if (seeds.empty() || params.cvs_per_strand < 2u) {
         throw std::invalid_argument("linear generation needs seeds and at least two CVs");
@@ -389,6 +463,13 @@ GeneratedCurves generate_linear_cpu(
         for (auto &thread : workers) { thread.join(); }
     }
     return curves;
+}
+
+GeneratedCurves generate_linear_cpu(
+    std::span<const LinearCurveSeed> seeds,
+    const LinearGenerationParams &params,
+    const CpuGenerationOptions &options) {
+    return generate_linear_modifier_reference_cpu(seeds, params, options);
 }
 
 void write_curves_obj(const GeneratedCurves &curves, const std::filesystem::path &path) {

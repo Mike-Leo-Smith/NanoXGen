@@ -1,4 +1,5 @@
 #include "nanoxgen/asset.h"
+#include "nanoxgen/curve_payload.h"
 
 #include <algorithm>
 #include <chrono>
@@ -77,6 +78,48 @@ Timing measure(std::uint32_t repeats, Function &&function) {
     return {samples.front(), samples[samples.size() / 2u], samples[p90], checksum};
 }
 
+template<typename Function>
+Timing measure_payload(std::uint32_t repeats, Function &&function) {
+    function();
+    std::vector<double> samples;
+    samples.reserve(repeats);
+    double checksum = 0.0;
+    for (std::uint32_t repeat = 0u; repeat < repeats; ++repeat) {
+        const auto begin = std::chrono::steady_clock::now();
+        const std::vector<CurveBatch> batches = function();
+        const auto end = std::chrono::steady_clock::now();
+        samples.push_back(std::chrono::duration<double, std::milli>(end - begin).count());
+        const CurveBatch &batch = batches[repeat % batches.size()];
+        checksum += batch.points[(repeat * 17u) % batch.points.size()].radius;
+        checksum += batch.root_uvs[(repeat * 31u) % batch.root_uvs.size()].x;
+    }
+    std::sort(samples.begin(), samples.end());
+    const std::size_t p90 = std::min(samples.size() - 1u,
+        static_cast<std::size_t>(std::ceil(samples.size() * 0.9)) - 1u);
+    return {samples.front(), samples[samples.size() / 2u], samples[p90], checksum};
+}
+
+template<typename Function>
+Timing measure_packed(std::uint32_t repeats, Function &&function) {
+    function();
+    std::vector<double> samples;
+    samples.reserve(repeats);
+    double checksum = 0.0;
+    for (std::uint32_t repeat = 0u; repeat < repeats; ++repeat) {
+        const auto begin = std::chrono::steady_clock::now();
+        const PackedGeneratedCurves curves = function();
+        const auto end = std::chrono::steady_clock::now();
+        samples.push_back(std::chrono::duration<double, std::milli>(end - begin).count());
+        checksum += curves.points[repeat % curves.points.size()].y;
+        checksum += curves.points[(repeat * 17u) % curves.points.size()].radius;
+        checksum += curves.root_uvs[(repeat * 31u) % curves.root_uvs.size()].x;
+    }
+    std::sort(samples.begin(), samples.end());
+    const std::size_t p90 = std::min(samples.size() - 1u,
+        static_cast<std::size_t>(std::ceil(samples.size() * 0.9)) - 1u);
+    return {samples.front(), samples[samples.size() / 2u], samples[p90], checksum};
+}
+
 } // namespace
 
 int main(int argc, char **argv) try {
@@ -108,12 +151,19 @@ int main(int argc, char **argv) try {
         native_params.tip_width = 0.02f;
         native_params.noise_amplitude = 0.0f;
         const Timing native = measure(repeats, [&] { return generate_cpu(asset, native_params); });
+        const Timing direct_packed = measure_packed(repeats, [&] {
+            return generate_packed_cpu(asset, native_params);
+        });
+        const GeneratedCurves generated = generate_cpu(asset, native_params);
+        const Timing renderer_pack = measure_payload(repeats, [&] {
+            return build_curve_batches(view_generated_curves(generated));
+        });
 
         const std::vector<LinearCurveSeed> seeds = make_linear_seeds(count);
-        LinearGenerationParams linear_params{};
-        linear_params.cvs_per_strand = 12u;
-        const Timing linear = measure(repeats, [&] {
-            return generate_linear_cpu(seeds, linear_params);
+        LinearModifierReferenceParams reference_params{};
+        reference_params.cvs_per_strand = 12u;
+        const Timing reference = measure(repeats, [&] {
+            return generate_linear_modifier_reference_cpu(seeds, reference_params);
         });
         const double cvs = static_cast<double>(count) * 12.0;
         std::cout << "    {\"strands\": " << count << ", \"cvs\": "
@@ -122,11 +172,25 @@ int main(int argc, char **argv) try {
                   << ", \"median\": " << native.median_ms
                   << ", \"p90\": " << native.p90_ms
                   << "}, \"native_mcvs_per_s\": " << cvs / native.median_ms / 1000.0
-                  << ", \"linear_ms\": {\"min\": " << linear.minimum_ms
-                  << ", \"median\": " << linear.median_ms
-                  << ", \"p90\": " << linear.p90_ms
-                  << "}, \"linear_mcvs_per_s\": " << cvs / linear.median_ms / 1000.0
-                  << ", \"checksum\": " << native.checksum + linear.checksum << "}";
+                  << ", \"direct_renderer_output_ms\": {\"min\": "
+                  << direct_packed.minimum_ms
+                  << ", \"median\": " << direct_packed.median_ms
+                  << ", \"p90\": " << direct_packed.p90_ms
+                  << "}, \"direct_renderer_output_mcvs_per_s\": "
+                  << cvs / direct_packed.median_ms / 1000.0
+                  << ", \"renderer_pack_ms\": {\"min\": " << renderer_pack.minimum_ms
+                  << ", \"median\": " << renderer_pack.median_ms
+                  << ", \"p90\": " << renderer_pack.p90_ms
+                  << "}, \"generate_plus_pack_ms\": "
+                  << native.median_ms + renderer_pack.median_ms
+                  << ", \"linear_modifier_reference_ms\": {\"min\": " << reference.minimum_ms
+                  << ", \"median\": " << reference.median_ms
+                  << ", \"p90\": " << reference.p90_ms
+                  << "}, \"linear_modifier_reference_mcvs_per_s\": "
+                  << cvs / reference.median_ms / 1000.0
+                  << ", \"checksum\": "
+                  << native.checksum + direct_packed.checksum + renderer_pack.checksum +
+                     reference.checksum << "}";
         std::cout << (case_index + 1u == counts.size() ? "\n" : ",\n");
     }
     std::cout << "  ]\n}\n";

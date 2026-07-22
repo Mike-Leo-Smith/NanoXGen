@@ -47,6 +47,17 @@ struct GeneratedCurves {
     std::vector<RootSample> roots;
 };
 
+// Direct renderer-facing output. Unlike GeneratedCurves followed by
+// build_curve_batches, this path never materializes a separate Vec3/width
+// intermediate: generation writes float4(position, radius) in one pass.
+struct PackedGeneratedCurves {
+    std::uint32_t strand_count{};
+    std::uint32_t cvs_per_strand{};
+    std::vector<PackedCurvePoint> points;
+    std::vector<RootSample> roots;
+    std::vector<Vec2> root_uvs;
+};
+
 // A compact compatibility input for XGen Interactive Grooming base splines.
 // Default IGS hairs are linear before modifiers, so the public spline output
 // can be represented losslessly at the algorithmic level by root/tip/UV/width
@@ -58,12 +69,16 @@ struct LinearCurveSeed {
     float root_width{};
 };
 
-struct LinearGenerationParams {
+struct LinearModifierReferenceParams {
     std::uint32_t cvs_per_strand{8u};
     float length_scale{1.0f};
     float width_taper{0.0f};
     float width_taper_start{0.0f};
 };
+
+// Compatibility alias retained for the original v0.1 API. The reference path
+// does not perform root sampling or guide interpolation.
+using LinearGenerationParams = LinearModifierReferenceParams;
 
 // CPU workers persist for the duration of one generation call and dynamically
 // claim logical work blocks. The default tile contains as many strands as the
@@ -74,6 +89,12 @@ struct CpuGenerationOptions {
     std::uint32_t strands_per_work_block{128u};
 };
 
+struct DeformedGeometryView {
+    std::span<const Vec3> positions;
+    std::span<const Vec3> normals;
+    std::span<const Vec3> guide_cvs;
+};
+
 [[nodiscard]] Asset build_asset(const AssetBuildInput &input);
 [[nodiscard]] std::string validate_asset(std::span<const std::byte> bytes);
 void save_asset(const Asset &asset, const std::filesystem::path &path);
@@ -81,6 +102,26 @@ void save_asset(const Asset &asset, const std::filesystem::path &path);
 [[nodiscard]] GeneratedCurves generate_cpu(const Asset &asset, const GenerationParams &params);
 [[nodiscard]] GeneratedCurves generate_cpu(
     const Asset &asset, const GenerationParams &params, const CpuGenerationOptions &options);
+[[nodiscard]] GeneratedCurves generate_deformed_cpu(
+    const Asset &asset,
+    const GenerationParams &params,
+    const DeformedGeometryView &deformed,
+    const CpuGenerationOptions &options = {});
+[[nodiscard]] PackedGeneratedCurves generate_packed_cpu(
+    const Asset &asset,
+    const GenerationParams &params,
+    float radius_scale = 1.0f,
+    const CpuGenerationOptions &options = {});
+[[nodiscard]] PackedGeneratedCurves generate_packed_deformed_cpu(
+    const Asset &asset,
+    const GenerationParams &params,
+    const DeformedGeometryView &deformed,
+    float radius_scale = 1.0f,
+    const CpuGenerationOptions &options = {});
+[[nodiscard]] GeneratedCurves generate_linear_modifier_reference_cpu(
+    std::span<const LinearCurveSeed> seeds,
+    const LinearModifierReferenceParams &params,
+    const CpuGenerationOptions &options = {});
 [[nodiscard]] GeneratedCurves generate_linear_cpu(
     std::span<const LinearCurveSeed> seeds,
     const LinearGenerationParams &params,

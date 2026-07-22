@@ -140,7 +140,7 @@ int main(int argc, char **argv) try {
                      "[--position-abs n] [--position-ulp n]\n";
         return 2;
     }
-    LinearGenerationParams params{};
+    LinearModifierReferenceParams params{};
     float position_abs_tolerance = 5.0e-7f;
     std::uint32_t position_ulp_tolerance = 4u;
     for (int i = 3; i < argc; i += 2) {
@@ -185,7 +185,7 @@ int main(int argc, char **argv) try {
                          base[i].patch_uv, base[i].widths.front()});
     }
 
-    const GeneratedCurves generated = generate_linear_cpu(seeds, params);
+    const GeneratedCurves generated = generate_linear_modifier_reference_cpu(seeds, params);
     std::uint64_t position_values = 0u;
     std::uint64_t position_exact = 0u;
     std::uint64_t position_failures = 0u;

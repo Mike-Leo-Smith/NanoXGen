@@ -126,10 +126,38 @@ struct RootSample {
     Vec2 barycentric{};
 };
 
+// Renderer-facing point layout. NanoXGen and XGen widths are diameters, while
+// ray tracing curve APIs commonly consume a radius in the fourth component.
+struct alignas(16) PackedCurvePoint {
+    float x{};
+    float y{};
+    float z{};
+    float radius{};
+};
+
+static_assert(sizeof(PackedCurvePoint) == 16u);
+static_assert(alignof(PackedCurvePoint) == 16u);
+
 struct GeneratedOutputView {
     Vec3 *points{};        // strand-major, fixed cvs_per_strand
     float *widths{};       // strand-major, fixed cvs_per_strand
     RootSample *roots{};   // one record per strand
+};
+
+// Optional frame-local geometry. Null pointers select the immutable arrays in
+// the asset. Root identities remain tied to the rest-pose alias table and the
+// deterministic triangle/barycentric samples.
+struct DeviceDeformedGeometryView {
+    const Vec3 *positions{};
+    const Vec3 *normals{};
+    const Vec3 *guide_cvs{};
+};
+
+struct DevicePackedCurveOutputView {
+    PackedCurvePoint *points{};
+    RootSample *roots{};
+    Vec2 *root_uvs{};
+    float radius_scale{1.0f};
 };
 
 } // namespace nanoxgen
