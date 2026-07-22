@@ -77,6 +77,13 @@ optional Autodesk calibration targets generate fixtures and compare canonical
 hashes/caches; they are not called by the parser, processor, writer, generator,
 or converter.
 
+The separately enabled Maya bridge obtains live Interactive Groom
+`outRenderData` through the public `MPxData` interface. It serializes to memory
+and calls this same standalone parser directly; it does not create a temporary
+file or reload/materialize the BLOB through Autodesk. Thus the evaluated BLOB
+format remains a core-owned interchange boundary even when the bytes originate
+from a live Maya authoring graph.
+
 ## Scope and rejection policy
 
 The binary API currently accepts version-1 group streams. It rejects malformed

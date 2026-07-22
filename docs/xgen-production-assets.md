@@ -98,3 +98,11 @@ accepts XGen's B-spline varying-width layout (`NumVertices - 2` per curve),
 expands endpoint values while writing the final packed buffer, and converts
 diameter to radius exactly once. Autodesk palette cleanup is owned by a
 single-run guard across success, empty, and error paths.
+
+The Interactive bridge is a Maya plugin rather than an XGen standalone client.
+The only Autodesk data conversion is `MPxData::writeBinary` into a vector-backed
+memory stream. Resident bytes go directly to the independent NanoXGen decoder
+and renderer-minimal `.nxc` builder. Source order avoids identity work for a
+static sample; canonical mode uses the exact face/face-UV/patch-UV bit identity
+and rejects duplicates. The bridge deliberately has no direct `libAdskXGen`
+dependency and does not reload its own serialization through `XgFnSpline`.

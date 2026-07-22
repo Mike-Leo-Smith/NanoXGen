@@ -85,6 +85,40 @@ Missing dependencies reported by the collection remain XGen errors; a missing
 patch or empty result is a checked bridge failure rather than a crash. Classic
 archive/card/sphere primitives are outside this curve-only bridge.
 
+### Interactive in-memory cache bridge
+
+The same explicit preset builds `nanoxgen_maya_xgen_cache.so`. Its
+`nanoxgenXGenCache` Maya command evaluates an Interactive Groom description's
+`outRenderData`, invokes the public `MPxData::writeBinary` exactly once into an
+in-memory stream, and immediately passes those resident bytes to NanoXGen. The
+command never writes a temporary `.xgen` BLOB and never invokes
+`XgFnSpline::load`, `executeScript`, or materialization.
+
+```python
+cmds.loadPlugin("/path/to/nanoxgen_maya_xgen_cache.so")
+cmds.nanoxgenXGenCache(description, "/cache/groom.nxc", "source-order")
+cmds.nanoxgenXGenCache(description, "/cache/reproducible.nxc", "canonical")
+```
+
+`source-order` is the default for a one-shot static render or cache. Canonical
+mode sorts by the exact five-word identity `(faceId, bit(faceUV.x),
+bit(faceUV.y), bit(patchUV.x), bit(patchUV.y))` and rejects duplicate
+identities; use it for repeatable cross-evaluation caches and motion matching.
+Only dirty samples should call Maya again. Repeated rendering should consume
+the resulting `.nxc` through the Autodesk-free runtime.
+
+Run the real Maya-side differential test with:
+
+```bash
+./scripts/run_maya_xgen_cache_test.sh
+```
+
+It creates an Interactive Groom in Maya, exercises both order modes, exports a
+separate disk BLOB only as a test oracle, and requires the two in-memory caches
+to be byte-identical to their standalone conversions. It also checks that the
+plugin itself does not link `libAdskXGen`. All generated BLOBs, caches, and JSON
+remain under ignored `build/` output.
+
 For the complete reproducible test, run:
 
 ```bash

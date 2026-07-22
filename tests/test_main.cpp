@@ -3,6 +3,7 @@
 #include "nanoxgen/curve_payload.h"
 #include "nanoxgen/xgen.h"
 #include "../tools/xgen_classic_typed_validation.h"
+#include "../tools/maya_xgen_cache_validation.h"
 
 #include <algorithm>
 #include <array>
@@ -831,6 +832,34 @@ void test_classic_typed_batch_validation() {
             "Classic typed conversion must reject a negative constant width");
 }
 
+void test_maya_xgen_cache_identity_validation() {
+    XGenEvaluatedCurves curves{};
+    curves.point_counts = {2u, 2u};
+    curves.face_ids = {7u, 7u};
+    curves.face_uvs = {{0.25f, 0.5f}, {0.25f, 0.5f}};
+    curves.patch_uvs = {{0.125f, 0.75f}, {0.125f, 0.75f}};
+    bool rejected_duplicate = false;
+    try {
+        maya_xgen_cache::validate_unique_canonical_identities(curves);
+    } catch (const std::runtime_error &) {
+        rejected_duplicate = true;
+    }
+    require(rejected_duplicate,
+            "Interactive canonical caching must reject duplicate exact identities");
+
+    curves.patch_uvs[1].x = std::nextafter(0.125f, 1.0f);
+    maya_xgen_cache::validate_unique_canonical_identities(curves);
+    curves.face_ids = {8u, 7u};
+    bool rejected_order = false;
+    try {
+        maya_xgen_cache::validate_unique_canonical_identities(curves);
+    } catch (const std::runtime_error &) {
+        rejected_order = true;
+    }
+    require(rejected_order,
+            "Interactive canonical caching must require exact identity ordering");
+}
+
 } // namespace
 
 int main() try {
@@ -849,6 +878,7 @@ int main() try {
     test_exact_curve_cache();
     test_self_contained_xgen_round_trip();
     test_classic_typed_batch_validation();
+    test_maya_xgen_cache_identity_validation();
     std::cout << "all NanoXGen tests passed\n";
     return 0;
 } catch (const std::exception &e) {

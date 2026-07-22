@@ -199,6 +199,10 @@ if(NANOXGEN_BUILD_CALIBRATION OR NANOXGEN_BUILD_AUTODESK_BRIDGES)
   find_package(XGen REQUIRED)
 endif()
 
+if(NANOXGEN_BUILD_AUTODESK_BRIDGES)
+  find_package(Maya REQUIRED)
+endif()
+
 if(NANOXGEN_BUILD_CALIBRATION)
   add_executable(nanoxgen_xgen_probe tools/xgen_probe.cpp)
   target_link_libraries(nanoxgen_xgen_probe PRIVATE XGen::XGen)
@@ -225,9 +229,18 @@ if(NANOXGEN_BUILD_CALIBRATION)
 endif()
 
 if(NANOXGEN_BUILD_AUTODESK_BRIDGES)
+  set_property(TARGET nanoxgen PROPERTY POSITION_INDEPENDENT_CODE ON)
   add_executable(nanoxgen_xgen_classic_typed tools/xgen_classic_typed.cpp)
   target_link_libraries(nanoxgen_xgen_classic_typed PRIVATE nanoxgen XGen::XGen)
   target_compile_features(nanoxgen_xgen_classic_typed PRIVATE cxx_std_20)
+  add_library(nanoxgen_maya_xgen_cache MODULE tools/maya_xgen_cache.cpp)
+  target_link_libraries(
+    nanoxgen_maya_xgen_cache PRIVATE nanoxgen Maya::OpenMaya)
+  target_compile_features(nanoxgen_maya_xgen_cache PRIVATE cxx_std_20)
   set_target_properties(
-    nanoxgen_xgen_classic_typed PROPERTIES SKIP_BUILD_RPATH TRUE)
+    nanoxgen_xgen_classic_typed
+    nanoxgen_maya_xgen_cache
+    PROPERTIES SKIP_BUILD_RPATH TRUE)
+  set_target_properties(
+    nanoxgen_maya_xgen_cache PROPERTIES PREFIX "" SUFFIX ".so")
 endif()

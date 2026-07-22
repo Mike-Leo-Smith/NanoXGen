@@ -44,6 +44,9 @@ The current prototype provides:
   or Interactive Maya backend;
 - an optional Classic curve bridge that consumes public XGen RenderAPI typed
   callbacks directly and can write `.nxc` without an intermediate renderer BLOB;
+- an optional Interactive Maya command that serializes `outRenderData` to
+  memory once, then builds source-order or exact-identity canonical `.nxc`
+  without a temporary BLOB or `XgFnSpline` reload;
 - source-order and canonical renderer-minimal ingestion plus a staged direct-read
   benchmark for evaluated snapshots;
 - optional native ISA, SIMD-width, IPO/LTO, and precision-gated fast-math modes.
@@ -118,6 +121,7 @@ Classic collection evaluation is a separate, explicitly Autodesk-linked path:
 cmake --preset autodesk-bridge-release -DXGEN_ROOT="$XGEN_ROOT"
 cmake --build --preset autodesk-bridge-release
 ./scripts/run_xgen_classic_typed_test.sh --help
+./scripts/run_maya_xgen_cache_test.sh
 ```
 
 The default `release`, `debug`, `native-release`, and CUDA presets neither find
