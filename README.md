@@ -18,7 +18,10 @@ The current prototype provides:
   atomic counter;
 - validation, corruption detection, tests, and an OBJ curve preview;
 - a Maya 2027.1-tested Autodesk XGen Interactive Grooming probe and real-fixture
-  differential harness.
+  differential harness;
+- an XGen-compatible linear base/cut/taper path with strict per-curve parity
+  checks on a subdivided wave surface;
+- reproducible in-process NanoXGen and real XGen performance benchmarks.
 
 ## Build and run without CMake
 
@@ -45,9 +48,21 @@ export MAYA_LOCATION=/usr/autodesk/maya2027
 
 The suite creates deterministic Interactive Grooming scenes with Maya
 Standalone, exports real `outRenderData` BLOBs, loads them through Autodesk's
-`XgFnSpline`, validates all spline ranges and numeric arrays, and compares
-independent exports by canonical geometry hash. Maya and its generated BLOBs
-remain external to this repository.
+`XgFnSpline`, validates all spline ranges and numeric arrays, canonicalizes
+modifier-reordered curves by face/root coordinates, and performs strict
+per-attribute comparisons. The complex case contains 244 nine-CV strands on a
+wave surface with cut and width taper. Maya and its generated BLOBs remain
+external to this repository.
+
+Run the benchmark separately:
+
+```bash
+./scripts/run_xgen_benchmark.sh
+```
+
+It reports NanoXGen native and XGen-compatible in-memory generation separately
+from Maya BLOB export and `XgFnSpline` load/execute costs. These stages are not
+collapsed into one misleading speedup number.
 
 ## Research status
 

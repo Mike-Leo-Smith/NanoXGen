@@ -8,3 +8,5 @@ NanoXGen-prototype-*.tar.gz
 *.nxg
 *.obj
 *.xgen
+__pycache__/
+*.pyc

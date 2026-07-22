@@ -56,10 +56,24 @@ export MAYA_LOCATION=/usr/autodesk/maya2027
 ```
 
 This compiles the probe, launches `mayapy` with Maya Standalone, creates two
-independent baseline grooms and one parameter variant, exports real Interactive
-Grooming render data, checks the BLOB through `XgFnSpline`, compares canonical
-geometry, and verifies that malformed input is rejected. Outputs are written
-under `build/xgen-real/` and are ignored by Git.
+independent baseline grooms, a parameter variant, and four subdivided wave-mesh
+fixtures. It exports real Interactive Grooming render data, checks the BLOB
+through `XgFnSpline`, canonicalizes curves by face/root coordinates, validates a
+noise/cut chain, and compares NanoXGen's linear base/cut/taper path against the
+official output attribute by attribute. Malformed input must also be rejected.
+Outputs are written under `build/xgen-real/` and are ignored by Git.
+
+For a staged performance comparison, run:
+
+```bash
+export MAYA_LOCATION=/usr/autodesk/maya2027
+./scripts/run_xgen_benchmark.sh
+```
+
+The output separates NanoXGen in-memory generation, Maya lazy-plug access/export, and
+the public API's BLOB load/execute/iteration stages. The Maya export number
+includes serialization and fixed host overhead and is not an apples-to-apples
+kernel timing.
 
 Maya's supported RHEL/Rocky systems should provide the required libraries. On
 another Linux distribution, a workspace-local compatibility directory can be

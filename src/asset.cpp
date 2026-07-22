@@ -313,6 +313,84 @@ GeneratedCurves generate_cpu(const Asset &asset, const GenerationParams &params)
     return generate_cpu(asset, params, CpuGenerationOptions{});
 }
 
+GeneratedCurves generate_linear_cpu(
+    std::span<const LinearCurveSeed> seeds,
+    const LinearGenerationParams &params,
+    const CpuGenerationOptions &options) {
+    if (seeds.empty() || params.cvs_per_strand < 2u) {
+        throw std::invalid_argument("linear generation needs seeds and at least two CVs");
+    }
+    if (seeds.size() > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::invalid_argument("too many linear curve seeds");
+    }
+    if (options.strands_per_work_block == 0u) {
+        throw std::invalid_argument("CPU work block must contain at least one strand");
+    }
+    if (!std::isfinite(params.length_scale) || params.length_scale < 0.0f ||
+        !std::isfinite(params.width_taper) || params.width_taper < 0.0f ||
+        params.width_taper > 1.0f || !std::isfinite(params.width_taper_start) ||
+        params.width_taper_start < 0.0f || params.width_taper_start > 1.0f) {
+        throw std::invalid_argument("invalid linear generation parameters");
+    }
+
+    GeneratedCurves curves{};
+    curves.strand_count = static_cast<std::uint32_t>(seeds.size());
+    curves.cvs_per_strand = params.cvs_per_strand;
+    const std::size_t point_count = seeds.size() * params.cvs_per_strand;
+    curves.points.resize(point_count);
+    curves.widths.resize(point_count);
+    curves.roots.resize(seeds.size());
+
+    const std::uint32_t logical_block_count = static_cast<std::uint32_t>(
+        (seeds.size() + options.strands_per_work_block - 1u) /
+        options.strands_per_work_block);
+    std::uint32_t worker_count = options.worker_count;
+    if (worker_count == 0u) {
+        worker_count = std::max(1u, std::thread::hardware_concurrency());
+        const std::uint32_t useful_workers = (logical_block_count + 3u) / 4u;
+        worker_count = std::min(worker_count, std::max(1u, useful_workers));
+    }
+    worker_count = std::min(worker_count, logical_block_count);
+
+    std::atomic<std::uint32_t> next_block{0u};
+    const auto worker = [&] {
+        for (;;) {
+            const std::uint32_t block = next_block.fetch_add(1u, std::memory_order_relaxed);
+            if (block >= logical_block_count) { return; }
+            const std::size_t first = static_cast<std::size_t>(block) * options.strands_per_work_block;
+            const std::size_t end = std::min(first + options.strands_per_work_block, seeds.size());
+            for (std::size_t strand = first; strand < end; ++strand) {
+                const LinearCurveSeed &seed = seeds[strand];
+                const Vec3 direction = seed.tip - seed.root;
+                curves.roots[strand] = {
+                    seed.root, normalize(direction), seed.root_uv, kInvalidIndex, {}};
+                for (std::uint32_t cv = 0u; cv < params.cvs_per_strand; ++cv) {
+                    const float t = static_cast<float>(cv) /
+                        static_cast<float>(params.cvs_per_strand - 1u);
+                    const std::size_t index = strand * params.cvs_per_strand + cv;
+                    curves.points[index] = seed.root + direction * (params.length_scale * t);
+                    const float taper_t = params.width_taper_start < 1.0f
+                        ? std::clamp((t - params.width_taper_start) /
+                            (1.0f - params.width_taper_start), 0.0f, 1.0f)
+                        : (t >= 1.0f ? 1.0f : 0.0f);
+                    curves.widths[index] = seed.root_width *
+                        (1.0f - params.width_taper * taper_t);
+                }
+            }
+        }
+    };
+
+    if (worker_count == 1u) {
+        worker();
+    } else {
+        std::vector<std::thread> workers;
+        workers.reserve(worker_count);
+        for (std::uint32_t i = 0u; i < worker_count; ++i) { workers.emplace_back(worker); }
+        for (auto &thread : workers) { thread.join(); }
+    }
+    return curves;
+}
+
 void write_curves_obj(const GeneratedCurves &curves, const std::filesystem::path &path) {
     std::ofstream stream(path);
     if (!stream) { throw std::runtime_error("failed to open OBJ: " + path.string()); }

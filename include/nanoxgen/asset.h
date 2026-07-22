@@ -47,6 +47,24 @@ struct GeneratedCurves {
     std::vector<RootSample> roots;
 };
 
+// A compact compatibility input for XGen Interactive Grooming base splines.
+// Default IGS hairs are linear before modifiers, so the public spline output
+// can be represented losslessly at the algorithmic level by root/tip/UV/width
+// rather than by retaining every generated CV.
+struct LinearCurveSeed {
+    Vec3 root{};
+    Vec3 tip{};
+    Vec2 root_uv{};
+    float root_width{};
+};
+
+struct LinearGenerationParams {
+    std::uint32_t cvs_per_strand{8u};
+    float length_scale{1.0f};
+    float width_taper{0.0f};
+    float width_taper_start{0.0f};
+};
+
 // CPU workers persist for the duration of one generation call and dynamically
 // claim logical work blocks. The default tile contains as many strands as the
 // unchanged CUDA kernel has threads per block, so one CPU worker serially
@@ -63,6 +81,10 @@ void save_asset(const Asset &asset, const std::filesystem::path &path);
 [[nodiscard]] GeneratedCurves generate_cpu(const Asset &asset, const GenerationParams &params);
 [[nodiscard]] GeneratedCurves generate_cpu(
     const Asset &asset, const GenerationParams &params, const CpuGenerationOptions &options);
+[[nodiscard]] GeneratedCurves generate_linear_cpu(
+    std::span<const LinearCurveSeed> seeds,
+    const LinearGenerationParams &params,
+    const CpuGenerationOptions &options = {});
 void write_curves_obj(const GeneratedCurves &curves, const std::filesystem::path &path);
 
 } // namespace nanoxgen

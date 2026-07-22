@@ -120,6 +120,29 @@ void test_area_weighted_sampling() {
     require(frequency > 0.64f && frequency < 0.69f, "root sampling must track rest triangle area");
 }
 
+void test_linear_compatibility_generation() {
+    const std::vector<LinearCurveSeed> seeds = {
+        {{1.0f, 2.0f, 3.0f}, {2.0f, 4.0f, 2.0f}, {0.25f, 0.75f}, 0.02f},
+        {{-1.0f, 0.0f, 1.0f}, {-1.0f, 2.0f, 1.0f}, {0.5f, 0.5f}, 0.04f},
+    };
+    LinearGenerationParams params{};
+    params.cvs_per_strand = 5u;
+    params.length_scale = 0.75f;
+    params.width_taper = 0.8f;
+    params.width_taper_start = 0.25f;
+    const GeneratedCurves curves = generate_linear_cpu(seeds, params, {2u, 1u});
+    require(curves.strand_count == 2u && curves.cvs_per_strand == 5u,
+            "linear compatibility topology");
+    require(length_squared(curves.points[0] - seeds[0].root) == 0.0f,
+            "linear compatibility root");
+    const Vec3 expected_tip = seeds[0].root + (seeds[0].tip - seeds[0].root) * 0.75f;
+    require(length_squared(curves.points[4] - expected_tip) == 0.0f,
+            "linear compatibility cut length");
+    require(curves.widths[0] == 0.02f &&
+            std::abs(curves.widths[4] - 0.004f) < 1.0e-8f,
+            "linear compatibility width taper");
+}
+
 } // namespace
 
 int main() try {
@@ -128,6 +151,7 @@ int main() try {
     test_guide_interpolation();
     test_cpu_persistent_work_queue();
     test_area_weighted_sampling();
+    test_linear_compatibility_generation();
     std::cout << "all NanoXGen tests passed\n";
     return 0;
 } catch (const std::exception &e) {

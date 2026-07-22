@@ -51,6 +51,10 @@ def main() -> None:
     parser.add_argument("baseline_a", type=Path)
     parser.add_argument("baseline_b", type=Path)
     parser.add_argument("variant", type=Path)
+    parser.add_argument("--complex-base", type=Path)
+    parser.add_argument("--complex-base-repeat", type=Path)
+    parser.add_argument("--complex-cut-taper", type=Path)
+    parser.add_argument("--complex-chain", type=Path)
     args = parser.parse_args()
 
     baseline_a = load(args.baseline_a)
@@ -67,6 +71,42 @@ def main() -> None:
         baseline_a["canonical_hash"] != variant["canonical_hash"],
         "different fixture unexpectedly produced the same canonical geometry",
     )
+    complex_paths = (
+        args.complex_base,
+        args.complex_base_repeat,
+        args.complex_cut_taper,
+        args.complex_chain,
+    )
+    if any(path is not None for path in complex_paths):
+        require(all(path is not None for path in complex_paths), "incomplete complex fixture set")
+        complex_base = load(args.complex_base)
+        complex_repeat = load(args.complex_base_repeat)
+        complex_cut = load(args.complex_cut_taper)
+        complex_chain = load(args.complex_chain)
+        require(complex_base["valid"] is True, "complex base did not validate")
+        require(complex_base["motion_samples"] == 1 and complex_base["batches"] == 1,
+                "unexpected complex batch layout")
+        require(complex_base["curves"] == 244 and complex_base["vertices"] == 2196,
+                "unexpected complex topology")
+        require(complex_base["vertices_per_curve"] == {"min": 9, "max": 9},
+                "unexpected complex CV count")
+        require(math.isclose(complex_base["width"]["min"], 0.025, abs_tol=1.0e-6) and
+                math.isclose(complex_base["width"]["max"], 0.025, abs_tol=1.0e-6),
+                "unexpected complex base width")
+        require(
+            complex_base["canonical_hash"] == complex_repeat["canonical_hash"],
+            "complex base fixture is not canonically deterministic",
+        )
+        require(complex_cut["curves"] == 244 and complex_cut["vertices"] == 2196,
+                "cut/taper changed complex topology")
+        require(math.isclose(complex_cut["width"]["max"], 0.025, abs_tol=1.0e-6),
+                "cut/taper root width mismatch")
+        require(math.isclose(complex_cut["width"]["min"], 0.005, abs_tol=1.0e-6),
+                "cut/taper tip width mismatch")
+        require(complex_chain["curves"] == 244 and complex_chain["vertices"] == 2196,
+                "modifier chain changed complex topology")
+        require(complex_chain["canonical_hash"] != complex_base["canonical_hash"],
+                "noise/cut chain did not change complex geometry")
     print("real XGen fixture summaries passed")
 
 

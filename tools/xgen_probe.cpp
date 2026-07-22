@@ -10,10 +10,32 @@
 #include <cstddef>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <tuple>
+#include <vector>
+
+namespace {
+
+std::uint32_t float_bits(float value) {
+    std::uint32_t bits{};
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+struct CanonicalCurveHash {
+    unsigned int face_id{};
+    float face_u{};
+    float face_v{};
+    float patch_u{};
+    float patch_v{};
+    std::uint64_t hash{};
+};
+
+} // namespace
 
 int main(int argc, char **argv) {
     if (argc != 2) {
@@ -57,12 +79,12 @@ int main(int argc, char **argv) {
     float max_patch_uv[2] = {
         -std::numeric_limits<float>::infinity(),
         -std::numeric_limits<float>::infinity()};
-    std::uint64_t canonical_hash = 1469598103934665603ull;
-    const auto hash_bytes = [&canonical_hash](const void *data, std::size_t size) {
+    std::vector<CanonicalCurveHash> curve_hashes;
+    const auto hash_bytes = [](std::uint64_t &hash, const void *data, std::size_t size) {
         const auto *bytes = static_cast<const unsigned char *>(data);
         for (std::size_t i = 0; i < size; ++i) {
-            canonical_hash ^= bytes[i];
-            canonical_hash *= 1099511628211ull;
+            hash ^= bytes[i];
+            hash *= 1099511628211ull;
         }
     };
     for (auto it = splines.iterator(); !it.isDone(); it.next()) {
@@ -74,8 +96,11 @@ int main(int argc, char **argv) {
         const SgVec3f *positions = it.positions();
         const SgVec2f *texcoords = it.texcoords();
         const SgVec2f *patch_uvs = it.patchUVs();
+        const SgVec2f *face_uvs = it.faceUV();
+        const unsigned int *face_ids = it.faceId();
         const float *widths = it.width();
-        if (stride < 2u || !primitive_infos || !positions || !texcoords || !patch_uvs || !widths) {
+        if (stride < 2u || !primitive_infos || !positions || !texcoords || !patch_uvs ||
+            !face_uvs || !face_ids || !widths) {
             std::cerr << "XGen returned an incomplete spline batch\n";
             return 1;
         }
@@ -88,7 +113,11 @@ int main(int argc, char **argv) {
             }
             min_vertices_per_curve = std::min(min_vertices_per_curve, length);
             max_vertices_per_curve = std::max(max_vertices_per_curve, length);
-            hash_bytes(&length, sizeof(length));
+            std::uint64_t curve_hash = 1469598103934665603ull;
+            hash_bytes(curve_hash, &length, sizeof(length));
+            hash_bytes(curve_hash, &face_ids[primitive], sizeof(face_ids[primitive]));
+            hash_bytes(curve_hash, &face_uvs[primitive][0], sizeof(float));
+            hash_bytes(curve_hash, &face_uvs[primitive][1], sizeof(float));
             for (unsigned int axis = 0; axis < 2u; ++axis) {
                 const float value = patch_uvs[offset][axis];
                 if (!std::isfinite(value)) {
@@ -97,7 +126,7 @@ int main(int argc, char **argv) {
                 }
                 min_patch_uv[axis] = std::min(min_patch_uv[axis], value);
                 max_patch_uv[axis] = std::max(max_patch_uv[axis], value);
-                hash_bytes(&value, sizeof(value));
+                hash_bytes(curve_hash, &value, sizeof(value));
             }
             float previous_v = -std::numeric_limits<float>::infinity();
             for (unsigned int vertex = offset; vertex < offset + length; ++vertex) {
@@ -110,9 +139,9 @@ int main(int argc, char **argv) {
                 previous_v = texcoords[vertex][1];
                 min_width = std::min(min_width, widths[vertex]);
                 max_width = std::max(max_width, widths[vertex]);
-                hash_bytes(&widths[vertex], sizeof(widths[vertex]));
-                hash_bytes(&texcoords[vertex][0], sizeof(texcoords[vertex][0]));
-                hash_bytes(&texcoords[vertex][1], sizeof(texcoords[vertex][1]));
+                hash_bytes(curve_hash, &widths[vertex], sizeof(widths[vertex]));
+                hash_bytes(curve_hash, &texcoords[vertex][0], sizeof(texcoords[vertex][0]));
+                hash_bytes(curve_hash, &texcoords[vertex][1], sizeof(texcoords[vertex][1]));
                 for (unsigned int axis = 0; axis < 3u; ++axis) {
                     const float value = positions[vertex][axis];
                     if (!std::isfinite(value)) {
@@ -121,14 +150,27 @@ int main(int argc, char **argv) {
                     }
                     min_position[axis] = std::min(min_position[axis], value);
                     max_position[axis] = std::max(max_position[axis], value);
-                    hash_bytes(&value, sizeof(value));
+                    hash_bytes(curve_hash, &value, sizeof(value));
                 }
             }
+            curve_hashes.push_back({face_ids[primitive], face_uvs[primitive][0],
+                                    face_uvs[primitive][1], patch_uvs[offset][0],
+                                    patch_uvs[offset][1], curve_hash});
         }
     }
     if (curve_count == 0u || vertex_count == 0u) {
         std::cerr << "XGen BLOB contains no spline geometry\n";
         return 1;
+    }
+    std::sort(curve_hashes.begin(), curve_hashes.end(), [](const auto &a, const auto &b) {
+        return std::tuple{a.face_id, float_bits(a.face_u), float_bits(a.face_v),
+                          float_bits(a.patch_u), float_bits(a.patch_v)} <
+               std::tuple{b.face_id, float_bits(b.face_u), float_bits(b.face_v),
+                          float_bits(b.patch_u), float_bits(b.patch_v)};
+    });
+    std::uint64_t canonical_hash = 1469598103934665603ull;
+    for (const CanonicalCurveHash &curve : curve_hashes) {
+        hash_bytes(canonical_hash, &curve.hash, sizeof(curve.hash));
     }
     std::cout << "{\n"
               << "  \"valid\": true,\n"

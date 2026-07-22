@@ -71,9 +71,9 @@ Interactive Grooming generator. It exports `outRenderData` with
 
 | Fixture | Density | Length | Width | CVs/curve | Curves | Vertices | Canonical hash |
 |---|---:|---:|---:|---:|---:|---:|---|
-| baseline A | 4 | 1.0 | 0.02 | 5 | 16 | 80 | `0x8b4b5302edbd4227` |
-| baseline B | 4 | 1.0 | 0.02 | 5 | 16 | 80 | `0x8b4b5302edbd4227` |
-| variant | 2 | 0.5 | 0.03 | 7 | 8 | 56 | `0x7450c27a657d03bb` |
+| baseline A | 4 | 1.0 | 0.02 | 5 | 16 | 80 | `0x6ec28960f29c73fd` |
+| baseline B | 4 | 1.0 | 0.02 | 5 | 16 | 80 | `0x6ec28960f29c73fd` |
+| variant | 2 | 0.5 | 0.03 | 7 | 8 | 56 | `0x7bb6a42e72397617` |
 
 The two baseline exports had different raw file hashes but identical canonical
 geometry. Therefore the serialized container contains nondeterministic bytes,
@@ -81,6 +81,63 @@ while the tested positions, widths, curve texture coordinates, and patch UVs
 were deterministic. The variant also confirmed that density, length, width, and
 CV-count changes propagate through the real runtime as expected. An empty BLOB
 was rejected by `XgFnSpline` with an invalid-stream error.
+
+Canonical hashing sorts curves by face ID, face-local UV, and patch UV before
+hashing. This is necessary because modifier evaluation may change BLOB curve
+order without changing the set of curves.
+
+## Complex strict-parity fixture
+
+The complex source is a 4-by-3 plane subdivided 8-by-6 and displaced by a
+deterministic analytic wave. At density 20 it produces 244 strands with 9 CVs
+each. Four independent official fixtures cover base generation, a repeated
+base, 27% cut plus 0.8 width taper starting at 0.25, and a live noise-plus-cut
+chain.
+
+The strict compatibility boundary is intentionally explicit. The public XGen
+base output is reduced to one `LinearCurveSeed` per strand: root, unmodified
+tip, patch UV, and root width. NanoXGen regenerates all CVs and applies cut and
+taper. This validates curve generation and modifier arithmetic independently of
+XGen's undocumented root RNG. It does **not** claim that NanoXGen's native root
+sampler already reproduces XGen's root distribution.
+
+| Check | Result |
+|---|---:|
+| Curves / CVs | 244 / 2,196 |
+| Face ID, face UV, patch UV mismatches | 0 |
+| Width values bitwise identical | 2,196 / 2,196 |
+| Position components | 6,588 |
+| Position components bitwise identical | 4,705 / 6,588 |
+| Position max absolute error | `2.38418579e-7` |
+| Position RMS error | `3.52377918e-8` |
+| Position components outside `(5e-7 abs OR 4 ULP)` | 0 |
+
+The non-bitwise position values are caused by Maya/XGen's higher-precision
+intermediate evaluation before float output. Near zero, ULP counts can be large
+despite sub-micro-unit absolute error, so the regression requires either the
+absolute or ULP bound while still reporting both. Width evaluation is bitwise
+identical. Noise remains an oracle-only fixture because NanoXGen's current
+sinusoidal noise is not XGen's random field; clump and guide modifiers remain
+future parity work.
+
+## CPU performance snapshot
+
+Measured in one container with 9 logical CPUs, optimized builds, 12 CVs per
+strand, 15 repetitions, and median times:
+
+| Curves | NanoXGen native | NanoXGen linear parity | XGen BLOB load + execute | Maya invalidated export |
+|---:|---:|---:|---:|---:|
+| 10,000 / 9,970 XGen | 1.854 ms | 0.365 ms | 10.144 ms | 355.908 ms |
+| 100,000 / 99,929 XGen | 17.106 ms | 2.048 ms | 20.748 ms | 561.885 ms |
+
+Normalized throughput for native NanoXGen was 64.7 and 70.2 MCV/s; the linear
+parity path reached 328.6 and 585.9 MCV/s. `XgFnSpline` load plus
+`executeScript` reached about 11.8 and 57.8 MCV/s, making native NanoXGen about
+5.5x and 1.2x faster at these two sizes, while the narrower linear parity stage
+was about 27.9x and 10.1x faster. The Maya export measurement includes DG host
+overhead, BLOB construction, render-time processing, and serialization, so it
+is reported separately and must not be interpreted as a pure generator-kernel
+comparison. NanoXGen timings include output allocation but no disk write.
 
 ## Next implementation phases
 
