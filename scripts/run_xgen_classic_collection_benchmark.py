@@ -247,13 +247,19 @@ def summarize_maya(args: argparse.Namespace) -> dict[str, Any]:
     descriptions: dict[str, Any] = {}
     for name in args.descriptions:
         records = by_description[name]
-        validate_stable(records, ("curves", "points", "checksum"), name)
+        # Autodesk may schedule PatchRenderer batches in a different source
+        # order on every evaluation. Topology must remain stable, but a raw
+        # source-order checksum is deliberately diagnostic rather than an
+        # invariant; canonical identity validation is a separate oracle.
+        validate_stable(records, ("curves", "points"), name)
         evaluation = [float(record["evaluation_ms"]) for record in records]
         wall = by_description_wall[name]
+        source_checksums = sorted({record["checksum"] for record in records})
         descriptions[name] = {
             "strands": records[0]["curves"],
             "points": records[0]["points"],
-            "checksum": records[0]["checksum"],
+            "source_checksum_unique_count": len(source_checksums),
+            "source_checksums": source_checksums,
             "evaluation_median_ms": statistics.median(evaluation),
             "evaluation_p90_ms": percentile(evaluation, 0.9),
             "process_wall_median_ms": statistics.median(wall),
