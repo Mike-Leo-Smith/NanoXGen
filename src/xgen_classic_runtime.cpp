@@ -1,4 +1,5 @@
 #include "nanoxgen/xgen_classic_runtime.h"
+#include "nanoxgen/detail/decimal_parse.h"
 #include "nanoxgen/seexpr_noise_table.h"
 
 #include <algorithm>
@@ -69,7 +70,7 @@ bool scalar_attribute_is_zero(
     float value{};
     const char *begin = attribute->value.data();
     const char *end = begin + attribute->value.size();
-    const auto converted = std::from_chars(begin, end, value);
+    const auto converted = detail::parse_decimal(begin, end, value);
     return converted.ec == std::errc{} && converted.ptr == end &&
            std::isfinite(value) && value == 0.0f;
 }
@@ -123,7 +124,7 @@ std::optional<float> constant_local_assignment(
             if (source[cursor++] == '-') { sign = -1.0f; }
         }
         float value{};
-        const auto converted = std::from_chars(
+        const auto converted = detail::parse_decimal(
             source.data() + cursor, source.data() + before, value);
         if (converted.ec == std::errc{} && converted.ptr != source.data() + cursor &&
             std::isfinite(value)) {
@@ -300,7 +301,7 @@ ClassicFloatRuntimeExpression compile_expression(
                 if (rewritten[cursor++] == '-') { sign = -1.0f; }
             }
             float value{};
-            const auto converted = std::from_chars(
+            const auto converted = detail::parse_decimal(
                 rewritten.data() + cursor,
                 rewritten.data() + rewritten.size(), value);
             if (converted.ec == std::errc{} &&

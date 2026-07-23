@@ -69,11 +69,51 @@ void append_bytes(std::vector<std::byte> &destination, std::span<const std::byte
 
 struct JsonValue {
     enum class Type { Null, Boolean, Number, String, Array, Object };
+    JsonValue();
+    JsonValue(JsonValue &&) noexcept;
+    JsonValue &operator=(JsonValue &&) noexcept;
+    ~JsonValue();
+    JsonValue(const JsonValue &) = delete;
+    JsonValue &operator=(const JsonValue &) = delete;
+
     Type type{Type::Null};
     bool boolean{};
     std::string text;
     std::vector<JsonValue> array;
     std::vector<std::pair<std::string, JsonValue>> object;
+};
+
+JsonValue::JsonValue() = default;
+JsonValue::JsonValue(JsonValue &&) noexcept = default;
+JsonValue &JsonValue::operator=(JsonValue &&) noexcept = default;
+JsonValue::~JsonValue() = default;
+
+class JoiningThreads {
+public:
+    explicit JoiningThreads(std::size_t capacity) {
+        _threads.reserve(capacity);
+    }
+
+    template <typename Function>
+    void start(Function &&function) {
+        _threads.emplace_back(std::forward<Function>(function));
+    }
+
+    void join() {
+        for (std::thread &thread : _threads) {
+            if (thread.joinable()) { thread.join(); }
+        }
+        _threads.clear();
+    }
+
+    ~JoiningThreads() {
+        for (std::thread &thread : _threads) {
+            if (thread.joinable()) { thread.join(); }
+        }
+    }
+
+private:
+    std::vector<std::thread> _threads;
 };
 
 class JsonParser {
@@ -1000,10 +1040,9 @@ XGenPackedCurves parse_fused_packed_curves(
         std::atomic_bool failed{false};
         std::exception_ptr first_error;
         std::mutex error_mutex;
-        std::vector<std::jthread> workers;
-        workers.reserve(worker_count);
+        JoiningThreads workers{worker_count};
         for (std::size_t worker = 0u; worker < worker_count; ++worker) {
-            workers.emplace_back([&] {
+            workers.start([&] {
                 while (!failed.load(std::memory_order_relaxed)) {
                     const std::size_t ordinal = next_group.fetch_add(
                         1u, std::memory_order_relaxed);
@@ -1019,7 +1058,7 @@ XGenPackedCurves parse_fused_packed_curves(
                 }
             });
         }
-        workers.clear();
+        workers.join();
         if (first_error) { std::rethrow_exception(first_error); }
     }
     for (const SelectedPackedArray &array : selected) {
@@ -1175,10 +1214,9 @@ XGenDocument parse_xgen_document(std::span<const std::byte> bytes) {
         std::atomic_bool failed{false};
         std::exception_ptr first_error;
         std::mutex error_mutex;
-        std::vector<std::jthread> workers;
-        workers.reserve(worker_count);
+        JoiningThreads workers{worker_count};
         for (std::size_t worker = 0u; worker < worker_count; ++worker) {
-            workers.emplace_back([&] {
+            workers.start([&] {
                 while (!failed.load(std::memory_order_relaxed)) {
                     const std::size_t ordinal = next_group.fetch_add(
                         1u, std::memory_order_relaxed);
@@ -1195,7 +1233,7 @@ XGenDocument parse_xgen_document(std::span<const std::byte> bytes) {
                 }
             });
         }
-        workers.clear(); // join all jthreads before inspecting first_error
+        workers.join();
         if (first_error) { std::rethrow_exception(first_error); }
     }
     return document;

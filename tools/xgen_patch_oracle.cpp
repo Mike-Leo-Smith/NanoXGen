@@ -1,5 +1,7 @@
 #include <cstddef>
 
+#include "nanoxgen/detail/decimal_parse.h"
+
 #if __has_include(<xgen/src/xgrenderer/XgRenderAPI.h>)
 #include <xgen/src/xgrenderer/XgRenderAPI.h>
 #include <xgen/src/xgcore/XgDescription.h>
@@ -46,7 +48,7 @@ struct Sample {
 
 double parse_double(std::string_view text, const char *label) {
     double result{};
-    const auto parsed = std::from_chars(
+    const auto parsed = nanoxgen::detail::parse_decimal(
         text.data(), text.data() + text.size(), result);
     if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
         !std::isfinite(result)) {

@@ -376,16 +376,28 @@ void test_float_runtime_parallel_strands() {
         curves.points[static_cast<std::size_t>(strand) * 2u + 1u].y = 1.0f;
         primitive_ids[strand] = strand % 97u;
     }
+    PackedGeneratedCurves serial_curves = curves;
     apply_xgen_classic_float_runtime_plan_cpu(
         curves, plan, 1.0f, {}, {}, primitive_ids);
+    NanoXGenContext serial_context{1u};
+    apply_xgen_classic_float_runtime_plan_cpu(
+        serial_curves, plan, 1.0f, {}, {}, primitive_ids, {}, {}, {}, false,
+        &serial_context);
     require(curves.strand_count == strand_count,
             "parallel Classic runtime changed the strand count");
+    require(serial_curves.strand_count == curves.strand_count &&
+                serial_curves.point_counts == curves.point_counts &&
+                serial_curves.points.size() == curves.points.size(),
+            "parallel Classic runtime changed the output topology");
     for (std::uint32_t strand = 0u; strand < strand_count; ++strand) {
-        const float expected =
-            0.5f * (0.1f + 0.001f * primitive_ids[strand]);
         const std::size_t point = static_cast<std::size_t>(strand) * 2u;
-        require(curves.points[point].radius == expected &&
-                    curves.points[point + 1u].radius == expected,
+        require(std::bit_cast<std::uint32_t>(curves.points[point].radius) ==
+                    std::bit_cast<std::uint32_t>(
+                        serial_curves.points[point].radius) &&
+                    std::bit_cast<std::uint32_t>(
+                        curves.points[point + 1u].radius) ==
+                    std::bit_cast<std::uint32_t>(
+                        serial_curves.points[point + 1u].radius),
                 "parallel Classic runtime produced a non-deterministic width");
     }
 }

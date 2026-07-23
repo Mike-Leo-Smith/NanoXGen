@@ -1,4 +1,5 @@
 #include "nanoxgen/xgen_classic.h"
+#include "nanoxgen/detail/decimal_parse.h"
 
 #include <algorithm>
 #include <charconv>
@@ -75,9 +76,8 @@ double parse_float(std::string_view value, std::size_t line,
                    const char *label) {
     value = trim(value);
     double result{};
-    const auto converted = std::from_chars(
-        value.data(), value.data() + value.size(), result,
-        std::chars_format::general);
+    const auto converted = detail::parse_decimal(
+        value.data(), value.data() + value.size(), result);
     if (value.empty() || converted.ec != std::errc{} ||
         converted.ptr != value.data() + value.size() || !std::isfinite(result)) {
         fail(line, std::string("invalid or non-finite ") + label);

@@ -1,4 +1,5 @@
 #include "nanoxgen/xgen_classic_roots.h"
+#include "nanoxgen/detail/decimal_parse.h"
 
 #include "xgen_classic_path.h"
 #include "nanoxgen/generate.h"
@@ -45,7 +46,7 @@ float parse_positive_float(const ClassicAttribute *attribute,
     float result{};
     const char *begin = attribute->value.data();
     const char *end = begin + attribute->value.size();
-    const auto converted = std::from_chars(begin, end, result);
+    const auto converted = detail::parse_decimal(begin, end, result);
     if (converted.ec != std::errc{} || converted.ptr != end ||
         !std::isfinite(result) || result < 0.0f) {
         fail(std::string{label} + " must be a finite non-negative float");
