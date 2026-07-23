@@ -211,6 +211,105 @@ void test_full_mask_and_generation() {
     }
 }
 
+void test_relocated_description_data_paths() {
+    const TemporaryDescription fixture{1.0f};
+    const nanoxgen::ClassicAlembicAssetInput input = surface();
+    const std::string stale_prefix =
+        "E:\\old\\show\\" + fixture.path.filename().string();
+
+    nanoxgen::ClassicDescription relocated = description();
+    relocated.objects.front().attributes[1u].value =
+        "map('" + stale_prefix + "\\paintmaps\\density')";
+    const nanoxgen::ClassicRootPlan directory_map =
+        nanoxgen::build_xgen_classic_random_root_plan(
+            relocated, input, fixture.path);
+    require(directory_map.roots.size() == 64u &&
+                directory_map.ptex_maps.front() ==
+                    fixture.path / "paintmaps" / "density" /
+                        "testPatch.ptx",
+            "stale Windows description path was not relocated");
+
+    const std::filesystem::path uppercase =
+        fixture.path / "paintmaps" / "density" / "mask.PTX";
+    std::filesystem::copy_file(
+        fixture.path / "paintmaps" / "density" / "testPatch.ptx",
+        uppercase);
+    relocated.objects.front().attributes[1u].value =
+        "map('" + stale_prefix +
+        "\\paintmaps\\density\\mask.PTX')";
+    const nanoxgen::ClassicRootPlan uppercase_map =
+        nanoxgen::build_xgen_classic_random_root_plan(
+            relocated, input, fixture.path);
+    require(uppercase_map.roots.size() == 64u &&
+                uppercase_map.ptex_maps.front() == uppercase,
+            "relocated uppercase PTEX extension was treated as a directory");
+
+    relocated.objects.front().attributes[1u].value =
+        "map('paintmaps\\density')";
+    const nanoxgen::ClassicRootPlan relative_map =
+        nanoxgen::build_xgen_classic_random_root_plan(
+            relocated, input, fixture.path);
+    require(relative_map.roots.size() == 64u &&
+                relative_map.ptex_maps.front() ==
+                    fixture.path / "paintmaps" / "density" /
+                        "testPatch.ptx",
+            "relative foreign-separator PTEX path ignored the description root");
+
+#if !defined(_WIN32)
+    // A Windows drive path is syntactically relative to POSIX. Do not let an
+    // unrelated directory named "E:" under the process CWD shadow the
+    // relocated description sidecar.
+    const std::filesystem::path old_cwd = std::filesystem::current_path();
+    const std::filesystem::path fake_cwd =
+        fixture.path.parent_path() / (fixture.path.filename().string() + "-cwd");
+    struct RestoreCurrentPath {
+        std::filesystem::path path;
+        std::filesystem::path temporary;
+        ~RestoreCurrentPath() {
+            std::error_code error;
+            std::filesystem::current_path(path, error);
+            error.clear();
+            std::filesystem::remove_all(temporary, error);
+        }
+    } restore{old_cwd, fake_cwd};
+    const std::filesystem::path shadow =
+        fake_cwd / "E:" / "old" / "show" / fixture.path.filename() /
+        "paintmaps" / "density";
+    std::filesystem::create_directories(shadow);
+    std::filesystem::copy_file(
+        fixture.path / "paintmaps" / "density" / "testPatch.ptx",
+        shadow / "testPatch.ptx");
+    std::filesystem::current_path(fake_cwd);
+    relocated.objects.front().attributes[1u].value =
+        "map('" + stale_prefix + "\\paintmaps\\density')";
+    const nanoxgen::ClassicRootPlan shadowed_map =
+        nanoxgen::build_xgen_classic_random_root_plan(
+            relocated, input, fixture.path);
+    require(shadowed_map.ptex_maps.front() ==
+                fixture.path / "paintmaps" / "density" / "testPatch.ptx",
+            "Windows drive path was interpreted relative to the POSIX CWD");
+
+    const std::filesystem::path unrelated =
+        fake_cwd / "E:" / "unrelated";
+    std::filesystem::create_directories(unrelated);
+    std::filesystem::copy_file(
+        fixture.path / "paintmaps" / "density" / "testPatch.ptx",
+        unrelated / "mask.ptx");
+    relocated.objects.front().attributes[1u].value =
+        "map('E:\\unrelated\\mask.ptx')";
+    bool foreign_rejected = false;
+    try {
+        (void)nanoxgen::build_xgen_classic_random_root_plan(
+            relocated, input, fixture.path);
+    } catch (const std::invalid_argument &) {
+        foreign_rejected = true;
+    }
+    require(foreign_rejected,
+            "unresolved foreign drive path bound to the POSIX CWD");
+    std::filesystem::current_path(old_cwd);
+#endif
+}
+
 void test_partial_mask_and_limit() {
     const TemporaryDescription fixture{0.5f};
     const nanoxgen::ClassicAlembicAssetInput input = surface();
@@ -404,7 +503,7 @@ void test_description_root_resolution() {
     std::filesystem::create_directories(expected / "eyelash");
     nanoxgen::ClassicCollection collection{};
     collection.palette_attributes = {
-        {"name", "rabbit", 1u},
+        {"name", "authored_palette", 1u},
         {"xgProjectPath", "Z:\\old\\rabbit\\", 2u},
         {"xgDataPath",
          "Z:\\old\\rabbit\\xgen/collections\\rabbit", 3u}};
@@ -425,12 +524,73 @@ void test_description_root_resolution() {
         nanoxgen::resolve_xgen_classic_descriptions_root(
             collection, project / "rabbit.xgen", expected) == expected,
         "explicit description root was not preserved");
+
+    collection.palette_attributes[1u].value.clear();
+    collection.palette_attributes[2u].value =
+        "xgen\\collections/rabbit";
+    require(
+        nanoxgen::resolve_xgen_classic_descriptions_root(
+            collection, project / "rabbit.xgen", project) == expected,
+        "relative mixed-separator xgDataPath ignored the project root");
+
+    collection.palette_attributes[2u].value =
+        "C:xgen\\collections\\rabbit";
+    bool drive_relative_rejected = false;
+    try {
+        (void)nanoxgen::resolve_xgen_classic_descriptions_root(
+            collection, project / "rabbit.xgen", project);
+    } catch (const std::invalid_argument &) {
+        drive_relative_rejected = true;
+    }
+    require(drive_relative_rejected,
+            "drive-relative Classic xgDataPath was accepted");
+
+    collection.palette_attributes[2u].value =
+        "\\xgen\\collections\\rabbit";
+    bool root_relative_rejected = false;
+    try {
+        (void)nanoxgen::resolve_xgen_classic_descriptions_root(
+            collection, project / "rabbit.xgen", project);
+    } catch (const std::invalid_argument &) {
+        root_relative_rejected = true;
+    }
+    require(root_relative_rejected,
+            "root-relative Classic xgDataPath was accepted");
+
+    collection.palette_attributes[1u].value = "/";
+    collection.palette_attributes[2u].value =
+        "/xgen/collections/rabbit";
+    require(
+        nanoxgen::resolve_xgen_classic_descriptions_root(
+            collection, project / "rabbit.xgen", project) == expected,
+        "filesystem-root xgProjectPath was not relocated");
+
+#if !defined(_WIN32)
+    collection.palette_attributes[1u].value = "/OLD/RABBIT";
+    collection.palette_attributes[2u].value =
+        "/old/rabbit/xgen/collections/rabbit";
+    require(
+        nanoxgen::resolve_xgen_classic_descriptions_root(
+            collection, project / "rabbit.xgen", project) == project,
+        "POSIX xgProjectPath matching ignored case");
+#endif
+
+    collection.descriptions.front().name = "../body";
+    bool rejected = false;
+    try {
+        (void)nanoxgen::resolve_xgen_classic_descriptions_root(
+            collection, project / "rabbit.xgen", project);
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    require(rejected, "unsafe Classic description path component was accepted");
 }
 
 } // namespace
 
 int main() try {
     test_full_mask_and_generation();
+    test_relocated_description_data_paths();
     test_partial_mask_and_limit();
     test_patch_authored_primitive_cull();
     test_face_umbrella_guide_prefilter();

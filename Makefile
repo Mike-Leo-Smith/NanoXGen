@@ -12,6 +12,8 @@ CXXFLAGS += -march=native -mtune=native
 endif
 ifeq ($(FAST_MATH),1)
 CXXFLAGS += -ffast-math
+else
+CXXFLAGS += -ffp-contract=off
 endif
 ifeq ($(LTO),1)
 CXXFLAGS += -flto

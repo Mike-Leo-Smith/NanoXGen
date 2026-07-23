@@ -59,18 +59,16 @@ std::filesystem::path module_file(
         fail("missing " + std::string{attribute_name} + " for " +
              std::string{module_name});
     }
+    if (!detail::classic_safe_component(module_name) ||
+        !detail::classic_safe_component(patch_name)) {
+        fail("module or patch name is not a safe path component");
+    }
     std::string value = replace_all(
         attribute->value, "${FXMODULE}", module_name);
-    constexpr std::string_view desc{"${DESC}"};
-    std::filesystem::path path;
-    if (value.starts_with(desc)) {
-        value.erase(0u, desc.size());
-        path = description_directory / detail::classic_path(
-            detail::strip_classic_root_separators(value));
-    } else {
-        path = detail::classic_path(value);
-    }
-    if (path.extension() != extension) {
+    std::filesystem::path path =
+        detail::resolve_classic_description_path(
+            value, description_directory);
+    if (!detail::classic_extension_equals(path, extension)) {
         path /= std::string{patch_name} + std::string{extension};
     }
     if (!std::filesystem::is_regular_file(path)) {

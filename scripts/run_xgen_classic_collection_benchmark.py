@@ -19,6 +19,19 @@ def percentile(samples: list[float], fraction: float) -> float:
     return ordered[min(len(ordered) - 1, int(fraction * len(ordered)))]
 
 
+def quote_xgen_value(value: object, *, path: bool = False) -> str:
+    text = str(value)
+    if path:
+        # Maya/XGen accepts forward slashes on every supported host. A single
+        # spelling also prevents a trailing Windows backslash from escaping
+        # the quote in PatchRenderer's command-string parser.
+        text = text.replace("\\", "/")
+    if any(ord(character) < 0x20 for character in text):
+        raise ValueError(
+            "XGen command values must not contain control characters")
+    return '"' + text.replace('"', r'\"') + '"'
+
+
 def run_json_timed(
     command: list[str], environment: dict[str, str] | None = None
 ) -> tuple[list[dict[str, Any]], float]:
@@ -300,8 +313,11 @@ def maya_command(args: argparse.Namespace, description: str) -> list[str]:
     xgen_args = (
         f"-debug 0 -warning 1 -stats 0 -frame {args.frame} "
         f"-fps {args.fps} -shutter 0.0 "
-        f"-file {args.collection} -palette {args.palette} "
-        f"-geom {args.archive} -patch {patch} -description {description} "
+        f"-file {quote_xgen_value(args.collection, path=True)} "
+        f"-palette {quote_xgen_value(args.palette)} "
+        f"-geom {quote_xgen_value(args.archive, path=True)} "
+        f"-patch {quote_xgen_value(patch)} "
+        f"-description {quote_xgen_value(description)} "
         "-world 1;0;0;0;0;1;0;0;0;0;1;0;0;0;0;1"
     )
     command = [

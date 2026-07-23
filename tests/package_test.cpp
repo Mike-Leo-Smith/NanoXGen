@@ -70,6 +70,7 @@ void test_classic_inventory_and_boundaries() {
     write_text(root / "desc/density/map.ptx", "ptex-placeholder");
     write_text(root / "xgen/maps/project-map.ptx", "ptex-placeholder");
     write_text(root / "archives/fur.ass", "archive");
+    write_text(root / "archives/windows-separators.abc", "archive");
     write_text(
         root / "collection.xgen",
         "Palette\n"
@@ -80,6 +81,10 @@ void test_classic_inventory_and_boundaries() {
         "external \"${EXTERNAL}/outside.abc\"\n"
         "unresolved \"${STUDIO}/map.ptx\"\n"
         "symlinked \"density-link/map.ptx\"\n"
+        "mixed \"archives\\windows-separators.abc\"\n"
+        "driveRelative \"C:relative\\ambiguous.abc\"\n"
+        "rootRelative \"\\root\\ambiguous.abc\"\n"
+        "unc \"\\\\server\\share\\external.abc\"\n"
         "expression \"a/b\"\n");
     std::error_code symlink_error;
     std::filesystem::create_directory_symlink(
@@ -109,6 +114,14 @@ void test_classic_inventory_and_boundaries() {
         manifest, "${EXTERNAL}/outside.abc");
     const XGenPackageReference *unresolved = find_reference(
         manifest, "${STUDIO}/map.ptx");
+    const XGenPackageReference *mixed = find_reference(
+        manifest, "archives\\windows-separators.abc");
+    const XGenPackageReference *drive_relative = find_reference(
+        manifest, "C:relative\\ambiguous.abc");
+    const XGenPackageReference *root_relative = find_reference(
+        manifest, "\\root\\ambiguous.abc");
+    const XGenPackageReference *unc = find_reference(
+        manifest, "\\\\server\\share\\external.abc");
     require(density && density->status == XGenReferenceStatus::Resolved,
             "DESC directory dependency must resolve");
     require(archive && archive->status == XGenReferenceStatus::Resolved,
@@ -121,6 +134,16 @@ void test_classic_inventory_and_boundaries() {
             "package-external dependency must be reported");
     require(unresolved && unresolved->status == XGenReferenceStatus::UnresolvedVariable,
             "unknown variable must be reported");
+    require(mixed && mixed->status == XGenReferenceStatus::Resolved,
+            "foreign separators in a relative dependency must resolve");
+    require(drive_relative &&
+                drive_relative->status == XGenReferenceStatus::Unsafe,
+            "drive-relative Windows dependency must not bind to the scan CWD");
+    require(root_relative &&
+                root_relative->status == XGenReferenceStatus::Unsafe,
+            "root-relative Windows dependency must not bind to a process drive");
+    require(unc && unc->status == XGenReferenceStatus::External,
+            "UNC dependency must remain package-external");
     require(!find_reference(manifest, "a/b"),
             "division expression must not be misclassified as a path");
     if (!symlink_error) {

@@ -61,10 +61,52 @@
       }
     },
     {
+      "name": "luisa-vk-release",
+      "displayName": "LuisaCompute next Vulkan release",
+      "description": "Release build with an external LuisaCompute next Vulkan runtime",
+      "inherits": "luisa-hip-release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "NANOXGEN_LUISA_BACKEND": "vk"
+      }
+    },
+    {
+      "name": "luisa-fallback-release",
+      "displayName": "LuisaCompute next fallback release",
+      "description": "Release build with the external LuisaCompute next CPU fallback runtime",
+      "inherits": "luisa-hip-release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "NANOXGEN_LUISA_BACKEND": "fallback"
+      }
+    },
+    {
       "name": "luisa-classic-hip-release",
       "displayName": "LuisaCompute next HIP Classic release",
       "description": "LuisaCompute HIP plus native Alembic/PTEX Classic inputs",
       "inherits": "luisa-hip-release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "NANOXGEN_ENABLE_ALEMBIC": "ON",
+        "NANOXGEN_ENABLE_PTEX": "ON"
+      }
+    },
+    {
+      "name": "luisa-classic-vk-release",
+      "displayName": "LuisaCompute next Vulkan Classic release",
+      "description": "LuisaCompute Vulkan plus native Alembic/PTEX Classic inputs",
+      "inherits": "luisa-vk-release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "NANOXGEN_ENABLE_ALEMBIC": "ON",
+        "NANOXGEN_ENABLE_PTEX": "ON"
+      }
+    },
+    {
+      "name": "luisa-classic-fallback-release",
+      "displayName": "LuisaCompute next fallback Classic release",
+      "description": "LuisaCompute CPU fallback plus native Alembic/PTEX Classic inputs",
+      "inherits": "luisa-fallback-release",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
         "NANOXGEN_ENABLE_ALEMBIC": "ON",
@@ -137,8 +179,28 @@
       "jobs": 2
     },
     {
+      "name": "luisa-vk-release",
+      "configurePreset": "luisa-vk-release",
+      "jobs": 2
+    },
+    {
+      "name": "luisa-fallback-release",
+      "configurePreset": "luisa-fallback-release",
+      "jobs": 2
+    },
+    {
       "name": "luisa-classic-hip-release",
       "configurePreset": "luisa-classic-hip-release",
+      "jobs": 2
+    },
+    {
+      "name": "luisa-classic-vk-release",
+      "configurePreset": "luisa-classic-vk-release",
+      "jobs": 2
+    },
+    {
+      "name": "luisa-classic-fallback-release",
+      "configurePreset": "luisa-classic-fallback-release",
       "jobs": 2
     },
     {
@@ -192,8 +254,36 @@
       }
     },
     {
+      "name": "luisa-vk-release",
+      "configurePreset": "luisa-vk-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "luisa-fallback-release",
+      "configurePreset": "luisa-fallback-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
       "name": "luisa-classic-hip-release",
       "configurePreset": "luisa-classic-hip-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "luisa-classic-vk-release",
+      "configurePreset": "luisa-classic-vk-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "luisa-classic-fallback-release",
+      "configurePreset": "luisa-classic-fallback-release",
       "output": {
         "outputOnFailure": true
       }

@@ -24,6 +24,9 @@ bool descriptions_exist(
     }
     for (const ClassicDescription &description :
          collection.descriptions) {
+        if (!detail::classic_safe_component(description.name)) {
+            return false;
+        }
         error.clear();
         if (!std::filesystem::is_directory(
                 root / description.name, error) || error) {
@@ -52,7 +55,21 @@ bool portable_path_prefix(
         normalized_path.size() < normalized_prefix.size()) {
         return false;
     }
-    const auto equal_ascii = [](char a, char b) {
+#if defined(_WIN32)
+    constexpr bool host_case_insensitive = true;
+#else
+    constexpr bool host_case_insensitive = false;
+#endif
+    const bool windows_drive_prefix =
+        normalized_prefix.size() >= 2u &&
+        std::isalpha(static_cast<unsigned char>(normalized_prefix[0])) &&
+        normalized_prefix[1] == ':';
+    const bool case_insensitive = host_case_insensitive ||
+        windows_drive_prefix ||
+        detail::classic_windows_absolute(prefix) ||
+        detail::classic_unc_absolute(prefix);
+    const auto equal_ascii = [case_insensitive](char a, char b) {
+        if (!case_insensitive) { return a == b; }
         return std::tolower(static_cast<unsigned char>(a)) ==
             std::tolower(static_cast<unsigned char>(b));
     };
@@ -60,6 +77,7 @@ bool portable_path_prefix(
             normalized_prefix.begin(), normalized_prefix.end(),
             normalized_path.begin(), equal_ascii) ||
         (normalized_path.size() != normalized_prefix.size() &&
+         normalized_prefix.back() != '/' &&
          normalized_path[normalized_prefix.size()] != '/')) {
         return false;
     }
@@ -76,6 +94,13 @@ std::filesystem::path resolve_xgen_classic_descriptions_root(
         throw std::invalid_argument(
             "cannot resolve a description root for an empty collection");
     }
+    for (const ClassicDescription &description : collection.descriptions) {
+        if (!detail::classic_safe_component(description.name)) {
+            throw std::invalid_argument(
+                "Classic description name is not a safe path component: " +
+                description.name);
+        }
+    }
     std::vector<std::filesystem::path> candidates;
     const auto add = [&](std::filesystem::path candidate) {
         candidate = candidate.lexically_normal();
@@ -89,7 +114,8 @@ std::filesystem::path resolve_xgen_classic_descriptions_root(
 
     const ClassicAttribute *palette_name =
         find_classic_attribute(collection.palette_attributes, "name");
-    if (palette_name && !palette_name->value.empty()) {
+    if (palette_name &&
+        detail::classic_safe_component(palette_name->value)) {
         const auto relative =
             std::filesystem::path{"xgen"} / "collections" /
             detail::classic_path(palette_name->value);
@@ -126,7 +152,19 @@ std::filesystem::path resolve_xgen_classic_descriptions_root(
                 add(root_or_project / detail::classic_path(
                     detail::strip_classic_root_separators(value)));
             } else if (!value.empty()) {
-                add(detail::classic_path(value));
+                if (detail::classic_windows_drive_relative(value) ||
+                    detail::classic_windows_root_relative(value)) {
+                    throw std::invalid_argument(
+                        "Classic xgDataPath is drive/root-relative and ambiguous: " +
+                        std::string{value});
+                }
+                const std::filesystem::path authored =
+                    detail::classic_path(value);
+                add(authored);
+                if (!detail::classic_absolute(value)) {
+                    add(root_or_project / authored);
+                    add(collection_path.parent_path() / authored);
+                }
                 if (project_path && !project_path->value.empty()) {
                     const std::string normalized_value =
                         portable_path_string(value);
@@ -134,12 +172,19 @@ std::filesystem::path resolve_xgen_classic_descriptions_root(
                         portable_path_string(project_path->value);
                     if (portable_path_prefix(
                             normalized_value, normalized_project)) {
+                        std::size_t suffix_offset =
+                            normalized_project.size();
+                        if (suffix_offset < normalized_value.size() &&
+                            normalized_project.back() != '/' &&
+                            normalized_value[suffix_offset] == '/') {
+                            ++suffix_offset;
+                        }
                         std::string suffix =
                             normalized_value.substr(
                                 normalized_value.size() ==
                                         normalized_project.size()
                                 ? normalized_value.size()
-                                : normalized_project.size() + 1u);
+                                : suffix_offset);
                         add(root_or_project /
                             detail::classic_path(suffix));
                         add(collection_path.parent_path() /

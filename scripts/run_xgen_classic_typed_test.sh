@@ -28,6 +28,17 @@ FPS="24"
 SHUTTER_OFFSET="0"
 LOOKUPS=()
 PLACEMENTS=()
+
+xgen_quote() {
+  local value=${1//\\/\/}
+  if [[ "${value}" =~ [[:cntrl:]] ]]; then
+    echo "XGen command values must not contain control characters" >&2
+    return 2
+  fi
+  value=${value//\"/\\\"}
+  printf '"%s"' "${value}"
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --xgen-file) XGEN_FILE="${2:-}"; shift 2 ;;
@@ -81,8 +92,10 @@ if env LD_LIBRARY_PATH="${RUNTIME_LIBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" 
 fi
 
 RENDER_ARGS="-debug 0 -warning 1 -stats 0 -frame ${FRAME} -fps ${FPS} -shutter 0.0 \
--file ${XGEN_FILE} -palette ${PALETTE} -geom ${GEOMETRY} -patch ${PATCH} \
--description ${DESCRIPTION} -world 1;0;0;0;0;1;0;0;0;0;1;0;0;0;0;1"
+-file $(xgen_quote "${XGEN_FILE}") -palette $(xgen_quote "${PALETTE}") \
+-geom $(xgen_quote "${GEOMETRY}") -patch $(xgen_quote "${PATCH}") \
+-description $(xgen_quote "${DESCRIPTION}") \
+-world 1;0;0;0;0;1;0;0;0;0;1;0;0;0;0;1"
 BRIDGE_MOTION_ARGS=()
 if [[ ${#LOOKUPS[@]} -ne 0 ]]; then
   RENDER_ARGS+=" -interpolation linear -motionSamplesLookup"
@@ -105,8 +118,9 @@ env \
 ERROR_DIR="${ROOT}/build/xgen-classic-real"
 mkdir -p "${ERROR_DIR}"
 MISSING_ARGS="-debug 0 -warning 1 -stats 0 -frame ${FRAME} -fps ${FPS} -shutter 0.0 \
--file ${XGEN_FILE} -palette ${PALETTE} -geom ${GEOMETRY} \
--patch __nanoxgen_missing_patch__ -description ${DESCRIPTION} \
+-file $(xgen_quote "${XGEN_FILE}") -palette $(xgen_quote "${PALETTE}") \
+-geom $(xgen_quote "${GEOMETRY}") \
+-patch __nanoxgen_missing_patch__ -description $(xgen_quote "${DESCRIPTION}") \
 -world 1;0;0;0;0;1;0;0;0;0;1;0;0;0;0;1"
 if env \
     MAYA_LOCATION="${MAYA_LOCATION}" \

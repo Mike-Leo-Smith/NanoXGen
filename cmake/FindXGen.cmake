@@ -76,8 +76,10 @@ if(XGen_FOUND AND NOT TARGET XGen::XGen)
     endif()
     set_property(TARGET XGen::XGen APPEND PROPERTY
       INTERFACE_LINK_DIRECTORIES "${_XGEN_COMPAT_LIB_DIR}")
-    set_property(TARGET XGen::XGen APPEND PROPERTY
-      INTERFACE_LINK_OPTIONS "-Wl,-rpath,${_XGEN_COMPAT_LIB_DIR}")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      set_property(TARGET XGen::XGen APPEND PROPERTY
+        INTERFACE_LINK_OPTIONS "-Wl,-rpath,${_XGEN_COMPAT_LIB_DIR}")
+    endif()
   endif()
 endif()
 

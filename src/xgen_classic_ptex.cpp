@@ -17,17 +17,14 @@ namespace {
 std::filesystem::path resolve_map(
     std::string_view value, const std::filesystem::path &description_directory,
     std::string_view patch_name) {
-    constexpr std::string_view prefix{"${DESC}"};
-    std::filesystem::path result;
-    if (value.starts_with(prefix)) {
-        value.remove_prefix(prefix.size());
-        value = detail::strip_classic_root_separators(value);
-        result = description_directory /
-                 detail::classic_path(value);
-    } else {
-        result = detail::classic_path(value);
+    if (!detail::classic_safe_component(patch_name)) {
+        throw std::runtime_error(
+            "Classic runtime patch name is not a safe path component");
     }
-    if (result.extension() != ".ptx") {
+    std::filesystem::path result =
+        detail::resolve_classic_description_path(
+            value, description_directory);
+    if (!detail::classic_extension_equals(result, ".ptx")) {
         result /= std::string{patch_name} + ".ptx";
     }
     if (!std::filesystem::is_regular_file(result)) {

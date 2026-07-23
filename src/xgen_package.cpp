@@ -279,13 +279,35 @@ TextScanResult scan_text_file(
     return {extractor.finish(!truncated), truncated};
 }
 
-bool path_is_within(const std::filesystem::path &root, const std::filesystem::path &path) {
+bool native_path_component_equal(
+    const std::filesystem::path &lhs,
+    const std::filesystem::path &rhs) {
+#if defined(_WIN32)
+    const std::string lhs_string = lhs.string();
+    const std::string rhs_string = rhs.string();
+    if (lhs_string.size() != rhs_string.size()) { return false; }
+    return std::equal(
+        lhs_string.begin(), lhs_string.end(), rhs_string.begin(),
+        [](unsigned char a, unsigned char b) {
+            return std::tolower(a) == std::tolower(b);
+        });
+#else
+    return lhs == rhs;
+#endif
+}
+
+bool path_is_within(
+    const std::filesystem::path &root,
+    const std::filesystem::path &path) {
     const std::filesystem::path normalized_root = root.lexically_normal();
     const std::filesystem::path normalized_path = path.lexically_normal();
     auto root_it = normalized_root.begin();
     auto path_it = normalized_path.begin();
     for (; root_it != normalized_root.end(); ++root_it, ++path_it) {
-        if (path_it == normalized_path.end() || *root_it != *path_it) { return false; }
+        if (path_it == normalized_path.end() ||
+            !native_path_component_equal(*root_it, *path_it)) {
+            return false;
+        }
     }
     return true;
 }
@@ -293,6 +315,7 @@ bool path_is_within(const std::filesystem::path &root, const std::filesystem::pa
 struct ExpandedReference {
     std::optional<std::filesystem::path> path;
     bool unresolved{};
+    bool unsafe{};
 };
 
 ExpandedReference expand_reference(
@@ -305,10 +328,14 @@ ExpandedReference expand_reference(
             continue;
         }
         const std::size_t close = value.find('}', offset + 2u);
-        if (close == std::string::npos) { return {std::nullopt, true}; }
+        if (close == std::string::npos) {
+            return {std::nullopt, true, false};
+        }
         const std::string name = value.substr(offset + 2u, close - offset - 2u);
         const auto variable = variables.find(name);
-        if (variable == variables.end()) { return {std::nullopt, true}; }
+        if (variable == variables.end()) {
+            return {std::nullopt, true, false};
+        }
         expanded += variable->second.string();
         offset = close + 1u;
         // XGen packages commonly concatenate path variables without writing an
@@ -319,14 +346,31 @@ ExpandedReference expand_reference(
             expanded.push_back(std::filesystem::path::preferred_separator);
         }
     }
-    std::replace(expanded.begin(), expanded.end(), '\\', '/');
-    const bool windows_absolute = expanded.size() >= 3u &&
+    const bool drive_prefix = expanded.size() >= 2u &&
         std::isalpha(static_cast<unsigned char>(expanded[0])) &&
-        expanded[1] == ':' && expanded[2] == '/';
+        expanded[1] == ':';
+    const bool windows_absolute = drive_prefix && expanded.size() >= 3u &&
+        (expanded[2] == '/' || expanded[2] == '\\');
+    const bool drive_relative = drive_prefix && !windows_absolute;
+#if defined(_WIN32)
+    const bool root_relative =
+        !expanded.empty() &&
+        (expanded[0] == '/' || expanded[0] == '\\') &&
+        !(expanded.size() >= 2u &&
+          (expanded[1] == '/' || expanded[1] == '\\'));
+#else
+    const bool root_relative =
+        !expanded.empty() && expanded[0] == '\\' &&
+        !(expanded.size() >= 2u && expanded[1] == '\\');
+#endif
+    if (drive_relative || root_relative) {
+        return {std::nullopt, false, true};
+    }
+    std::replace(expanded.begin(), expanded.end(), '\\', '/');
     std::filesystem::path path{expanded};
-    if (path.empty()) { return {std::nullopt, true}; }
+    if (path.empty()) { return {std::nullopt, true, false}; }
     if (path.is_relative() && !windows_absolute) { path = source_parent / path; }
-    return {path.lexically_normal(), false};
+    return {path.lexically_normal(), false, false};
 }
 
 bool absolute_path_has_symlink_component(const std::filesystem::path &path) {
@@ -350,10 +394,19 @@ bool absolute_path_has_symlink_component(const std::filesystem::path &path) {
 
 bool contains_symlink_component(
     const std::filesystem::path &root, const std::filesystem::path &path) {
-    const std::filesystem::path relative = path.lexically_relative(root);
-    if (relative.empty() && path != root) { return true; }
-    std::filesystem::path current = root;
-    for (const std::filesystem::path &component : relative) {
+    const std::filesystem::path normalized_root = root.lexically_normal();
+    const std::filesystem::path normalized_path = path.lexically_normal();
+    auto root_it = normalized_root.begin();
+    auto path_it = normalized_path.begin();
+    for (; root_it != normalized_root.end(); ++root_it, ++path_it) {
+        if (path_it == normalized_path.end() ||
+            !native_path_component_equal(*root_it, *path_it)) {
+            return true;
+        }
+    }
+    std::filesystem::path current = normalized_root;
+    for (; path_it != normalized_path.end(); ++path_it) {
+        const std::filesystem::path &component = *path_it;
         current /= component;
         std::error_code error;
         const std::filesystem::file_status status =
@@ -526,7 +579,9 @@ XGenPackageManifest scan_xgen_package(
             const ExpandedReference expanded = expand_reference(
                 literal, path.parent_path(), variables);
             if (expanded.unresolved || !expanded.path) {
-                reference.status = XGenReferenceStatus::UnresolvedVariable;
+                reference.status = expanded.unsafe
+                    ? XGenReferenceStatus::Unsafe
+                    : XGenReferenceStatus::UnresolvedVariable;
                 manifest.dependency_closure_complete = false;
             } else {
                 reference.resolved_path = expanded.path;
@@ -591,7 +646,8 @@ XGenPackageManifest scan_xgen_package(
     }
     if (has_classic) {
         plan.reasons.emplace_back(
-            "Classic procedural descriptions and expressions require Autodesk evaluation");
+            "static inventory cannot prove optional native Classic lowering; "
+            "use the per-collection planner or Autodesk evaluation");
     }
     if (has_interactive_authoring) {
         plan.reasons.emplace_back(
@@ -599,7 +655,8 @@ XGenPackageManifest scan_xgen_package(
     }
     if (has_ptex) {
         plan.reasons.emplace_back(
-            "PTEX assets are inventoried but native PTEX expression evaluation is unsupported");
+            "static inventory cannot prove the owning PTEX face/expression "
+            "binding; the optional Classic planner must validate it");
         plan.native_compatible = false;
     }
     if (has_script_or_plugin) {
