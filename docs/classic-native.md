@@ -156,12 +156,27 @@ The overload taking an already parsed `ClassicCollection` lets a renderer or
 package loader avoid reopening the main file.
 
 The root argument can also be the project root. The plan resolves palette
-`xgDataPath` and `xgProjectPath`, including relocated Windows-authored paths,
-mixed separators, and `${PROJECT}xgen/...` without a slash. This specifically
-prevents an integration from expanding `${DESC}` to
+`xgDataPath` and `xgProjectPath`, including project-relative data paths,
+relocated Windows-authored paths, mixed separators, and
+`${PROJECT}xgen/...` without a slash. Drive-relative Windows values such as
+`C:xgen/collections/fur` and root-relative values such as `\xgen/...` are
+rejected because their target depends on hidden process drive state. This
+specifically prevents an integration from
+expanding `${DESC}` to
 `project/description/paintmaps/...` when the files actually live under
 `project/xgen/collections/palette/description`. Direct per-description callers
 can use `resolve_xgen_classic_descriptions_root` for the same behavior.
+
+PTEX and clump sidecars share one description-path resolver. `${DESC}` and
+plain relative paths are resolved against the concrete description directory;
+both slash styles and case-insensitive `.PTX`, `.XUV`, and `.XPD` suffixes are
+accepted. Ambiguous drive- and root-relative paths are rejected. If a
+relocated package retains a stale absolute Windows, UNC, or Unix path, the
+resolver may rebase only the suffix following a matching description-directory
+component, and only when that local candidate exists. A still-valid intentional
+external absolute path is preserved. Description names must be single safe
+path components, so a malformed collection cannot use a name such as `../fur`
+to escape the selected data root.
 
 `build_xgen_classic_collection_motion_execution_plan` consumes the renderer's
 `-motionSamplesLookup`/placement table. It evaluates Alembic at

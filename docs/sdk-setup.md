@@ -95,7 +95,7 @@ archive/card/sphere primitives are outside this curve-only bridge.
 
 ### Interactive in-memory cache bridge
 
-The same explicit preset builds `nanoxgen_maya_xgen_cache.so`. Its
+On Linux the same explicit preset builds `nanoxgen_maya_xgen_cache.so`. Its
 `nanoxgenXGenCache` Maya command evaluates an Interactive Groom description's
 `outRenderData`, invokes the public `MPxData::writeBinary` exactly once into an
 in-memory stream, and immediately passes those resident bytes to NanoXGen. The
@@ -184,6 +184,19 @@ appended without modifying the system:
 export NANOXGEN_COMPAT_LIB_DIR=/path/to/rocky-compatible/usr/lib64
 ./scripts/run_xgen_real_tests.sh
 ```
+
+Do not copy Arch/system libraries over Maya's bundled runtime. The compatibility
+directory is scoped to the explicit Autodesk targets and adds an rpath only on
+Linux. Check the resulting bridge and plug-in with `ldd` before launching Maya,
+as the supplied scripts do.
+
+The CMake target selects the conventional Maya module suffix for the host:
+`.so` on Linux, `.mll` on Windows, and `.bundle` on macOS. The checked-in
+`mayapy`, `ldd`, `LD_LIBRARY_PATH`, and compatibility-directory runners are
+Linux-specific and the current bridge validation is Maya 2027.1 Linux. On
+another platform, configure with explicit native `MAYA_LOCATION` and
+`XGEN_ROOT` paths and launch the built module through that platform's Maya
+environment; do not reuse the Linux shell runners verbatim.
 
 The test is intentionally excluded from public CI: a full licensed Maya/XGen
 installation is proprietary and must not be committed or redistributed. A

@@ -16,10 +16,10 @@ debug-only static fallback diagnostic, and unit coverage are included in the
 current `next`; typed `float3` buffers retain their required 16-byte alignment,
 while packed byte-buffer clients use scalar/array loads.
 
-## AMD HIP build
+## Linux AMD HIP/Vulkan build
 
 Clone recursively outside NanoXGen, then use the checked-in helper to configure
-only the WIP HIP backend:
+the required runtime plug-ins from one checkout:
 
 ```bash
 git clone --branch next --recursive \
@@ -27,29 +27,37 @@ git clone --branch next --recursive \
   /external/LuisaCompute-next
 
 NANOXGEN_HIP_ARCH=gfx1201 \
+NANOXGEN_LUISA_ENABLE_VULKAN=ON \
 NANOXGEN_LUISA_ENABLE_FALLBACK=ON \
 ./scripts/build_luisa_compute_next.sh \
   /external/LuisaCompute-next \
   /external/LuisaCompute-next/build-nanoxgen-hip
 ```
 
-`NANOXGEN_LUISA_ENABLE_FALLBACK` defaults to `OFF`; setting it to `ON` builds
-the fallback plug-in alongside HIP. The same NanoXGen binaries can then select
-either backend at runtime.
+HIP defaults to `ON`; Vulkan and fallback default to `OFF`. The same NanoXGen
+binary can load any plug-in present in that runtime directory. Always build
+the plug-ins and runtime from the same checkout: Luisa intentionally rejects a
+stale plug-in whose backend ABI version differs from the runtime. Reconfiguring
+the helper removes only explicitly disabled backend modules, because CMake does
+not otherwise delete a stale plug-in when an option changes from `ON` to
+`OFF`.
 
-For a fallback-only build, including hosts where the moving `next` HIPRT
-submodule does not yet compile for the installed ROCm/device combination:
+For a Vulkan/fallback build that avoids HIPRT, including hosts where the moving
+`next` HIPRT submodule does not yet compile for the installed ROCm/device
+combination:
 
 ```bash
 NANOXGEN_LUISA_ENABLE_HIP=OFF \
+NANOXGEN_LUISA_ENABLE_VULKAN=ON \
 NANOXGEN_LUISA_ENABLE_FALLBACK=ON \
 ./scripts/build_luisa_compute_next.sh \
   /external/LuisaCompute-next \
-  /external/LuisaCompute-next/build-nanoxgen-fallback
+  /external/LuisaCompute-next/build-nanoxgen-vk-fallback
 ```
 
-`NANOXGEN_LUISA_ENABLE_HIP` defaults to `ON`. At least one of HIP or fallback
-must be enabled.
+At least one of HIP, Vulkan, or fallback must be enabled. The helper uses the
+process CPU count for build parallelism when `NANOXGEN_BUILD_JOBS` is unset and
+does not bake that count into NanoXGen runtime scheduling.
 
 LuisaCompute `next` currently uses an LLVM API newer than the headers bundled
 with some ROCm releases. The helper deliberately selects system LLVM through
@@ -69,11 +77,25 @@ cmake --build --preset luisa-hip-release
 ctest --preset luisa-hip-release
 ```
 
+Use `luisa-vk-release` or `luisa-fallback-release` to make the corresponding
+plug-in the differential-test backend. Their
+`luisa-classic-vk-release`/`luisa-classic-fallback-release` variants add the
+same Alembic/OpenSubdiv/Ptex Classic inputs as
+`luisa-classic-hip-release`. Each preset has its own NanoXGen build directory;
+all may reference the same external Luisa source/build tree when that tree
+contains the requested plug-ins.
+
 The imported CMake adapter consumes LuisaCompute's narrow DSL/runtime shared
 libraries and loads the selected backend plug-in at runtime. It does not use
 `add_subdirectory`: the upstream HIP build currently refers to its top-level
 source directory while compiling HIPRT, so a standalone upstream build is the
 reproducible integration boundary.
+
+The helper is a Linux-oriented ROCm/Vulkan build entry point. The CMake import
+adapter no longer hard-codes Unix compile definitions and also searches the
+usual Windows import-library directory, but the current HIP/Vulkan validation
+and all timings below are Linux/RADV/ROCm results rather than a claim of tested
+Windows or macOS device support.
 
 ## Float-only expression lowering
 

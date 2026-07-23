@@ -92,6 +92,12 @@ pipeline.encode(
 // The renderer decides when to submit, synchronize, or read the buffers.
 ```
 
+`make_compile_inputs` and `make_views_of_renderer_owned_buffers` above are
+renderer-adapter placeholders, not NanoXGen API functions. They populate the
+public `ClassicCollectionCompileInput` and
+`ClassicCollectionDispatchResources` structs declared by the included header;
+the benchmark tool is the complete allocation/upload example.
+
 `compile_classic_collection` specializes all descriptions as one batch and
 owns the resulting shaders. `encode` only records commands: it performs no
 allocation, upload, synchronization, or download. Buffer views and the Device
@@ -182,7 +188,14 @@ Call `resolve_xgen_classic_descriptions_root`, or use either collection-plan
 builder, which calls it automatically. The supplied argument may be the final
 collection data directory or a project root; `xgDataPath`, relocated
 `xgProjectPath`, `${PROJECT}xgen/...`, and mixed `\`/`/` separators are
-handled without a recursive filesystem scan.
+handled without a recursive filesystem scan. Plain relative `xgDataPath`
+values are anchored to the supplied project; ambiguous drive-relative
+(`C:xgen/...`) and root-relative (`\xgen/...`) Windows values are rejected.
+Description-side PTEX/XUV paths additionally accept either separator, plain
+relative paths, and stale absolute paths whose suffix can be proven to exist
+under the resolved description directory. Prefer `${DESC}` in newly authored
+packages because it is unambiguous across drive letters, mount points, and
+platforms.
 
 The verified noise parameters map to Maya as follows:
 
@@ -194,9 +207,12 @@ The verified noise parameters map to Maya as follows:
 | `noise_correlation` | UI `correlation / 100` |
 | `noise_preserve_length` | UI `preserveLength / 100` |
 
-The current native path implements the default linear magnitude-scale ramp.
-Authored ramp curves, expressions, and PTEX/texture masks require additional
-asset sections and are not silently approximated.
+The compact `.nxg` prototype path implements only its default linear
+magnitude-scale ramp. The separate Classic collection pipeline implements the
+calibrated `rampUI` modes and root-sampled scalar PTEX expressions described in
+`classic-native.md`. General vector expressions and texture/modifier bindings
+outside that bounded Classic plan remain checked fallbacks rather than silent
+approximations.
 
 Motion output is implemented in the portable payload path, evaluated `.nxc`,
 Classic Alembic host planner, and Luisa collection pipeline. The typed Autodesk

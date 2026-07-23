@@ -12,9 +12,9 @@ content rather than the suffix alone.
 |---|---|---|
 | Evaluated `XgSplineData` BLOB | Parse, validate, preserve, process, pack, cache | Native |
 | `.nxc` evaluated curve cache | Validate and consume | Native |
-| Classic collection/description package | Inventory and text-reference closure | Autodesk Classic typed bridge required for arbitrary procedural evaluation |
+| Classic spline collection/description package | Inventory plus bounded native Alembic/PTEX/XPD/expression/FX planning | Native when every active operation lowers; Autodesk Classic typed bridge otherwise |
 | Interactive Groom authoring state in `.ma/.mb` | File inventory only; Maya DG owns the dependency graph | Maya/Autodesk required |
-| PTEX, CAF, XUV/XPD/XGC, Alembic, archives, textures and plugins | Typed inventory; optional Alembic patch/guide import | Depends on the owning Classic/Interactive graph |
+| PTEX, CAF, XUV/XPD/XGC, Alembic, archives, textures and plugins | Typed inventory; native Alembic/PTEX/XPD input for the supported Classic spline chain | Depends on the owning Classic/Interactive graph |
 
 Classic text structure can also be inspected without Autodesk:
 
@@ -34,19 +34,19 @@ its generator, expressions, PTEX maps, and FX modules, so the package planner
 continues to select Autodesk whenever the complete native execution chain is
 not implemented and proven.
 
-An explicit `classic-alembic-release` preset additionally imports Classic patch
-sample zero and embedded guides through the system Alembic library, then builds
-a validated `.nxg` asset. `Subd` guide roots use OpenSubdiv limit patches and
-root sampling uses a bounded tessellation. The same optional preset can inspect
-and sample system-Ptex maps as normalized float data without Maya. This is a
-native input milestone, not complete Classic evaluation: XGen root sampling,
-binding PTEX calls to coarse-face identities, and the authored FX chain still
-require fallback. See
+An explicit `classic-alembic-release` preset imports Classic patches and
+embedded guides through the system Alembic library. `Subd` guide roots use
+OpenSubdiv limit patches and root sampling uses bounded tessellation. The same
+optional pipeline reproduces the calibrated RandomGenerator sample sequence,
+binds supported scalar PTEX expressions by coarse-face identity, reads XPD3
+clump points and PTEX guide-ID maps, and runs the bounded authored spline FX
+chain. All nine Rabbit descriptions complete through that path, including
+motion, but this is not arbitrary-package support. See
 [`classic-native.md`](classic-native.md).
 
-The core does not claim to reproduce arbitrary SeExpr, PTEX lookup, custom
-modules, archive/card/sphere primitives, or Interactive Groom modifier graphs.
-Those cases must select an Autodesk backend and cache the evaluated result.
+General vector SeExpr, uncalibrated clump controls, custom modules,
+archive/card/sphere primitives, remaining FX types, and Interactive Groom
+modifier graphs still require an Autodesk backend and evaluated caching.
 
 ## Package inspection
 
@@ -63,6 +63,14 @@ Autodesk runtime is required, the ordered evaluation/cache stages, and the
 fallback reasons. `${PROJECT}` defaults to the package root. Other variables
 are explicit so the scanner cannot silently bind a dependency to the wrong
 studio directory.
+
+The package scanner is intentionally a core-only, conservative static planner:
+it does not load Alembic/Ptex or invoke the optional Classic compiler while
+walking an arbitrary directory. A directory containing Classic authoring files
+therefore retains an Autodesk fallback plan even when a renderer later selects
+a particular spline collection and proves that collection through
+`build_xgen_classic_collection_execution_plan`. Native Classic compatibility
+is a per-collection execution result, not something inferred from extensions.
 
 The scanner:
 
@@ -110,14 +118,19 @@ unresolved-variable references. The source contains stale studio-absolute
 paths and description/FX-module variables; its large `.xgen` and `.ma` files
 also exceed the bounded prefix, and Maya DG dependencies have not been
 enumerated. Closure is therefore correctly false. PTEX, procedural Classic
-expressions, MEL data, and Maya scenes make the package non-native-compatible;
-the execution plan selects `autodesk-interactive-maya`, followed by the
-in-memory evaluated-data bridge and external `.nxc` caching.
+expressions, MEL data, and Maya scenes prevent a package-wide core-only claim;
+the conservative inventory plan selects `autodesk-interactive-maya`, followed
+by the in-memory evaluated-data bridge and external `.nxc` caching. Separately,
+the selected local-path Classic collection has been proven through the bounded
+native pipeline; that narrower result does not make its containing Maya package
+closure complete.
 
-No `.xdsc`, `.xgd`, `.xgfx`, `.xgip`, CAF, symlink, or Windows-style path was
-present in this Rabbit archive. Those types remain covered by synthetic
-scanner tests or require another production package. The full JSON manifest,
-asset paths, extracted files, and generated caches remain outside Git.
+No `.xdsc`, `.xgd`, `.xgfx`, `.xgip`, CAF, or symlink was present in this
+Rabbit archive. The scan did contain 32 extracted Windows-absolute file
+references; these account for part of the external total and remain external
+on Linux. Mixed-separator, drive-relative, UNC, and symlink-component behavior
+is also covered by synthetic scanner tests. The full JSON manifest, asset
+paths, extracted files, and generated caches remain outside Git.
 
 ## Evaluated snapshot ingestion
 
@@ -154,19 +167,25 @@ are differentially tested bit-for-bit against the full materializer.
 
 ## Production architecture
 
-1. Scan the package and resolve its dependency closure.
+1. Scan the package and resolve as much of its dependency closure as static
+   inspection can prove.
 2. Consume existing evaluated BLOB/`.nxc` data natively when valid.
-3. For Classic procedural evaluation, receive `PrimitiveCache` typed arrays
-   directly from the public RenderAPI; do not serialize an intermediate BLOB.
-4. For Interactive Groom, perform only the unavoidable public `MPxData`
+3. For a Classic spline collection, build the optional bounded native
+   Alembic/PTEX/XPD/runtime plan. Use it only when every active operation lowers
+   and all required sidecars resolve.
+4. Otherwise receive Classic `PrimitiveCache` typed arrays directly from the
+   public RenderAPI; do not serialize an intermediate BLOB.
+5. For Interactive Groom, perform only the unavoidable public `MPxData`
    serialization into memory, then decode and cache with NanoXGen; do not write
    a temporary `.xgen` or rematerialize through `XgFnSpline`.
-5. Use source order for one-shot static rendering. Use canonical identity order
+6. Use source order for one-shot static rendering. Use canonical identity order
    only for motion matching and reproducible caches.
 
 The Autodesk bridges are optional build products and must remain absent from the
-default core dependency graph. Real production packages are still required to
-calibrate PTEX, custom plugin, archive, deformation, motion, and failure paths.
+default core dependency graph. Additional production packages are still needed
+to calibrate custom plugins, archive/card/sphere primitives, other
+generator/FX combinations, reference/crease metadata, and failure paths beyond
+the Rabbit spline collection.
 
 The implemented Classic curve bridge is built only by
 `autodesk-bridge-release`. It validates finite positions and U/V, finite

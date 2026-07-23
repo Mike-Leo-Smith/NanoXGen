@@ -25,8 +25,8 @@ The current prototype provides:
 - direct CPU and Luisa generation into renderer `float4(position, radius)` and
   fixed `pointCounts` buffers, with checked device capacities at the public
   GPU boundary;
-- persistent CPU workers that claim fixed-size strand tiles through an
-  atomic counter;
+- caller-owned or scoped CPU workers that claim fixed-size strand tiles through
+  an atomic counter;
 - validation, corruption detection, tests, and an OBJ curve preview;
 - a Maya 2027.1-tested Autodesk XGen Interactive Grooming probe and real-fixture
   differential harness;
@@ -86,8 +86,8 @@ or link Maya/XGen.
 LuisaCompute is a separate optional execution backend. Its moving `next`
 checkout and build stay outside this repository; see
 [`docs/luisa-compute.md`](docs/luisa-compute.md) for the tested revision, AMD
-HIP/Vulkan build, cache behavior, and explicit `luisa-hip-release` and
-`luisa-classic-hip-release` presets.
+HIP/Vulkan build, cache behavior, and explicit HIP, Vulkan, and fallback
+presets, including their `luisa-classic-*` variants.
 
 The Classic Alembic/OpenSubdiv/Ptex input stage is also explicit and optional. See
 [`docs/classic-native.md`](docs/classic-native.md) for its
@@ -111,9 +111,13 @@ affinity; a renderer can instead wrap its own scheduler. Authored order is
 preserved regardless of task completion order.
 The description-data argument may be either the resolved
 `xgen/collections/<palette>` directory or the project root. Relocated
-`xgProjectPath`/`xgDataPath`, `${PROJECT}xgen/...` without an intervening
-slash, and mixed Windows/Unix separators are resolved before `${DESC}` PTEX
-and clump paths are opened.
+`xgProjectPath`/`xgDataPath`, project-relative `xgDataPath`,
+`${PROJECT}xgen/...` without an intervening slash, and mixed Windows/Unix
+separators are resolved before `${DESC}` PTEX and clump paths are opened.
+Description sidecars also accept plain relative paths and stale absolute paths
+that can be unambiguously rebased to an existing suffix under the selected
+description; ambiguous drive- or root-relative Windows paths are rejected and
+new assets should prefer `${DESC}`.
 Canonical topology and `(faceId, faceUV, patchUV)` identities exactly match
 fresh Maya typed-RenderAPI caches for every description. The ordered runtime
 covers RandomGenerator, spline interpolation, PTEX-bound expressions, palette
@@ -142,6 +146,27 @@ make bin/nanoxgen_demo
 ```
 
 The demo writes `build/demo/demo.nxg` and `build/demo/curves.obj`.
+
+### Platform and path boundary
+
+The portable core uses C++20, Threads, zlib, and native
+`std::filesystem::path`. CI builds and tests the default core plus an installed
+`find_package` consumer on Windows x64, Linux x64, Linux arm64, and macOS
+arm64. Maya/XGen and HIP/Vulkan production results in this repository were
+measured on the documented Maya 2027.1/Arch/RADV/ROCm host. CMake avoids Unix
+flags under MSVC/clang-cl, uses native Maya module suffixes, and does not apply
+x86 SIMD preferences on non-x86 targets. Windows/macOS device and Autodesk
+bridges remain compile-oriented compatibility work rather than measured
+support.
+
+At XGen package boundaries both slash styles are accepted. Fully qualified
+Windows and UNC references remain external on Linux, drive-relative paths such
+as `C:maps/file.ptx` and root-relative Windows paths are unsafe because their
+meaning depends on process drive state, and POSIX path matching remains
+case-sensitive. Renderer and
+benchmark subprocesses pass paths as individual arguments; the Autodesk
+RenderAPI command string additionally quotes names and normalizes path
+separators so spaces do not split `-file` or `-geom` values.
 
 ## Autodesk calibration (optional)
 
@@ -248,8 +273,11 @@ curve payload contract and coverage relative to the Maya renderer paths.
 
 ## Continuous integration
 
-GitHub Actions configures CMake/Ninja presets, builds the portable CPU targets,
-and runs the core test suite on every push and pull request. LuisaCompute device
-tests require an explicitly supplied external `next` build and supported GPU.
-Autodesk calibration is intentionally excluded; run
+GitHub Actions configures CMake/Ninja presets, builds and tests the portable
+CPU targets, installs the package, and builds/runs a downstream `find_package`
+consumer on Windows x64, Linux x64, Linux arm64, and macOS arm64. These jobs
+explicitly disable LuisaCompute, Alembic/PTEX, Maya, and XGen discovery so the
+default dependency boundary is exercised on every push and pull request.
+LuisaCompute device tests require an explicitly supplied external `next` build
+and supported GPU. Autodesk calibration is intentionally excluded; run
 `scripts/run_xgen_real_tests.sh` on a licensed Maya machine for that coverage.

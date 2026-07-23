@@ -51,15 +51,17 @@ influence represented by sweep angles and radii. For a generated primitive:
 | Relative interpolation | translate guide to sampled root, resample and blend CVs | implemented |
 | Width/taper | linear root-to-tip width | implemented |
 | Noise modifier | 3D gradient field, transported frame, correlation and length preservation | scalar/length model oracle-verified |
-| XGen expressions/PTEX | compiled expression IR and texture sampling | planned |
+| XGen expressions/PTEX | bounded scalar IR plus root-sampled PTEX input tables | implemented for the calibrated Classic bindings; general vector SeExpr remains |
 | Geodesic guide neighborhoods | surface graph / UV-space acceleration | planned |
 | Clump/collision/coil/wind | hierarchical clump CPU/Luisa path; remaining modifiers | partial |
 | Interactive Groom BLOB import/export | independent v1 parser/writer plus canonical `.nxc` cache | bit-exact oracle-validated with Maya 2027.1 |
 
 The guide stencil deliberately moves expensive guide selection to asset
 construction. Runtime work is bounded by `strand_count * cvs_per_strand * 8`,
-with one Luisa work item per strand. On CPU, persistent worker threads
-dynamically claim fixed-size strand tiles through an atomic counter.
+with one Luisa work item per strand. On CPU, workers in the caller's
+`NanoXGenContext` or a scoped internal pool dynamically claim fixed-size strand
+tiles through an atomic counter; NanoXGen does not require a process-lifetime
+global pool.
 
 ## Maya 2027.1 real-fixture results
 
@@ -359,14 +361,16 @@ actual renderer-buffer copy.
 
 ## Next implementation phases
 
-1. Integrate direct packed generation and `.nxc` fallback into the renderer,
-   including cache invalidation and canonical shutter-sample matching.
+1. Finish production renderer adoption of the external-Device Classic path,
+   including 1--20-sample transport where the current consumer stores only two
+   samples, lifetime/invalidation policy, and evaluated `.nxc` fallback.
 2. Expand licensed fixtures to capture authored guide inputs and individual
    modifier outputs, not only evaluated final curves.
 3. Replace the isotropic support kernel with UV/geodesic, direction-dependent
    guide regions and validate interpolation error against those fixtures.
-4. Extend the implemented float runtime plan and Luisa lowering with PTEX
-   sampling through a texture indirection table.
+4. Evaluate moving the currently host-sampled scalar PTEX input tables to
+   renderer-owned texture/bindless resources when that reduces cold-start host
+   work without changing XGen point-filter semantics.
 5. Implement remaining modifier passes in authored dependency order. Primitive
    length/width/taper/ramp, reparameterized Cut, NoiseFX, and hierarchical
    CPU/Luisa clumping are represented; add coil, collision, and wind. Fuse
