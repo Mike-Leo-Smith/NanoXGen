@@ -166,8 +166,12 @@ pipeline.
 Cold JIT uses `std::thread::hardware_concurrency()` when
 `max_parallel_compiles` is zero, uniformly for HIP, Vulkan, and Luisa fallback.
 An explicit positive value is a renderer-controlled resource limit, not a
-backend compatibility switch. See `docs/renderer-integration.md` for the API
-contract and `docs/luisa-compute.md` for the five-round Rabbit measurements.
+backend compatibility switch. Host preparation separately partitions the same
+machine thread count across independent descriptions and their internal
+PTEX/clump workers; on the 32-thread calibration host this is four concurrent
+descriptions with an eight-worker internal budget. Authored order is preserved.
+See `docs/renderer-integration.md` for the API contract and
+`docs/luisa-compute.md` for the five-round Rabbit measurements.
 
 The optional Luisa path uploads rebuilt float guides, CSR associations, and
 bound clump guide axes/maps, generates final packed base points, and runs the

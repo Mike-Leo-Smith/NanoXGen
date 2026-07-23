@@ -101,6 +101,8 @@ streams and buffers. No backend name is part of that public API; the caller
 chooses the Device. No handwritten CUDA/HIP path remains. Cold JIT defaults to
 the machine's logical-thread count for HIP, Vulkan, and fallback, with an
 explicit limit available to applications that need to share CPU capacity.
+Host preparation uses the same machine-derived budget across independent
+descriptions and their nested PTEX/clump work while preserving authored order.
 Canonical topology and `(faceId, faceUV, patchUV)` identities exactly match
 fresh Maya typed-RenderAPI caches for every description. The ordered runtime
 covers RandomGenerator, spline interpolation, PTEX-bound expressions, palette

@@ -88,6 +88,10 @@ must outlive their recorded work, and the Device must outlive the pipeline.
 `ClassicCollectionExecutionPlan` is the backend-neutral host representation
 for one master Classic `.xgen`; it carries all descriptions rather than asking
 the renderer to reopen the main file per description.
+Its default `max_description_workers == 0` divides the machine's logical
+threads by the per-description `max_host_workers` budget, so nested PTEX/clump
+work does not multiply into unbounded oversubscription. A renderer can set
+either limit explicitly when sharing a host scheduler.
 
 The Classic cold benchmark exercises this complete boundary directly from the
 authoring collection and Alembic patch. Omitting DESCRIPTION selects the

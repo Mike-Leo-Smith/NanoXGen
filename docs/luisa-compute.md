@@ -169,6 +169,14 @@ leaving the API's `max_parallel_compiles` at zero, selects
 sharing with a renderer; backend selection does not silently change the worker
 count.
 
+Host preparation has two bounded levels. Zero `max_description_workers`
+partitions `hardware_concurrency()` across the per-description
+`max_host_workers` budget. On this 32-logical-thread machine the default
+8-thread PTEX/clump budget therefore prepares four independent descriptions at
+once. The benchmark's `--host-workers N` overrides only that outer limit; zero
+keeps automatic partitioning. Results are written back in authored description
+order regardless of completion order.
+
 ### Complete collection result
 
 On 2026-07-23, the RX 9070 XT (`gfx1201`) processed all nine Rabbit
@@ -193,25 +201,26 @@ shown below was 156.225 s.
 | --- | ---: | ---: | ---: | ---: |
 | portable CPU Release | 11.519 s | 11.522 s | 11.558 s | 13.56x |
 | native CPU + LTO | 11.370 s | 11.351 s | 11.403 s | 13.76x |
-| Luisa HIP, one Device, no shader cache | 8.855 s | 8.857 s | 8.876 s | 17.64x |
-| Luisa Vulkan, one Device, no shader cache | 10.187 s | 10.240 s | 10.322 s | 15.26x |
-| Luisa fallback, one Device, no shader cache | 10.242 s | 10.283 s | 10.294 s | 15.19x |
+| Luisa HIP, one Device, no shader cache | 5.219 s | 5.199 s | 5.230 s | 30.05x |
+| Luisa Vulkan, one Device, no shader cache | 6.519 s | 6.519 s | 6.654 s | 23.96x |
+| Luisa fallback, one Device, no shader cache | 6.564 s | 6.564 s | 6.622 s | 23.80x |
 | Maya 2027.1 typed evaluation/copy | 156.225 s | 156.225 s | 156.436 s | 1.00x |
 
-HIP is 1.28x faster than native+LTO CPU, Vulkan is 1.11x faster, and fallback
-is 1.10x faster for this cold no-cache workload. The median HIP breakdown is
-6.507 s native preparation, 1.826 s JIT, 0.045 s device creation, 0.086 s
-collection parsing, 0.035 s buffer allocation, 0.089 s upload, and 0.320 s
-first dispatch/download/packing. Vulkan spends 6.533 s in native preparation
-and 3.061 s in JIT. Fallback spends 6.527 s in native preparation, 2.432 s in
-JIT, and 1.116 s in first dispatch/download/packing.
+HIP is 2.18x faster than native+LTO CPU, Vulkan is 1.74x faster, and fallback
+is 1.73x faster for this cold no-cache workload. The median HIP breakdown is
+2.879 s native preparation, 1.764 s JIT, 0.045 s device creation, 0.088 s
+collection parsing, 0.034 s buffer allocation, 0.087 s upload, and 0.318 s
+first dispatch/download/packing. Vulkan spends 2.882 s in native preparation
+and 2.976 s in JIT. Fallback spends 2.875 s in native preparation, 2.367 s in
+JIT, and 1.121 s in first dispatch/download/packing.
 
 Fallback was also measured with an earlier conservative one-worker JIT limit:
 its cold time was 24.776 s and JIT alone took 16.874 s. Removing that
-backend-name special case and using the native 32-worker default produced the
-10.283 s median above: 2.41x faster end to end and about 6.94x faster in JIT,
-with the same stable collection checksum in every round. The public pipeline
-does not receive a backend name. Zero `max_parallel_compiles` means
+backend-name special case and using the native 32-worker JIT default first
+reduced cold time to 10.283 s; collection-wide host preparation then reduced it
+to the 6.564 s median above. The complete change is 3.77x end to end, with the
+same stable collection checksum in every round. The public pipeline does not
+receive a backend name. Zero `max_parallel_compiles` means
 `std::thread::hardware_concurrency()` for the caller-supplied Device; a renderer
 may set an explicit lower limit only when it needs to share CPU capacity.
 Warm-dispatch numbers are recorded by the benchmark but are deliberately not
