@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -381,13 +382,16 @@ int main(int argc, char **argv) try {
     ShaderOption shader_option{};
     shader_option.enable_cache = false;
     shader_option.enable_fast_math = options.fast_math;
-    auto base = device.compile(
-        nanoxgen::luisa_backend::make_classic_base_generate_kernel(cvs),
-        shader_option);
-    auto primitive = device.compile(
-        nanoxgen::luisa_backend::make_classic_runtime_primitive_kernel(
-            runtime, cvs),
-        shader_option);
+    // HIP and Vulkan use independent external compiler invocations for these
+    // kernels and Luisa's device compilation path is safe to enter in
+    // parallel. Keep other backends sequential until they are validated: in
+    // particular, the fallback backend currently has process-global compiler
+    // state in the Luisa next branch.
+    const bool parallel_jit =
+        options.backend == "hip" || options.backend == "vk";
+    const std::launch jit_launch = parallel_jit
+        ? std::launch::async
+        : std::launch::deferred;
     using NoiseShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
         ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
         Buffer<luisa::float3>,
@@ -402,40 +406,100 @@ int main(int argc, char **argv) try {
         Buffer<luisa::float4>,
         Buffer<luisa::float4>, Buffer<std::uint32_t>,
         Buffer<std::uint32_t>>;
+    auto base_kernel =
+        nanoxgen::luisa_backend::make_classic_base_generate_kernel(cvs);
+    auto primitive_kernel =
+        nanoxgen::luisa_backend::make_classic_runtime_primitive_kernel(
+            runtime, cvs);
+    auto width_kernel =
+        nanoxgen::luisa_backend::make_classic_runtime_width_kernel(
+            runtime, cvs);
+    auto base_future = std::async(
+        jit_launch,
+        [&device, shader_option, kernel = std::move(base_kernel)]() mutable {
+            return device.compile(kernel, shader_option);
+        });
+    auto primitive_future = std::async(
+        jit_launch,
+        [&device, shader_option,
+         kernel = std::move(primitive_kernel)]() mutable {
+            return device.compile(kernel, shader_option);
+        });
+    auto width_future = std::async(
+        jit_launch,
+        [&device, shader_option, kernel = std::move(width_kernel)]() mutable {
+            return device.compile(kernel, shader_option);
+        });
     std::vector<std::optional<NoiseShader>> noises(runtime.noises.size());
     std::vector<std::optional<CutShader>> cuts(runtime.cuts.size());
     std::vector<std::optional<ClumpShader>> clumps(runtime.clumps.size());
+    std::vector<std::optional<std::future<NoiseShader>>> noise_futures(
+        runtime.noises.size());
+    std::vector<std::optional<std::future<CutShader>>> cut_futures(
+        runtime.cuts.size());
+    std::vector<std::optional<std::future<ClumpShader>>> clump_futures(
+        runtime.clumps.size());
     for (const nanoxgen::ClassicFloatEffect effect : runtime.effects) {
         if (effect.type == nanoxgen::ClassicFloatEffectType::Noise) {
-            auto &shader = noises.at(effect.module_index);
-            if (!shader) {
-                shader.emplace(device.compile(
+            auto &future = noise_futures.at(effect.module_index);
+            if (!future) {
+                auto kernel =
                     nanoxgen::luisa_backend::make_classic_runtime_noise_kernel(
-                        runtime, runtime.noises[effect.module_index], cvs),
-                    shader_option));
+                        runtime, runtime.noises[effect.module_index], cvs);
+                future.emplace(std::async(
+                    jit_launch,
+                    [&device, shader_option,
+                     kernel = std::move(kernel)]() mutable {
+                        return device.compile(kernel, shader_option);
+                    }));
             }
         } else if (effect.type == nanoxgen::ClassicFloatEffectType::Cut) {
-            auto &shader = cuts.at(effect.module_index);
-            if (!shader) {
-                shader.emplace(device.compile(
+            auto &future = cut_futures.at(effect.module_index);
+            if (!future) {
+                auto kernel =
                     nanoxgen::luisa_backend::make_classic_runtime_cut_kernel(
-                        runtime, runtime.cuts[effect.module_index], cvs),
-                    shader_option));
+                        runtime, runtime.cuts[effect.module_index], cvs);
+                future.emplace(std::async(
+                    jit_launch,
+                    [&device, shader_option,
+                     kernel = std::move(kernel)]() mutable {
+                        return device.compile(kernel, shader_option);
+                    }));
             }
         } else {
-            auto &shader = clumps.at(effect.module_index);
-            if (!shader) {
-                shader.emplace(device.compile(
+            auto &future = clump_futures.at(effect.module_index);
+            if (!future) {
+                auto kernel =
                     nanoxgen::luisa_backend::make_classic_runtime_clump_kernel(
                         runtime, runtime.clumps[effect.module_index], cvs,
-                        clump_host[effect.module_index].guide_count),
-                    shader_option));
+                        clump_host[effect.module_index].guide_count);
+                future.emplace(std::async(
+                    jit_launch,
+                    [&device, shader_option,
+                     kernel = std::move(kernel)]() mutable {
+                        return device.compile(kernel, shader_option);
+                    }));
             }
         }
     }
-    auto width = device.compile(
-        nanoxgen::luisa_backend::make_classic_runtime_width_kernel(runtime, cvs),
-        shader_option);
+    auto base = base_future.get();
+    auto primitive = primitive_future.get();
+    auto width = width_future.get();
+    for (std::size_t module = 0u; module < noise_futures.size(); ++module) {
+        if (noise_futures[module]) {
+            noises[module].emplace(noise_futures[module]->get());
+        }
+    }
+    for (std::size_t module = 0u; module < cut_futures.size(); ++module) {
+        if (cut_futures[module]) {
+            cuts[module].emplace(cut_futures[module]->get());
+        }
+    }
+    for (std::size_t module = 0u; module < clump_futures.size(); ++module) {
+        if (clump_futures[module]) {
+            clumps[module].emplace(clump_futures[module]->get());
+        }
+    }
     const Clock::time_point compile_end = Clock::now();
 
     stream << roots.copy_from(root_plan.roots.data())
@@ -577,6 +641,8 @@ int main(int argc, char **argv) try {
               << "\",\"base_only\":"
               << (options.base_only ? "true" : "false")
               << ",\"effect_count\":" << runtime.effects.size()
+              << ",\"parallel_jit\":"
+              << (parallel_jit ? "true" : "false")
               << ",\"shader_cache\":false,\"fast_math\":"
               << (options.fast_math ? "true" : "false")
               << ",\"includes_file_io\":true"
