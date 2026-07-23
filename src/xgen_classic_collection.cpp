@@ -5,7 +5,10 @@
 #include "nanoxgen/xgen_classic_roots.h"
 
 #include <algorithm>
+#include <atomic>
+#include <future>
 #include <stdexcept>
+#include <thread>
 
 namespace nanoxgen {
 
@@ -37,8 +40,10 @@ build_xgen_classic_collection_execution_plan(
     result.collection_path = collection_path;
     result.archive_path = archive_path;
     result.descriptions_root = descriptions_root;
-    result.descriptions.reserve(collection.descriptions.size());
-    for (const ClassicDescription &description : collection.descriptions) {
+    result.descriptions.resize(collection.descriptions.size());
+    const auto prepare_description = [&](std::size_t index) {
+        const ClassicDescription &description =
+            collection.descriptions[index];
         ClassicCollectionExecutionDescription output{};
         output.name = description.name;
         output.runtime = compile_xgen_classic_float_runtime_plan(
@@ -77,7 +82,43 @@ build_xgen_classic_collection_execution_plan(
             options.effect_count, output.runtime.effects.size()));
         output.rebuilt_guides = rebuild_xgen_classic_guides_for_device(
             output.surface.asset, cvs);
-        result.descriptions.emplace_back(std::move(output));
+        result.descriptions[index] = std::move(output);
+    };
+    const std::size_t hardware_workers = std::max<std::size_t>(
+        std::thread::hardware_concurrency(), 1u);
+    const std::size_t description_limit =
+        options.max_description_workers == 0u
+        ? std::max<std::size_t>(
+            hardware_workers / options.max_host_workers, 1u)
+        : options.max_description_workers;
+    const std::size_t worker_count = std::min(
+        description_limit, collection.descriptions.size());
+    result.description_worker_count = worker_count;
+    if (worker_count <= 1u) {
+        for (std::size_t index = 0u;
+             index < collection.descriptions.size(); ++index) {
+            prepare_description(index);
+        }
+    } else {
+        std::atomic_size_t next_description{};
+        std::vector<std::future<void>> workers;
+        workers.reserve(worker_count);
+        for (std::size_t worker = 0u; worker < worker_count; ++worker) {
+            workers.emplace_back(std::async(
+                std::launch::async,
+                [&] {
+                    while (true) {
+                        const std::size_t index =
+                            next_description.fetch_add(
+                                1u, std::memory_order_relaxed);
+                        if (index >= collection.descriptions.size()) {
+                            return;
+                        }
+                        prepare_description(index);
+                    }
+                }));
+        }
+        for (std::future<void> &worker : workers) { worker.get(); }
     }
     if (result.descriptions.empty()) {
         throw std::runtime_error(

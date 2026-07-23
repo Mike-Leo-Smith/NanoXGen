@@ -125,6 +125,7 @@ struct Options {
     bool fast_math{true};
     bool cpu_validation{true};
     std::uint32_t jit_workers{};
+    std::uint32_t host_workers{};
 };
 
 Options parse_options(int argc, char **argv) {
@@ -133,7 +134,8 @@ Options parse_options(int argc, char **argv) {
             "usage: nanoxgen_xgen_classic_luisa_benchmark RUNTIME_DIR "
             "BACKEND COLLECTION.xgen PATCHES.abc DESCRIPTIONS_ROOT "
             "[DESCRIPTION] [--warmup N] [--repeats N] [--base-only] "
-            "[--effect-count N] [--jit-workers N] [--strict-math] "
+            "[--effect-count N] [--host-workers N] [--jit-workers N] "
+            "[--strict-math] "
             "[--no-cpu-validation] "
             "[--reference-nxc FILE] [--output-nxc FILE]\n"
             "Omit DESCRIPTION to execute every description from the "
@@ -161,7 +163,8 @@ Options parse_options(int argc, char **argv) {
         }
         if (argument != "--warmup" && argument != "--repeats" &&
             argument != "--effect-count" && argument != "--reference-nxc" &&
-            argument != "--output-nxc" && argument != "--jit-workers") {
+            argument != "--output-nxc" && argument != "--jit-workers" &&
+            argument != "--host-workers") {
             throw std::invalid_argument(
                 "unknown argument: " + std::string{argument});
         }
@@ -179,6 +182,9 @@ Options parse_options(int argc, char **argv) {
             result.effect_count = parse_u32(argv[index], "effect count", true);
         } else if (argument == "--jit-workers") {
             result.jit_workers = parse_u32(argv[index], "JIT workers");
+        } else if (argument == "--host-workers") {
+            result.host_workers =
+                parse_u32(argv[index], "host workers", true);
         } else {
             result.repeats = parse_u32(argv[index], "repeats");
         }
@@ -529,10 +535,13 @@ int run_collection_mode(
     const Clock::time_point native_begin = Clock::now();
     nanoxgen::ClassicCollectionExecutionOptions host_options{};
     host_options.effect_count = options.effect_count;
+    host_options.max_description_workers = options.host_workers;
     nanoxgen::ClassicCollectionExecutionPlan host_plan =
         nanoxgen::build_xgen_classic_collection_execution_plan(
             collection, options.collection, options.archive,
             options.descriptions_root, host_options);
+    const std::size_t host_worker_count =
+        host_plan.description_worker_count;
     std::vector<PreparedCollectionDescription> prepared;
     prepared.reserve(host_plan.descriptions.size());
     for (std::size_t index = 0u;
@@ -752,6 +761,8 @@ int run_collection_mode(
               << options.backend << "\",\"description_count\":"
               << prepared.size() << ",\"single_device\":true"
               << ",\"external_device_api\":true"
+              << ",\"parallel_host_across_descriptions\":"
+              << (host_worker_count > 1u ? "true" : "false")
               << ",\"parallel_jit_across_descriptions\":"
               << (compile_stats.worker_limit > 1u
                       ? "true" : "false")
@@ -764,6 +775,7 @@ int run_collection_mode(
               << ",\"native_prepare_ms\":"
               << milliseconds(native_begin, native_end)
               << ",\"jit_compile_wall_ms\":" << compile_stats.wall_ms
+              << ",\"host_workers\":" << host_worker_count
               << ",\"jit_workers\":"
               << compile_stats.worker_limit
               << ",\"jit_kernel_count\":" << compile_stats.kernel_count
