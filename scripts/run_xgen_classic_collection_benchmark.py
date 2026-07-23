@@ -74,7 +74,7 @@ def summarize_cpu(args: argparse.Namespace) -> dict[str, Any]:
     samples = [float(record["total_ms"]) for record in rounds]
     first = rounds[0]
     return {
-        "path": "cpu-native-lto",
+        "path": args.cpu_label,
         "rounds": args.rounds,
         "outer_warmup": not args.no_outer_warmup,
         "includes_file_io": True,
@@ -297,6 +297,11 @@ def summarize_maya(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cpu-tool", type=Path)
+    parser.add_argument(
+        "--cpu-label",
+        default="cpu",
+        help="path label recorded for a CPU benchmark (for example cpu-portable-release)",
+    )
     parser.add_argument("--luisa-tool", type=Path)
     parser.add_argument("--maya-tool", type=Path)
     parser.add_argument("--luisa-runtime", type=Path)

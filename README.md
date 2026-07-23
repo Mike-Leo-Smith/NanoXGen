@@ -92,31 +92,27 @@ subdivision, PTEX binding, and modifier parity boundary.
 
 The combined Luisa/Classic preset builds a no-shader-cache cold benchmark from
 the authoring collection, Alembic patch, PTEX density, exact roots and guide
-associations through the final renderer points. The Rabbit `eyelash`
-description currently completes this path with no Autodesk fallback, matches
-Maya's 1514-curve/25738-point topology, and passes the recorded geometry
-tolerance. `head_A` also runs all four Noise/Cut passes with no fallback and
-matches its 307791-curve/5232447-point topology. Its CPU result has about
-`4.13e-6` position RMS error against Maya, but a subdivision-boundary strand
-reaches `3.16e-3`, so it still fails the strict `1e-3` maximum-error gate.
-Classic ClumpingFX is also decoded from XPD3 point records plus its PTEX
-guide-ID map and runs in the CPU float runtime. The runtime supports ordered
-clump hierarchies, guide-space clump noise, and control grouping already baked
-into those maps. Rabbit `mm` now evaluates both ClumpingFX modules, Noise2, and
-Cut1 with zero CPU fallback and matches Maya's 3526-curve/59942-point topology;
-the full result has `2.62e-3` maximum and `1.23e-4` RMS position error. The same
-ordered plan runs through Luisa HIP and Vulkan without handwritten GPU APIs.
-Runtime `map()` expressions are now bound by the optional native stage: PTEX is
-point-sampled once at stable strand roots and CPU/Luisa execution consumes only
-a dense float table. No-argument palette scalar functions use the same table;
-this lowers Rabbit `nose` without fallback. This removes the prior PTEX/custom
-lowering fallbacks from Rabbit `body`, `head`, and `nose`, but their complete
-geometry/topology still does not pass the Maya differential gate. The active
-`erduo` `$Prefg` vector-noise call is root-bound to the same float table, making
-all nine current Rabbit runtime plans syntactically complete. Unsupported
-vector SeExpr forms and advanced controls remain explicit fallbacks when
-active; zero fallback is reported separately from oracle parity, so the
-complete Rabbit package is not yet claimed as native-compatible.
+associations through final renderer points. All nine descriptions in the local
+Rabbit collection now complete on native CPU, Luisa HIP, and Luisa Vulkan with
+no Autodesk fallback: 2,456,139 curves and 47,421,673 points. Canonical
+topology and `(faceId, faceUV, patchUV)` identities exactly match fresh Maya
+typed-RenderAPI caches for every description. The ordered runtime covers
+RandomGenerator, spline interpolation, PTEX-bound expressions, palette scalar
+functions, hierarchical ClumpingFX, NoiseFX, CutFX, and width. GPU execution is
+float-only and uses LuisaCompute kernels; there is no handwritten CUDA or HIP
+path.
+
+Geometry parity is reported separately from execution coverage. Five
+descriptions pass a strict `1e-3` maximum-position gate. Across the full Rabbit,
+1,479 of 47,421,673 points exceed `1e-3` (0.00312%); rare, ill-conditioned
+Noise/Clump cases leave a `0.243994` maximum and about `6.39e-5` aggregate RMS
+error against Maya. See [`docs/classic-native.md`](docs/classic-native.md) for
+the per-description oracle table and
+[`docs/luisa-compute.md`](docs/luisa-compute.md) for reproducible cold CPU,
+HIP, Vulkan, and Maya timings. Unsupported expressions, modules, or authoring
+features outside this calibrated collection still produce explicit fallback
+reasons; this Rabbit result is not a claim of complete native support for
+arbitrary XGen packages.
 
 The Makefile is a fallback for minimal CPU-only environments:
 

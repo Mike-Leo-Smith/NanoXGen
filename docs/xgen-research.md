@@ -195,19 +195,24 @@ guarded by fixed scalar samples, motion-stability tests, and the official output
 matrix.
 
 Current procedural boundaries remain explicit: the bounded Classic IR supports
-authored scalar expressions and ramp interpolation, but not arbitrary SeExpr or
-all texture/PTEX bindings. The IGS oracle matrix covers straight hairs on flat
-and wave surfaces. Rabbit `head_A` established two otherwise undocumented
-details: NoiseFX evaluates its spatial domain in XGen's internal length units,
-and `$cLength` uses a fixed `2*N+4`-interval `SgCurve::length` approximation
-rather than the control polygon. With both reproduced, all four effects run
-without fallback and the full CPU output reaches about `4.13e-6` position RMS
-error against Maya. A subdivision-boundary strand still reaches `3.16e-3`, so
-the strict maximum-error oracle continues to reject the case. Rabbit `mm`
+the scalar expressions, PTEX/table bindings, ramps, ClumpingFX, NoiseFX,
+CutFX, and width operations calibrated by the Rabbit collection, but not
+arbitrary SeExpr or every generator/FX type. The IGS oracle matrix covers
+straight hairs on flat and wave surfaces. Rabbit `head_A` established two
+otherwise undocumented details: NoiseFX evaluates its spatial domain in XGen's
+internal length units, and `$cLength` uses a fixed `2*N+4`-interval
+`SgCurve::length` approximation rather than the control polygon. Rabbit `mm`
 subsequently validated XPD3 guide records, PTEX guide-ID maps, two ordered
-clump levels, guide-space noise, NoiseFX, and CutFX. Its zero-fallback CPU
-result matches Maya topology with `1.23e-4` position RMS error and a `2.62e-3`
-maximum.
+clump levels, guide-local noise, NoiseFX, and CutFX.
+
+After root and local-guide calibration, all nine Rabbit descriptions now run
+without fallback and exactly match Maya's per-description topology and
+canonical identities. Five pass the strict `1e-3` maximum-position gate; over
+the complete 47,421,673-point output, 1,479 points exceed it (0.00312%), with
+about `6.39e-5` aggregate RMS and a `0.243994` worst outlier. The residual
+comes from rare ill-conditioned frame transport amplifying Maya-double versus
+runtime-float differences. These numbers bound the current implementation;
+they are not a claim of arbitrary Classic-package compatibility.
 
 ## CPU and renderer-payload performance snapshot
 

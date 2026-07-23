@@ -99,47 +99,52 @@ the same post-mask, pre-interpolation point as `XgPatch::isCulled`, preserving
 the observable gaps in `$id`. Classic guide CVs are interpreted in XGen's local
 `(tangent, normal, binormal)` patch frame and uniformly rebuilt before blending.
 
-On the local Rabbit `eyelash` description this produces 1519 roots and, after
-NoiseFX/CutFX culling and renderer endpoints, exactly 1514 curves and 25738
-points like Maya, with no fallback, and stays within the recorded geometry
-tolerance. `head_A` lowers all four scalar/Noise/Cut passes with no fallback and
-matches Maya's 307791-curve/5232447-point topology. Matching XGen's internal
-Noise coordinate units and fixed `SgCurve::length` sampling reduced its full
-CPU result to about `4.13e-6` RMS position error, with a `3.16e-3` maximum on a
-subdivision-boundary strand. It therefore remains outside the strict `1e-3`
-maximum-error gate. Rabbit `mm` lowers both ClumpingFX modules, the active
-NoiseFX module, and CutFX with zero CPU fallback and matches Maya's complete
-3526-curve/59942-renderer-point topology. Against a fresh typed RenderAPI
-cache, the full result has `2.62e-3` maximum and `1.23e-4` RMS position error;
-the two-clump intermediate has `1.53e-3` maximum and `1.09e-4` RMS error.
-Rabbit `body` and `head` now lower their PTEX-backed primitive/FX expressions
-without fallback. Rabbit `nose` also lowers its palette scalar function, but
-produces 67337 native strands versus 67231 in the Maya cache. These are not yet
-parity claims: `body` produces 330101 native strands versus 330038 in the
-current Maya cache, and the deeper multi-effect Luisa differential still has a
-`3.07e-2` maximum position error. `erduo` root-binds its active
-`noise($Prefg*$freq)` expression and also reaches zero fallback, but produces
-339573 strands versus Maya's 339574 and has unresolved geometry error. All
-nine active Rabbit runtime plans now lower syntactically; several retain known
-topology/geometry mismatches.
+The complete local Rabbit collection now lowers all nine descriptions with no
+Autodesk fallback. Native CPU, Luisa HIP, and Luisa Vulkan produce the same
+2,456,139-curve / 47,421,673-point collection topology as fresh Maya typed
+RenderAPI captures. Per-description curve/point counts and canonical
+`(faceId, faceUV, patchUV)` identities are exact. The following geometry
+figures are from a fresh HIP run compared in canonical order with those Maya
+`.nxc` captures:
+
+| description | curves | points | max position error | RMS position error | points > `1e-3` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `mm` | 3,526 | 59,942 | `2.29e-5` | `2.12e-6` | 0 |
+| `erduo` | 339,574 | 5,772,758 | `8.53e-2` | `1.58e-4` | 1,005 |
+| `body` | 330,038 | 8,911,026 | `2.44e-1` | `7.12e-5` | 132 |
+| `eyelash` | 1,514 | 25,738 | `1.59e-4` | `1.18e-5` | 0 |
+| `head` | 1,150,937 | 19,565,929 | `3.60e-4` | `2.50e-6` | 0 |
+| `nose` | 67,231 | 1,142,927 | `2.17e-3` | `2.70e-6` | 3 |
+| `sizhi` | 236,693 | 6,390,711 | `2.34e-2` | `2.76e-5` | 339 |
+| `weiba` | 18,835 | 320,195 | `1.80e-4` | `3.64e-6` | 0 |
+| `head_A` | 307,791 | 5,232,447 | `1.80e-4` | `2.59e-6` | 0 |
+
+Five descriptions pass the strict `1e-3` maximum-position gate. Across the
+whole collection, 1,479 points exceed it, or 0.00312% of all renderer points;
+the point-weighted RMS is about `6.39e-5`. `body` stage 7 is the last NoiseFX
+stage, not the final stage: its rare near-reversing curves reach `0.11728`
+maximum error there, and final stage 8 CutFX amplifies the maximum to
+`0.243994`. The dominant residual is the amplification of small float/double
+differences in ill-conditioned transported frames. NanoXGen's GPU runtime
+remains float-only; the double implementation is confined to host-side
+Autodesk calibration.
 
 ## Current parity boundary
 
 The OpenSubdiv path evaluates current and reference limit patches and retains
 stable coarse-face identities, but boundary/crease metadata is absent when an
-Alembic file stores the Maya patch as a plain `PolyMesh`. PTEX density masks
-are bound for RandomGenerator, point-filtered encoded guide maps are bound for
-hierarchical ClumpingFX, and runtime scalar `map()` inputs are pre-sampled into
-float tables. No-argument palette scalar functions are compiled into per-root
-inputs. The scalar result of `noise($Prefg*constant)` is evaluated once at the
-reference-pose root and joins that table. General vector SeExpr, the remaining
-advanced ClumpingFX controls, and several strict topology/geometry
-differentials are the current Rabbit-wide parity boundary.
+Alembic file stores the Maya patch as a plain `PolyMesh`. PTEX density masks,
+point-filtered encoded guide maps, runtime scalar `map()` inputs, no-argument
+palette functions, and the Rabbit `$Prefg` noise binding are pre-sampled into
+typed float tables. General vector SeExpr, uncalibrated ClumpingFX controls,
+other generator/FX types, and the strict geometry outliers above remain the
+native-compatibility boundary.
 
-Consequently, timings from this path are engineering measurements for the
-native prototype, not an equal-output Maya speedup claim. A valid Maya
-comparison requires the same roots, surface evaluation, expressions, PTEX,
-modules, curve counts, CV counts, and renderer channels.
+The full-Rabbit timing comparison is valid for renderer position/radius work:
+all measured paths consume the same authoring inputs, run the same active
+modules, and produce exact curve/CV counts and canonical identities. It is
+still an engineering result for this calibrated asset, not evidence that
+arbitrary Classic packages are natively compatible.
 
 The optional Luisa path uploads rebuilt float guides, CSR associations, and
 bound clump guide axes/maps, generates final packed base points, and runs the

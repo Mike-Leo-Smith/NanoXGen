@@ -110,11 +110,13 @@ fallback until their CPU oracle and Luisa differential tests pass.
 
 ## Rabbit cold/no-cache benchmark
 
-`nanoxgen_xgen_classic_luisa_benchmark` starts from the external Classic
-collection, Alembic patch and PTEX maps. It disables the Luisa shader cache and
-reports device creation, native parse/import/root/rebuild, allocation/JIT,
-upload, first dispatch/download/packing, total cold time, warm median/p90 and a
-checksum separately. No asset or benchmark JSON is written to the repository:
+`nanoxgen_xgen_classic_luisa_benchmark` starts from an external Classic
+collection, Alembic patch, XPD guides, and PTEX maps. It disables the Luisa
+shader cache and reports device creation, native parse/import/root/rebuild,
+allocation/JIT, upload, first dispatch/download/packing, total cold time,
+warm dispatch statistics, and a checksum separately. The collection driver
+runs every description in an isolated process and aggregates identical rounds.
+No asset, cache, shader artifact, or benchmark JSON is committed:
 
 ```bash
 export LUISA_COMPUTE_SOURCE_DIR=/external/LuisaCompute-next
@@ -122,90 +124,76 @@ export LUISA_COMPUTE_BUILD_DIR=/external/LuisaCompute-next/build-nanoxgen-hip
 cmake --preset luisa-classic-hip-release
 cmake --build --preset luisa-classic-hip-release
 
-./build/luisa-classic-hip-release/nanoxgen_xgen_classic_luisa_benchmark \
-  "$LUISA_COMPUTE_BUILD_DIR/bin" hip \
-  /external/rabbit/collection.xgen /external/rabbit/patches.abc \
-  /external/rabbit/xgen/collections/collection eyelash \
-  --warmup 3 --repeats 11 --reference-nxc /external/oracle/eyelash.nxc
+python scripts/run_xgen_classic_collection_benchmark.py \
+  --luisa-tool \
+    ./build/luisa-classic-hip-release/nanoxgen_xgen_classic_luisa_benchmark \
+  --luisa-runtime "$LUISA_COMPUTE_BUILD_DIR/bin" \
+  --backend hip \
+  --collection /external/rabbit/collection.xgen \
+  --archive /external/rabbit/patches.abc \
+  --descriptions-root /external/rabbit/xgen/collections/collection \
+  --descriptions mm erduo body eyelash head nose sizhi weiba head_A \
+  --rounds 5 --gpu-warmup 3 --gpu-repeats 11 --no-outer-warmup
 ```
 
-On 2026-07-23, Rabbit `eyelash` on the RX 9070 XT (`gfx1201`) produced the same
-1514 curves and 25738 renderer points as Maya, with `fallback_count=0`. A fresh
-no-shader-cache run measured 890.7 ms cold and 0.117 ms warm-median through HIP;
-Vulkan measured 746.5 ms cold and 0.360 ms warm-median. The HIP maximum
-position/radius errors against the Maya `.nxc` oracle were about `1.59e-4` and
-`5.59e-9`. Strict HIP math reduced the CPU differential but increased cold JIT
-to about 3.15 s, so fast-math is the practical GPU mode for this float pipeline.
+### Complete collection result
 
-Eleven measured processes after three warmups gave portable CPU and native+LTO
-end-to-end medians of 92.34 and 90.79 ms (p90 93.39 and 91.49 ms). The matching
-Maya typed evaluation/copy median was 259.81 ms (p90 263.85 ms). Thus portable
-CPU is 2.81x and native+LTO CPU is 2.86x faster than Maya for this description.
-Cold HIP and Vulkan are 3.43x and 2.87x slower than Maya because JIT consumes
-748 and 641 ms respectively. Warm GPU dispatch is intentionally not presented
-as the requested cold speedup.
+On 2026-07-23, the RX 9070 XT (`gfx1201`) processed all nine Rabbit
+descriptions without Autodesk fallback. Every path produced 2,456,139 curves
+and 47,421,673 renderer points with exact per-description canonical identities.
+The GPU executable and runtime plug-ins came from the same LuisaCompute
+revision, `c07bc0824aebb97784cdaff6e2c34b77acab20a8`.
 
-After matching the internal Noise coordinate unit and Autodesk's fixed
-`SgCurve::length` approximation, a fresh no-cache HIP run of Rabbit `head_A`
-processed 307791 curves / 5232447 renderer points with all four effects and
-`fallback_count=0`. It measured 4784.1 ms cold, including 4304.1 ms allocation
-and JIT, and 10.78 ms warm median. HIP differed from the native CPU path by at
-most `1.78e-3`; both reached about `3.16e-3` maximum position error against the
-Maya oracle because of the same subdivision-boundary outlier. Thus `head_A`
-still fails the strict `1e-3` maximum-error gate even though the CPU RMS error is
-about `4.13e-6`. Full Rabbit remains incomplete: PTEX, palette-scalar, and
-root-bound `$Prefg` noise lowering have since made all nine active runtime
-plans syntactically complete, while several descriptions still fail topology
-or geometry parity. A zero lowering-fallback count is reported separately from
-`oracle_within_tolerance`.
+Each row below contains five fresh process-isolated samples with no outer
+warm-up. Times include collection and sidecar file I/O and all native
+preparation. GPU times also include device creation, upload, JIT, first
+dispatch, download, and packing with the shader cache disabled. They exclude
+cache writes and Autodesk serialization. Maya uses the direct typed
+`PrimitiveCache` bridge, with no intermediate XGen BLOB; its process-wall
+median was 158.590 s, while the comparable typed evaluation/copy interval
+shown below was 156.225 s.
+
+| path | first sample | median | p90 | speed vs Maya |
+| --- | ---: | ---: | ---: | ---: |
+| portable CPU Release | 37.416 s | 37.246 s | 37.416 s | 4.19x |
+| native CPU + LTO | 37.699 s | 36.826 s | 37.774 s | 4.24x |
+| Luisa HIP, no shader cache | 17.822 s | 17.658 s | 17.850 s | 8.85x |
+| Luisa Vulkan, no shader cache | 20.996 s | 20.958 s | 20.996 s | 7.45x |
+| Maya 2027.1 typed evaluation/copy | 156.225 s | 156.225 s | 156.436 s | 1.00x |
+
+HIP is 2.09x faster than native+LTO CPU, and Vulkan is 1.76x faster, for this
+cold no-cache workload. The median HIP breakdown is 10.513 s native
+parse/import/root/rebuild, 6.316 s JIT/allocation, 0.413 s device creation,
+0.069 s upload, and 0.340 s first dispatch/download/packing. Vulkan spends
+10.517 s in native preparation and 9.685 s in JIT/allocation, which explains
+most of its gap to HIP. Warm-dispatch numbers are recorded by the benchmark but
+are deliberately not substituted for the requested cold result.
+
+The Luisa kernels use `float`, integer identities, and integer hashes. No
+handwritten CUDA/HIP path remains and no device-side `double` is used; the
+host-only double code exists to reproduce Autodesk calibration behavior.
+Backend checksums are stable across all five rounds. HIP and Vulkan checksums
+are not expected to match bit-for-bit because the backends may contract or
+reassociate float operations differently.
+
+### Oracle boundary
+
+The full collection has exact topology and canonical identities, but not every
+point passes the strict geometry tolerance. Against fresh Maya `.nxc` typed
+caches, five descriptions have maximum position error at or below `1e-3`.
+Across all descriptions, 1,479 of 47,421,673 points exceed `1e-3` (0.00312%),
+the point-weighted RMS is about `6.39e-5`, and the worst rare outlier is
+`0.243994`. These outliers occur where tiny float/double differences are
+amplified by ill-conditioned Clump/Noise transported frames. See
+`classic-native.md` for the per-description table. Therefore the timing table
+is a same-topology, same-channel engineering comparison for this Rabbit asset,
+not a bit-exact geometry claim or a native-support claim for arbitrary XGen.
 
 The Luisa `fallback` backend built against system LLVM 22/Embree 4.4.1 on this
-Arch host but crashed in its generated worker code even for the small parity
-test, including with `LUISA_SINGLE_THREADING=1`. HIP and Vulkan are the tested
-working backends; the fallback crash occurs below NanoXGen and remains an
-upstream/runtime compatibility issue.
-
-Rabbit `mm` now exercises the Luisa hierarchical ClumpingFX kernel as well as
-NoiseFX, CutFX, and width. A fresh no-cache run produced 3526 curves / 59942
-renderer points with `fallback_count=0`. HIP differed from the CPU float path
-by at most `1.72e-5`; Vulkan differed by at most `1.49e-4`. Their Maya-oracle
-maximum remained `2.62e-3`, inherited from the CPU clump approximation, so the
-strict `1e-3` oracle gate correctly remains false.
-
-Cold startup is currently the wrong tradeoff for this small description. HIP
-took 6728.7 ms end to end, including 6489.4 ms for allocation/JIT, and Vulkan
-took 5601.2 ms, including 5385.4 ms for allocation/JIT. Warm execution was
-0.380 ms and 0.752 ms respectively. The matching portable CPU cold path took
-223.6 ms, while Maya typed evaluation/copy took 334.6 ms. Thus CPU was about
-1.50x faster than Maya, but no-cache HIP and Vulkan were about 20.1x and 16.7x
-slower. These results make shader fusion/precompiled backend artifacts—not
-curve dispatch throughput—the next cold-start optimization target.
-
-The same float-table path was exercised on Rabbit `body`, whose primitive
-length is PTEX-backed. With the authored FX list disabled, a fresh HIP process
-matched the CPU primitive result within `2.86e-6`; cold end-to-end time was
-1544.3 ms (1143.4 ms native preparation, 304.2 ms JIT/allocation) and warm
-dispatch was 6.48 ms for 330101 strands / 8,912,727 renderer points. Enabling
-all eight scheduled effects removed the lowering fallback but took 31.98 s
-cold because the current benchmark JITs a separate shader per effect; warm
-execution was 38.17 ms. That full result differs from CPU by `3.07e-2` and its
-native topology differs from the Maya cache (330101 versus 330038 strands), so
-it is diagnostic evidence for PTEX transport, not an accepted end-to-end
-speedup or parity result.
-
-Rabbit `nose` exercises the palette `long()->gamma(2)->contrast(0.9)` path.
-After lowering it without fallback, a fresh HIP process took 10745.2 ms cold,
-of which 10499.1 ms was allocation/JIT; first dispatch/download/packing took
-10.40 ms and the one measured warm iteration took 3.14 ms. It produced 67337
-strands / 1144729 points versus Maya's 67231 / 1142927, and its maximum HIP/CPU
-position difference was `6.01e-3`. These measurements diagnose the working
-GPU transport and the cost of per-effect JIT, but fail both topology and
-strict geometry parity and therefore are not a Maya speedup claim.
-
-Rabbit `erduo` exercises the root-bound `noise($Prefg*$freq)` input. A fresh
-HIP process ran all eight effects with `fallback_count=0` in 13432.3 ms cold,
-including 12675.8 ms of allocation/JIT. First dispatch/download/packing took
-44.30 ms and the one measured warm iteration took 20.89 ms. Native CPU
-generation took 3326.4 ms. CPU produced 339573 strands / 5772741 points versus
-Maya's 339574 / 5772758; HIP/CPU maximum position error was `2.58e-2`.
-Consequently this is execution coverage, not an accepted Maya speedup result.
+Arch host, but both the matching and an independent runtime build crashed in
+generated fallback worker code before returning JSON, including with
+`LUISA_SINGLE_THREADING=1`. HIP and Vulkan are the working backends on this
+host; the fallback failure is recorded as an upstream/runtime compatibility
+issue rather than replaced with the NanoXGen CPU result. RADV also reports its
+Vulkan implementation as non-conformant, so the Vulkan number is experimental
+and device/driver-specific.
