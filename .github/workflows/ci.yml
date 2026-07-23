@@ -8,23 +8,90 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  core:
+    name: Core / ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-24.04
+            arch: X64
+            platform: linux
+          - name: Linux arm64
+            runner: ubuntu-24.04-arm
+            arch: ARM64
+            platform: linux
+          - name: Windows x64
+            runner: windows-2022
+            arch: X64
+            platform: windows
+          - name: macOS arm64
+            runner: macos-15
+            arch: ARM64
+            platform: macos
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Install CMake and Ninja
+      - name: Verify runner architecture
+        shell: bash
+        run: |
+          echo "runner.os=${{ runner.os }}"
+          echo "runner.arch=${{ runner.arch }}"
+          test "${{ runner.arch }}" = "${{ matrix.arch }}"
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install --yes cmake ninja-build zlib1g-dev
           cmake --version
           ninja --version
 
-      - name: Configure
-        run: cmake --preset release
+      - name: Install macOS dependencies
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          brew install ninja zlib
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix zlib)" >> "$GITHUB_ENV"
+          cmake --version
+          ninja --version
+
+      - name: Install Windows dependencies
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install zlib:x64-windows
+          cmake --version
+          ninja --version
+
+      - name: Configure Unix core
+        if: matrix.platform != 'windows'
+        shell: bash
+        run: |
+          cmake --preset release \
+            -DNANOXGEN_BUILD_CALIBRATION=OFF \
+            -DNANOXGEN_BUILD_AUTODESK_BRIDGES=OFF \
+            -DNANOXGEN_ENABLE_LUISA=OFF \
+            -DNANOXGEN_ENABLE_ALEMBIC=OFF \
+            -DNANOXGEN_ENABLE_PTEX=OFF
+
+      - name: Configure Windows core
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          cmake --preset release `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DNANOXGEN_BUILD_CALIBRATION=OFF `
+            -DNANOXGEN_BUILD_AUTODESK_BRIDGES=OFF `
+            -DNANOXGEN_ENABLE_LUISA=OFF `
+            -DNANOXGEN_ENABLE_ALEMBIC=OFF `
+            -DNANOXGEN_ENABLE_PTEX=OFF
 
       - name: Build
         run: cmake --build --preset release
@@ -32,10 +99,33 @@ jobs:
       - name: Test
         run: ctest --preset release
 
-      - name: Verify installed CMake package
+      - name: Install CMake package
+        run: cmake --install build/release --prefix build/install
+
+      - name: Configure installed-package consumer on Unix
+        if: matrix.platform != 'windows'
+        shell: bash
         run: |
-          cmake --install build/release --prefix build/install
           cmake -S tests/cmake-consumer -B build/consumer -G Ninja \
             -DCMAKE_PREFIX_PATH="$PWD/build/install"
-          cmake --build build/consumer
-          ./build/consumer/nanoxgen_consumer
+
+      - name: Configure installed-package consumer on Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          cmake -S tests/cmake-consumer -B build/consumer -G Ninja `
+            "-DCMAKE_PREFIX_PATH=$env:GITHUB_WORKSPACE/build/install" `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows
+
+      - name: Build installed-package consumer
+        run: cmake --build build/consumer
+
+      - name: Run installed-package consumer on Unix
+        if: matrix.platform != 'windows'
+        run: ./build/consumer/nanoxgen_consumer
+
+      - name: Run installed-package consumer on Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: .\build\consumer\nanoxgen_consumer.exe
