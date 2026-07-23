@@ -10,6 +10,7 @@
 #include <opensubdiv/far/topologyRefinerFactory.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -75,21 +76,64 @@ SurfaceFrame xgen_surface_frame(Vec3 du, Vec3 dv) {
     // away from one another by half of their deviation from 90 degrees. The
     // normalized sum/difference form performs the same symmetric
     // orthogonalization without trigonometry.
-    const Vec3 u_tangent = normalize(du);
-    const Vec3 v_tangent = normalize(dv * -1.0f);
-    const Vec3 sum = u_tangent + v_tangent;
-    const Vec3 difference = u_tangent - v_tangent;
-    if (!(length_squared(sum) > 1.0e-20f) ||
-        !(length_squared(difference) > 1.0e-20f)) {
+    using D3 = std::array<double, 3u>;
+    const auto add = [](D3 a, D3 b) {
+        return D3{a[0] + b[0], a[1] + b[1], a[2] + b[2]};
+    };
+    const auto subtract = [](D3 a, D3 b) {
+        return D3{a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+    };
+    const auto scale = [](D3 value, double amount) {
+        return D3{
+            value[0] * amount, value[1] * amount, value[2] * amount};
+    };
+    const auto normalized = [&](D3 value) {
+        const double length_squared =
+            value[0] * value[0] + value[1] * value[1] +
+            value[2] * value[2];
+        if (!(length_squared > 1.0e-30)) {
+            throw std::runtime_error(
+                "Classic Alembic import: zero surface parameter tangent");
+        }
+        return scale(value, 1.0 / std::sqrt(length_squared));
+    };
+    const auto crossed = [](D3 a, D3 b) {
+        return D3{
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]};
+    };
+    const D3 u_tangent = normalized({
+        static_cast<double>(du.x), static_cast<double>(du.y),
+        static_cast<double>(du.z)});
+    const D3 v_tangent = normalized({
+        -static_cast<double>(dv.x), -static_cast<double>(dv.y),
+        -static_cast<double>(dv.z)});
+    const D3 sum = add(u_tangent, v_tangent);
+    const D3 difference = subtract(u_tangent, v_tangent);
+    const double sum_length_squared =
+        sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2];
+    const double difference_length_squared =
+        difference[0] * difference[0] +
+        difference[1] * difference[1] +
+        difference[2] * difference[2];
+    if (!(sum_length_squared > 1.0e-30) ||
+        !(difference_length_squared > 1.0e-30)) {
         throw std::runtime_error(
             "Classic Alembic import: surface parameter tangents cannot form an XGen frame");
     }
-    constexpr float kInverseSqrtTwo = 0.7071067811865475244f;
-    const Vec3 tangent =
-        (normalize(sum) + normalize(difference)) * kInverseSqrtTwo;
-    const Vec3 binormal =
-        (normalize(sum) - normalize(difference)) * kInverseSqrtTwo;
-    return {normalize(cross(tangent, binormal)), tangent, binormal};
+    constexpr double kInverseSqrtTwo = 0.707106781186547524400844362104849;
+    const D3 tangent = scale(
+        add(normalized(sum), normalized(difference)), kInverseSqrtTwo);
+    const D3 binormal = scale(
+        subtract(normalized(sum), normalized(difference)), kInverseSqrtTwo);
+    const D3 normal = normalized(crossed(tangent, binormal));
+    const auto to_float = [](D3 value) {
+        return Vec3{
+            static_cast<float>(value[0]), static_cast<float>(value[1]),
+            static_cast<float>(value[2])};
+    };
+    return {to_float(normal), to_float(tangent), to_float(binormal)};
 }
 
 Double3 to_double(Vec3 value) noexcept {
@@ -363,7 +407,7 @@ public:
             Far::TopologyRefinerFactory<Far::TopologyDescriptor>::Create(
                 *_base_refiner)};
         if (!local_refiner) { fail("cannot clone OpenSubdiv topology"); }
-        Far::PatchTableFactory::Options patch_options{5u};
+        Far::PatchTableFactory::Options patch_options{8u};
         patch_options.SetEndCapType(
             Far::PatchTableFactory::Options::ENDCAP_GREGORY_BASIS);
         local_refiner->RefineAdaptive(

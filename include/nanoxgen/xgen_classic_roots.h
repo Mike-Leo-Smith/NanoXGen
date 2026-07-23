@@ -105,7 +105,14 @@ struct ClassicExplicitRoot {
     const ClassicRootPlan &roots,
     std::uint32_t cvs_per_strand,
     float diameter = 0.0f,
-    float radius_scale = 1.0f);
+    float radius_scale = 1.0f,
+    bool root_relative = false);
+
+// Translate a root-relative fixed-CV curve set to renderer world positions.
+// Keeping Classic generation/FX local until this final addition avoids losing
+// segment precision when world coordinates are much larger than strand
+// offsets. The function is deliberately explicit to prevent double-translation.
+void make_xgen_classic_curves_world_space(PackedGeneratedCurves &curves);
 
 // Flatten XGen's uniformly rebuilt guide CVs as guide-major float3 data for
 // renderer/GPU upload. Rebuilding is a one-time host operation; device kernels

@@ -593,16 +593,14 @@ Scalar evaluate_ramp_points(std::span<const Point> points, Scalar parameter) {
         const Scalar scale = Scalar{1} / (p1 - p0);
         const Scalar d0 = lower == 0u
             ? (k1 - k0) / (scale * (Scalar{2} * p1 - Scalar{2} * p0))
-            : Scalar{0.5} *
-                  ((k1 - static_cast<Scalar>(points[lower - 1u].value)) /
-                   (scale * (p1 -
-                       static_cast<Scalar>(points[lower - 1u].position))));
+            : (k1 - static_cast<Scalar>(points[lower - 1u].value)) /
+                  (scale * (p1 -
+                      static_cast<Scalar>(points[lower - 1u].position)));
         const Scalar d1 = upper + 1u == points.size()
             ? (k1 - k0) / (scale * (Scalar{2} * p1 - Scalar{2} * p0))
-            : Scalar{0.5} *
-                  ((static_cast<Scalar>(points[upper + 1u].value) - k0) /
-                   (scale *
-                    (static_cast<Scalar>(points[upper + 1u].position) - p0)));
+            : (static_cast<Scalar>(points[upper + 1u].value) - k0) /
+                  (scale *
+                   (static_cast<Scalar>(points[upper + 1u].position) - p0));
         value = k0 * (u - Scalar{1}) * (u - Scalar{1}) *
                     (Scalar{2} * u + Scalar{1}) +
                 k1 * u * u * (Scalar{3} - Scalar{2} * u) +

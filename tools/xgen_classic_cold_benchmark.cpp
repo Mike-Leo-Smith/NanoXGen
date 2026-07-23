@@ -26,6 +26,12 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+struct ModuleAttributeOverride {
+    std::string module;
+    std::string attribute;
+    std::string value;
+};
+
 double milliseconds(Clock::time_point begin, Clock::time_point end) {
     return std::chrono::duration<double, std::milli>(end - begin).count();
 }
@@ -40,6 +46,7 @@ struct Options {
     std::optional<std::uint32_t> dump_face;
     std::optional<std::filesystem::path> output_nxc;
     std::optional<std::string> generator_mask;
+    std::vector<ModuleAttributeOverride> module_attribute_overrides;
     std::uint32_t dump_guides{};
     std::optional<std::uint32_t> dump_runtime;
     std::optional<std::uint32_t> effect_count;
@@ -68,6 +75,7 @@ Options parse_options(int argc, char **argv) {
             "[--generate] [--base-only] [--cvs N] [--face-counts] [--dump-roots N] "
             "[--dump-face ID] [--dump-guides N] [--probe FACE,U,V] "
             "[--dump-runtime N] [--effect-count N] [--generator-mask EXPR] "
+            "[--module-attr MODULE ATTRIBUTE VALUE ...] "
             "[--nxc OUTPUT]");
     }
     Options result{};
@@ -83,6 +91,13 @@ Options parse_options(int argc, char **argv) {
             result.base_only = true;
         } else if (argument == "--face-counts") {
             result.face_counts = true;
+        } else if (argument == "--module-attr") {
+            if (index + 3 >= argc) {
+                throw std::invalid_argument(
+                    "--module-attr needs MODULE ATTRIBUTE VALUE");
+            }
+            result.module_attribute_overrides.push_back(
+                {argv[++index], argv[++index], argv[++index]});
         } else if (argument == "--description" || argument == "--cvs" ||
                    argument == "--dump-roots" || argument == "--dump-face" ||
                    argument == "--dump-guides" ||
@@ -200,6 +215,32 @@ int main(int argc, char **argv) try {
                     {"mask", *options.generator_mask});
             } else {
                 mask->value = *options.generator_mask;
+            }
+        }
+        for (const ModuleAttributeOverride &override_value :
+             options.module_attribute_overrides) {
+            const auto object = std::find_if(
+                description.objects.begin(), description.objects.end(),
+                [&](const nanoxgen::ClassicObject &candidate) {
+                    const nanoxgen::ClassicAttribute *name =
+                        nanoxgen::find_classic_attribute(
+                            candidate.attributes, "name");
+                    return name && name->value == override_value.module;
+                });
+            if (object == description.objects.end()) {
+                throw std::runtime_error(
+                    "module override did not match " + override_value.module);
+            }
+            auto attribute = std::find_if(
+                object->attributes.begin(), object->attributes.end(),
+                [&](const nanoxgen::ClassicAttribute &candidate) {
+                    return candidate.name == override_value.attribute;
+                });
+            if (attribute == object->attributes.end()) {
+                object->attributes.push_back(
+                    {override_value.attribute, override_value.value});
+            } else {
+                attribute->value = override_value.value;
             }
         }
         ++processed;
@@ -385,6 +426,43 @@ int main(int argc, char **argv) try {
                       << noise_domain.z << " noise "
                       << nanoxgen::xgen_classic_noise_float(noise_domain)
                       << '\n';
+            const std::uint32_t influence_begin =
+                roots.influence_offsets[strand];
+            const std::uint32_t influence_end =
+                roots.influence_offsets[strand + 1u];
+            std::cout << "runtime " << strand << " influences "
+                      << (influence_end - influence_begin);
+            for (std::uint32_t index = influence_begin;
+                 index < influence_end; ++index) {
+                const nanoxgen::ClassicGuideInfluence influence =
+                    roots.influences[index];
+                std::cout << ' ' << influence.guide_index << ':'
+                          << influence.weight;
+            }
+            std::cout << '\n';
+            for (std::uint32_t index = influence_begin;
+                 index < influence_end; ++index) {
+                const nanoxgen::ClassicGuideInfluence influence =
+                    roots.influences[index];
+                const nanoxgen::GuideInput &guide =
+                    imported.asset.guides[influence.guide_index];
+                std::cout << "runtime " << strand << " influence_guide "
+                          << influence.guide_index << " root "
+                          << guide.cvs.front().x << ' ' << guide.cvs.front().y
+                          << ' ' << guide.cvs.front().z << " reference_root "
+                          << guide.reference_root_position.x << ' '
+                          << guide.reference_root_position.y << ' '
+                          << guide.reference_root_position.z << " normal "
+                          << guide.reference_root_normal.x << ' '
+                          << guide.reference_root_normal.y << ' '
+                          << guide.reference_root_normal.z << " tangent "
+                          << guide.reference_root_tangent.x << ' '
+                          << guide.reference_root_tangent.y << ' '
+                          << guide.reference_root_tangent.z << " binormal "
+                          << guide.reference_root_binormal.x << ' '
+                          << guide.reference_root_binormal.y << ' '
+                          << guide.reference_root_binormal.z << '\n';
+            }
             const auto emit = [&](std::string_view name,
                                   const auto &expression) {
                 if (!expression) { return; }
@@ -462,6 +540,20 @@ int main(int argc, char **argv) try {
                               << " face " << binding.guide_face_ids[guide]
                               << " uv " << binding.guide_uvs[guide].x << ' '
                               << binding.guide_uvs[guide].y << ' '
+                              << "normal "
+                              << binding.guide_normals[guide].x << ' '
+                              << binding.guide_normals[guide].y << ' '
+                              << binding.guide_normals[guide].z << " tangent "
+                              << binding.guide_tangents[guide].x << ' '
+                              << binding.guide_tangents[guide].y << ' '
+                              << binding.guide_tangents[guide].z
+                              << " reference_position "
+                              << binding.guide_reference_positions[guide].x
+                              << ' '
+                              << binding.guide_reference_positions[guide].y
+                              << ' '
+                              << binding.guide_reference_positions[guide].z
+                              << " noise "
                               << nanoxgen::evaluate_xgen_classic_float_runtime_expression(
                                      clump.noise, context)
                               << " frequency "
@@ -497,17 +589,23 @@ int main(int argc, char **argv) try {
             params.strand_count =
                 static_cast<std::uint32_t>(roots.roots.size());
             params.cvs_per_strand = runtime_cvs;
+            const bool root_relative = !roots.influence_offsets.empty();
             nanoxgen::PackedGeneratedCurves curves =
-                roots.influence_offsets.empty()
+                !root_relative
                     ? nanoxgen::generate_packed_roots_cpu(
                           asset, params, roots.roots)
                     : nanoxgen::generate_xgen_classic_base_curves_cpu(
-                          imported.asset, roots, params.cvs_per_strand);
+                          imported.asset, roots, params.cvs_per_strand,
+                          0.0f, 1.0f, true);
             if (!options.base_only) {
                 nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
                     curves, runtime, 1.0f, roots.surface_tangents,
                     roots.random_prefixes, roots.primitive_ids, clump_data,
-                    runtime_inputs.values, roots.reference_positions);
+                    runtime_inputs.values, roots.reference_positions,
+                    root_relative);
+            }
+            if (root_relative) {
+                nanoxgen::make_xgen_classic_curves_world_space(curves);
             }
             nanoxgen::add_xgen_classic_renderer_endpoints(curves);
             if (options.output_nxc) {

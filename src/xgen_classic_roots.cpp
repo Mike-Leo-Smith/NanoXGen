@@ -812,11 +812,25 @@ ClassicRootPlan build_xgen_classic_explicit_root_plan(
             fail("explicit root has no associated guide");
         }
         // XPD Location xyz records the surface position at the time the point
-        // map was authored. XGen retains face/u/v as the identity and samples
-        // the current patch for evaluation; using the cached xyz here leaves
-        // clump axes in the reference pose when the render patch is deformed.
+        // map was authored. Maya's SESubd evaluation and OpenSubdiv can differ
+        // by a few float ulps even on an unchanged patch; those ulps become
+        // visible when a clump guide has a reversing terminal segment and
+        // stacked NoiseFX transports a frame through it. XGen retains the
+        // authored location in that static case. Snap only within a bounded
+        // float-roundoff envelope so a genuinely deformed patch still follows
+        // its current face/u/v evaluation.
+        Vec3 current_position = current.position;
+        const float position_scale = std::max({
+            1.0f, std::abs(sample.position.x), std::abs(sample.position.y),
+            std::abs(sample.position.z)});
+        const float snap_tolerance =
+            32.0f * std::numeric_limits<float>::epsilon() * position_scale;
+        if (length_squared(sample.position - current.position) <=
+            snap_tolerance * snap_tolerance) {
+            current_position = sample.position;
+        }
         result.roots.push_back({
-            current.position, current.normal, sample.uv, 0u, {},
+            current_position, current.normal, sample.uv, 0u, {},
             sample.face_id});
         result.reference_positions.push_back(reference.position);
         result.surface_tangents.push_back(current.tangent);
@@ -979,7 +993,8 @@ PackedGeneratedCurves generate_xgen_classic_base_curves_cpu(
     const ClassicRootPlan &roots,
     std::uint32_t cvs_per_strand,
     float diameter,
-    float radius_scale) {
+    float radius_scale,
+    bool root_relative) {
     if (cvs_per_strand < 3u || roots.roots.empty() ||
         roots.influence_offsets.size() != roots.roots.size() + 1u ||
         roots.influence_offsets.front() != 0u ||
@@ -1043,16 +1058,54 @@ PackedGeneratedCurves generate_xgen_classic_base_curves_cpu(
             offset = offset * (1.0 / weight_sum);
             PackedCurvePoint &point = result.points[
                 static_cast<std::size_t>(strand) * cvs_per_strand + cv];
-            point = {static_cast<float>(static_cast<double>(root.position.x) +
-                                            offset.x),
-                     static_cast<float>(static_cast<double>(root.position.y) +
-                                            offset.y),
-                     static_cast<float>(static_cast<double>(root.position.z) +
-                                            offset.z),
+            point = {static_cast<float>(
+                         offset.x +
+                         (root_relative
+                              ? 0.0
+                              : static_cast<double>(root.position.x))),
+                     static_cast<float>(
+                         offset.y +
+                         (root_relative
+                              ? 0.0
+                              : static_cast<double>(root.position.y))),
+                     static_cast<float>(
+                         offset.z +
+                         (root_relative
+                              ? 0.0
+                              : static_cast<double>(root.position.z))),
                      radius};
         }
     }
     return result;
+}
+
+void make_xgen_classic_curves_world_space(PackedGeneratedCurves &curves) {
+    if (curves.roots.size() != curves.strand_count ||
+        curves.point_counts.size() != curves.strand_count) {
+        throw std::invalid_argument(
+            "Classic world translation needs one root per strand");
+    }
+    std::size_t point_offset = 0u;
+    for (std::uint32_t strand = 0u; strand < curves.strand_count; ++strand) {
+        const RootSample &root = curves.roots[strand];
+        const std::size_t count = curves.point_counts[strand];
+        if (point_offset > curves.points.size() ||
+            count > curves.points.size() - point_offset) {
+            throw std::invalid_argument(
+                "Classic world translation point counts are inconsistent");
+        }
+        for (std::size_t cv = 0u; cv < count; ++cv) {
+            PackedCurvePoint &point = curves.points[point_offset + cv];
+            point.x += root.position.x;
+            point.y += root.position.y;
+            point.z += root.position.z;
+        }
+        point_offset += count;
+    }
+    if (point_offset != curves.points.size()) {
+        throw std::invalid_argument(
+            "Classic world translation did not consume every point");
+    }
 }
 
 } // namespace nanoxgen

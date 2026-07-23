@@ -187,6 +187,17 @@ void test_ramp_ui() {
         Case{"rampUI(0,0,1:0.5,1,1:1,0,1)", 0.25, 0.5},
         Case{"rampUI(0,0,2:0.5,1,2:1,0,2)", 0.125, 0.15625},
         Case{"rampUI(0,0,3:0.5,1,3:1,0,3)", 0.25, 0.5625},
+        // Autodesk's spline ramp uses half the adjacent secant at an
+        // endpoint, but the full non-uniform secant at an interior point.
+        // This body-fur calibration point catches an erroneous extra 0.5 on
+        // the internal tangent.
+        Case{
+            "rampUI(0,0,3:"
+            "0.19692307692307692,0.3108108108108108,1:"
+            "0.4523076923076923,0.3783783783783784,1:"
+            "0.683076923076923,0.35135135135135137,1:"
+            "1,0.24324324324324326,1)",
+            0.125, 0.20562979474213056},
         Case{"rampUI(0,-1,1:1,2,1)", 0.25, 0.0},
         Case{"rampUI(0,-1,1:1,2,1)", 0.75, 1.0},
     };

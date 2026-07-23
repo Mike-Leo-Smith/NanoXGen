@@ -833,6 +833,62 @@ float xgen_classic_noise_float(Vec3 sample) noexcept {
     return 0.5f * values[0] + 0.5f;
 }
 
+void prepare_xgen_classic_clump_runtime_data(
+    ClassicClumpRuntimeData &data) {
+    if (data.cvs_per_guide < 3u ||
+        data.guide_axes.size() % data.cvs_per_guide != 0u ||
+        (!data.guide_local_axes.empty() &&
+         data.guide_local_axes.size() != data.guide_axes.size())) {
+        throw std::invalid_argument(
+            "Classic ClumpingFX guide axes are inconsistent");
+    }
+    const std::size_t guide_count =
+        data.guide_axes.size() / data.cvs_per_guide;
+    data.guide_render_axes.resize(data.guide_axes.size());
+    if (data.guide_local_axes.empty()) {
+        data.guide_local_render_axes.clear();
+    } else {
+        data.guide_local_render_axes.resize(data.guide_local_axes.size());
+    }
+    data.guide_spline_lengths.resize(guide_count);
+    for (std::size_t guide = 0u; guide < guide_count; ++guide) {
+        const std::span<const Vec3> source{
+            data.guide_axes.data() + guide * data.cvs_per_guide,
+            data.cvs_per_guide};
+        std::span<Vec3> rebuilt{
+            data.guide_render_axes.data() + guide * data.cvs_per_guide,
+            data.cvs_per_guide};
+        rebuilt.front() = source.front();
+        for (std::uint32_t cv = 1u; cv + 1u < data.cvs_per_guide; ++cv) {
+            rebuilt[cv] = xgen_curve_eval(
+                source, static_cast<float>(cv) /
+                    static_cast<float>(data.cvs_per_guide - 1u));
+        }
+        rebuilt.back() = source.back();
+        if (data.guide_local_axes.empty()) {
+            data.guide_spline_lengths[guide] =
+                curve_spline_length(source);
+            continue;
+        }
+        const std::span<const Vec3> local_source{
+            data.guide_local_axes.data() + guide * data.cvs_per_guide,
+            data.cvs_per_guide};
+        std::span<Vec3> local_rebuilt{
+            data.guide_local_render_axes.data() +
+                guide * data.cvs_per_guide,
+            data.cvs_per_guide};
+        local_rebuilt.front() = local_source.front();
+        for (std::uint32_t cv = 1u; cv + 1u < data.cvs_per_guide; ++cv) {
+            local_rebuilt[cv] = xgen_curve_eval(
+                local_source, static_cast<float>(cv) /
+                    static_cast<float>(data.cvs_per_guide - 1u));
+        }
+        local_rebuilt.back() = local_source.back();
+        data.guide_spline_lengths[guide] =
+            curve_spline_length(local_source);
+    }
+}
+
 namespace {
 
 void apply_noise(
@@ -868,7 +924,8 @@ void apply_noise(
     const Vec3 domain =
         (domain_position + Vec3{0.419276f, 0.184247f, 0.805721f}) *
         domain_scale;
-    if (!(length_squared(surface_tangent) > 1.0e-20f)) {
+    constexpr float frame_min_length_squared = 1.0e-12f;
+    if (!(length_squared(surface_tangent) >= frame_min_length_squared)) {
         surface_tangent = fallback_surface_u(surface_normal);
     } else {
         surface_tangent = normalize(surface_tangent);
@@ -878,7 +935,8 @@ void apply_noise(
     Vec3 next_base{points[1u].x, points[1u].y, points[1u].z};
     // SgCurve::frame transports cU from the surface normal to the first
     // segment, then between successive segment tangents.
-    Vec3 prior_tangent = length_squared(surface_normal) > 1.0e-20f
+    Vec3 prior_tangent =
+        length_squared(surface_normal) >= frame_min_length_squared
         ? normalize(surface_normal)
         : Vec3{0.0f, 1.0f, 0.0f};
     Vec3 transported_normal = surface_tangent;
@@ -890,31 +948,43 @@ void apply_noise(
         Vec3 next_tangent = prior_tangent;
         if (cv + 1u < points.size()) {
             const Vec3 segment = next_base - current_base;
-            if (length_squared(segment) > 1.0e-20f) {
+            if (length_squared(segment) >= frame_min_length_squared) {
                 next_tangent = normalize(segment);
             }
         }
         const Vec3 axis = cross(prior_tangent, next_tangent);
+        const float axis_length_squared = length_squared(axis);
         const float tangent_dot = std::clamp(
             dot(prior_tangent, next_tangent), -1.0f, 1.0f);
-        if (length_squared(axis) > 1.0e-20f &&
-            tangent_dot > -0.999999f) {
-            // This is the minimal rotation taking prior_tangent to
-            // next_tangent, written without acos/sin/cos. Besides matching
-            // the quaternion form used by spline frame transport, it avoids
-            // device-libm drift being amplified by several NoiseFX modules.
-            const Vec3 first_cross = cross(axis, transported_normal);
-            transported_normal = normalize(
-                transported_normal + first_cross +
-                cross(axis, first_cross) * (1.0f / (1.0f + tangent_dot)));
+        if (axis_length_squared >= frame_min_length_squared) {
+            // SgCurve::frame uses the normalized cross-product axis and
+            // acos/sincos even for nearly opposite tangents. Its vector
+            // normalize threshold is 1e-6 (length), not machine epsilon.
+            const Vec3 rotation_axis =
+                axis * (1.0f / std::sqrt(axis_length_squared));
+            const float angle = std::acos(tangent_dot);
+            const float cosine = std::cos(angle);
+            const float sine = std::sin(angle);
+            const Vec3 rotated =
+                transported_normal * cosine +
+                cross(rotation_axis, transported_normal) * sine +
+                rotation_axis *
+                    (dot(rotation_axis, transported_normal) *
+                     (1.0f - cosine));
+            transported_normal =
+                length_squared(rotated) >= frame_min_length_squared
+                ? normalize(rotated)
+                : Vec3{};
         }
         const Vec3 normal = transported_normal;
         Vec3 binormal = cross(normal, next_tangent);
-        if (length_squared(binormal) > 1.0e-20f) {
+        if (length_squared(binormal) >= frame_min_length_squared) {
             // SgCurve::frame normalizes both returned frame axes. This is
             // material after several NoiseFX passes make the curve sharply
             // bent: using the raw cross product attenuates two noise axes.
             binormal = normalize(binormal);
+        } else {
+            binormal = {};
         }
         const Vec3 tangent = cross(binormal, normal);
         context.t = static_cast<float>(cv) /
@@ -967,6 +1037,7 @@ void apply_noise(
 
 void build_clump_noise_axis(
     std::span<const Vec3> axis,
+    std::span<const Vec3> distance_axis,
     const ClassicFloatClumpModule &clump,
     ClassicFloatRuntimeContext context,
     Vec3 domain_position,
@@ -976,7 +1047,11 @@ void build_clump_noise_axis(
     float mask,
     std::span<float> scratch,
     std::vector<Vec3> &output) {
-    output.assign(axis.begin(), axis.end());
+    if (distance_axis.size() != axis.size()) {
+        throw std::invalid_argument(
+            "Classic ClumpingFX noise distance axis is inconsistent");
+    }
+    output.assign(axis.size(), Vec3{});
     context.random_prefix = guide_random_prefix;
     context.has_random_prefix = true;
     const auto evaluate = [&](const ClassicFloatRuntimeExpression &expression) {
@@ -1002,9 +1077,10 @@ void build_clump_noise_axis(
     const float correlation = std::clamp(
         raw_correlation * 0.01f, 0.0f, 1.0f);
     float polyline_length = 0.0f;
-    for (std::size_t cv = 1u; cv < axis.size(); ++cv) {
+    for (std::size_t cv = 1u; cv < distance_axis.size(); ++cv) {
         polyline_length +=
-            std::sqrt(length_squared(axis[cv] - axis[cv - 1u]));
+            std::sqrt(length_squared(
+                distance_axis[cv] - distance_axis[cv - 1u]));
     }
     const float effective_frequency = polyline_length > 0.0f
         ? std::max(0.5f / polyline_length, frequency)
@@ -1024,52 +1100,57 @@ void build_clump_noise_axis(
     } else {
         surface_tangent = normalize(surface_tangent);
     }
-    const auto transport = [](Vec3 value, Vec3 from, Vec3 to) {
-        const Vec3 axis = cross(from, to);
+    const auto rotate_between =
+        [](Vec3 value, Vec3 from, Vec3 to, float fraction) {
+        Vec3 axis = cross(from, to);
         const float axis_length_squared = length_squared(axis);
-        const float cosine = std::clamp(dot(from, to), -1.0f, 1.0f);
-        if (!(axis_length_squared > 1.0e-20f) || cosine <= -0.999999f) {
-            return value;
-        }
-        const Vec3 first_cross = cross(axis, value);
-        return normalize(value + first_cross +
-                         cross(axis, first_cross) * (1.0f / (1.0f + cosine)));
+        if (!(axis_length_squared >= 1.0e-12f)) { return value; }
+        axis = axis * (1.0f / std::sqrt(axis_length_squared));
+        const float angle =
+            std::acos(std::clamp(dot(from, to), -1.0f, 1.0f)) * fraction;
+        const float cosine = std::cos(angle);
+        const float sine = std::sin(angle);
+        return value * cosine + cross(axis, value) * sine +
+               axis * (dot(axis, value) * (1.0f - cosine));
     };
     Vec3 transported_u = surface_tangent;
+    Vec3 transported_v = cross(surface_normal, surface_tangent);
     Vec3 current_tangent = surface_normal;
     const Vec3 first_segment = axis[1u] - axis[0u];
     if (length_squared(first_segment) > 1.0e-20f) {
         current_tangent = normalize(first_segment);
     }
-    Vec3 rotation_axis = cross(surface_normal, current_tangent);
-    if (length_squared(rotation_axis) > 1.0e-20f) {
-        transported_u = transport(
-            transported_u, surface_normal, current_tangent);
+    if (dot(surface_normal, current_tangent) < 0.99999f) {
+        transported_u = rotate_between(
+            transported_u, surface_normal, current_tangent, 1.0f);
+        transported_v = rotate_between(
+            transported_v, surface_normal, current_tangent, 1.0f);
     }
     float travelled = 0.0f;
     for (std::uint32_t cv = 1u; cv < axis.size(); ++cv) {
-        travelled += std::sqrt(length_squared(axis[cv] - axis[cv - 1u]));
-        Vec3 sample_tangent = current_tangent;
+        travelled += std::sqrt(length_squared(
+            distance_axis[cv] - distance_axis[cv - 1u]));
         Vec3 sample_u = transported_u;
+        Vec3 sample_v = transported_v;
         bool advance_frame = false;
         Vec3 next_tangent = current_tangent;
         if (cv + 1u < axis.size()) {
             const Vec3 segment = axis[cv + 1u] - axis[cv];
             if (length_squared(segment) > 1.0e-20f) {
                 next_tangent = normalize(segment);
-                rotation_axis = cross(current_tangent, next_tangent);
-                if (length_squared(rotation_axis) > 1.0e-20f) {
-                    sample_tangent = normalize(
-                        current_tangent + next_tangent);
-                    sample_u = transport(
-                        transported_u, current_tangent, sample_tangent);
+                const float tangent_dot = dot(
+                    current_tangent, next_tangent);
+                if (std::abs(tangent_dot) < 0.99999f) {
+                    sample_u = rotate_between(
+                        transported_u, current_tangent, next_tangent, 0.5f);
+                    sample_v = rotate_between(
+                        transported_v, current_tangent, next_tangent, 0.5f);
                     advance_frame = true;
                 } else {
                     current_tangent = next_tangent;
                 }
             }
         }
-        const Vec3 transported_v = cross(sample_tangent, sample_u);
         context.t = static_cast<float>(cv) /
                     static_cast<float>(axis.size() - 1u);
         const float raw_scale = evaluate(clump.noise_scale);
@@ -1088,11 +1169,13 @@ void build_clump_noise_axis(
             {domain.x + distance, domain.y, domain.z}) - 0.5f;
         const float second = xgen_classic_noise_float(
             {domain.x, domain.y, domain.z + distance}) - 0.5f;
-        output[cv] = output[cv] +
-            (sample_u * first + transported_v * second) * magnitude;
+        output[cv] =
+            (sample_u * first + sample_v * second) * magnitude;
         if (advance_frame) {
-            transported_u = transport(
-                transported_u, current_tangent, next_tangent);
+            transported_u = rotate_between(
+                transported_u, current_tangent, next_tangent, 1.0f);
+            transported_v = rotate_between(
+                transported_v, current_tangent, next_tangent, 1.0f);
             current_tangent = next_tangent;
         }
     }
@@ -1340,7 +1423,8 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     std::span<const std::uint32_t> primitive_ids,
     std::span<const ClassicClumpRuntimeData> clump_data,
     std::span<const float> runtime_inputs,
-    std::span<const Vec3> noise_domain_positions) {
+    std::span<const Vec3> noise_domain_positions,
+    bool root_relative) {
     if (curves.strand_count == 0u || curves.cvs_per_strand < 2u ||
         curves.point_counts.size() != curves.strand_count ||
         curves.roots.size() != curves.strand_count ||
@@ -1427,13 +1511,24 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     }
     for (std::size_t module = 0u; module < clump_data.size(); ++module) {
         const ClassicClumpRuntimeData &data = clump_data[module];
+        const std::size_t guide_count =
+            data.guide_axes.size() / curves.cvs_per_strand;
         if (data.module_name != plan.clumps[module].name ||
             data.cvs_per_guide != curves.cvs_per_strand ||
             data.strand_guide_indices.size() != curves.strand_count ||
             data.guide_axes.size() % curves.cvs_per_strand != 0u ||
             data.guide_normals.size() !=
-                data.guide_axes.size() / curves.cvs_per_strand ||
+                guide_count ||
             data.guide_tangents.size() != data.guide_normals.size() ||
+            (!data.guide_local_axes.empty() &&
+             data.guide_local_axes.size() != data.guide_axes.size()) ||
+            (!data.guide_render_axes.empty() &&
+             data.guide_render_axes.size() != data.guide_axes.size()) ||
+            (!data.guide_local_render_axes.empty() &&
+             data.guide_local_render_axes.size() !=
+                 data.guide_local_axes.size()) ||
+            (!data.guide_spline_lengths.empty() &&
+             data.guide_spline_lengths.size() != guide_count) ||
             (!data.guide_reference_positions.empty() &&
              data.guide_reference_positions.size() !=
                  data.guide_normals.size())) {
@@ -1447,17 +1542,26 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                 "Classic ClumpingFX guide random binding is inconsistent");
         }
     }
-    std::vector<std::vector<float>> clump_guide_lengths(clump_data.size());
+    std::vector<ClassicClumpRuntimeData> prepared_clump_data;
+    std::vector<const ClassicClumpRuntimeData *> runtime_clump_data(
+        clump_data.size());
+    prepared_clump_data.reserve(clump_data.size());
     for (std::size_t module = 0u; module < clump_data.size(); ++module) {
         const ClassicClumpRuntimeData &data = clump_data[module];
-        const std::size_t guide_count =
-            data.guide_axes.size() / curves.cvs_per_strand;
-        std::vector<float> &lengths = clump_guide_lengths[module];
-        lengths.resize(guide_count);
-        for (std::size_t guide = 0u; guide < guide_count; ++guide) {
-            lengths[guide] = curve_spline_length(std::span<const Vec3>{
-                data.guide_axes.data() + guide * curves.cvs_per_strand,
-                curves.cvs_per_strand});
+        const bool local_ready =
+            data.guide_local_axes.empty() ||
+            data.guide_local_render_axes.size() ==
+                data.guide_local_axes.size();
+        if (data.guide_render_axes.size() == data.guide_axes.size() &&
+            local_ready &&
+            data.guide_spline_lengths.size() ==
+                data.guide_axes.size() / curves.cvs_per_strand) {
+            runtime_clump_data[module] = &data;
+        } else {
+            prepared_clump_data.push_back(data);
+            prepare_xgen_classic_clump_runtime_data(
+                prepared_clump_data.back());
+            runtime_clump_data[module] = &prepared_clump_data.back();
         }
     }
     std::vector<Vec3> cut_source;
@@ -1514,6 +1618,8 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                 static_cast<std::size_t>(strand) * curves.cvs_per_strand,
             curves.cvs_per_strand};
         const RootSample &root = curves.roots[strand];
+        const Vec3 coordinate_origin =
+            root_relative ? root.position : Vec3{};
         ClassicFloatRuntimeContext context{};
         context.id = primitive_ids.empty() ? strand : primitive_ids[strand];
         context.u = root.uv.x;
@@ -1573,7 +1679,7 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                 const ClassicFloatClumpModule &clump =
                     plan.clumps[effect.module_index];
                 const ClassicClumpRuntimeData &data =
-                    clump_data[effect.module_index];
+                    *runtime_clump_data[effect.module_index];
                 const std::uint32_t guide_index =
                     data.strand_guide_indices[strand];
                 const std::uint32_t guide_count = static_cast<std::uint32_t>(
@@ -1583,11 +1689,33 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                         throw std::invalid_argument(
                             "Classic ClumpingFX guide index is invalid");
                     }
-                    const std::span<const Vec3> axis{
-                        data.guide_axes.data() +
+                    const std::span<const Vec3> render_axis{
+                        (root_relative &&
+                         data.guide_local_render_axes.size() ==
+                             data.guide_render_axes.size()
+                             ? data.guide_local_render_axes.data()
+                             : data.guide_render_axes.data()) +
                             static_cast<std::size_t>(guide_index) *
                                 curves.cvs_per_strand,
                         curves.cvs_per_strand};
+                    const std::span<const Vec3> source_axis{
+                        (root_relative &&
+                         data.guide_local_axes.size() ==
+                             data.guide_axes.size()
+                             ? data.guide_local_axes.data()
+                             : data.guide_axes.data()) +
+                            static_cast<std::size_t>(guide_index) *
+                                curves.cvs_per_strand,
+                        curves.cvs_per_strand};
+                    const bool local_guide =
+                        render_axis.data() !=
+                        data.guide_render_axes.data() +
+                            static_cast<std::size_t>(guide_index) *
+                                curves.cvs_per_strand;
+                    const Vec3 guide_root =
+                        data.guide_axes[
+                            static_cast<std::size_t>(guide_index) *
+                            curves.cvs_per_strand];
                     context.t = 0.0f;
                     const float raw_mask = evaluate(clump.mask, context);
                     if (!std::isfinite(raw_mask)) {
@@ -1603,16 +1731,16 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                         plan.description_id, plan.description_name,
                         data.guide_face_ids[guide_index]);
                     build_clump_noise_axis(
-                        axis, clump, guide_context,
+                        render_axis, source_axis, clump, guide_context,
                         data.guide_reference_positions.empty()
-                            ? axis.front()
+                            ? guide_root
                             : data.guide_reference_positions[guide_index],
                         data.guide_normals[guide_index],
                         data.guide_tangents[guide_index],
                         data.guide_random_prefixes[guide_index], mask, scratch,
                         clump_noise_axis);
                     const float guide_length =
-                        clump_guide_lengths[effect.module_index][guide_index];
+                        data.guide_spline_lengths[guide_index];
                     // Clumping always rebuilds an affected curve, even when
                     // the guide is longer and the retained parameter is 1.
                     // That spline-to-CV resampling is observable in Autodesk
@@ -1636,7 +1764,10 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                             throw std::runtime_error(
                                 "Classic ClumpingFX scale is non-finite");
                         }
-                        const Vec3 goal = xgen_curve_eval(axis, context.t);
+                        const Vec3 goal = local_guide
+                            ? render_axis[cv] +
+                                (guide_root - coordinate_origin)
+                            : render_axis[cv] - coordinate_origin;
                         const Vec3 current{
                             points[cv].x, points[cv].y, points[cv].z};
                         const Vec3 output = current + (goal - current) *
@@ -1647,8 +1778,7 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                     }
                     for (std::uint32_t cv = 1u;
                          cv < curves.cvs_per_strand; ++cv) {
-                        const Vec3 displacement =
-                            clump_noise_axis[cv] - axis[cv];
+                        const Vec3 displacement = clump_noise_axis[cv];
                         points[cv].x += displacement.x;
                         points[cv].y += displacement.y;
                         points[cv].z += displacement.z;

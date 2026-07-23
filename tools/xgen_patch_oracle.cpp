@@ -4,6 +4,7 @@
 #include <xgen/src/xgrenderer/XgRenderAPI.h>
 #include <xgen/src/xgcore/XgDescription.h>
 #include <xgen/src/xgcore/XgExpression.h>
+#include <xgen/src/xgcore/XgExternalAPI.h>
 #include <xgen/src/xgcore/XgFXModule.h>
 #include <xgen/src/xgcore/XgGenerator.h>
 #include <xgen/src/xgcore/XgPalette.h>
@@ -27,6 +28,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -157,6 +159,10 @@ int main(int argc, char **argv) try {
     std::string module_name;
     std::string stop_at_name;
     std::string clump_module_name;
+    std::string project_path;
+    std::string data_path;
+    std::optional<std::size_t> clump_guide_index;
+    std::optional<double> clump_noise_mask;
     std::optional<unsigned int> primitive_id;
     bool faces = false;
     bool weights = false;
@@ -172,6 +178,10 @@ int main(int argc, char **argv) try {
              argument == "--patch" || argument == "--expression" ||
              argument == "--module" ||
              argument == "--clump-module" ||
+             argument == "--clump-guide-index" ||
+             argument == "--clump-noise-mask" ||
+             argument == "--data-path" ||
+             argument == "--project" ||
              argument == "--sample" || argument == "--sample-file" ||
              argument == "--stop-at" || argument == "--id") &&
             index + 1 < argc) {
@@ -184,6 +194,23 @@ int main(int argc, char **argv) try {
             else if (argument == "--stop-at") { stop_at_name = value; }
             else if (argument == "--clump-module") {
                 clump_module_name = value;
+            }
+            else if (argument == "--data-path") { data_path = value; }
+            else if (argument == "--project") { project_path = value; }
+            else if (argument == "--clump-guide-index") {
+                const int parsed = parse_int(value, "clump guide index");
+                if (parsed < 0) {
+                    throw std::invalid_argument("clump guide index is negative");
+                }
+                clump_guide_index = static_cast<std::size_t>(parsed);
+            }
+            else if (argument == "--clump-noise-mask") {
+                const double parsed = parse_double(value, "clump noise mask");
+                if (parsed < 0.0 || parsed > 1.0) {
+                    throw std::invalid_argument(
+                        "clump noise mask is out of range");
+                }
+                clump_noise_mask = parsed;
             }
             else if (argument == "--id") {
                 const int parsed = parse_int(value, "primitive id");
@@ -236,15 +263,30 @@ int main(int argc, char **argv) try {
                 "[--guides] "
                 "[--subd-arrays] [--cv-attrs] [--stop-at FX] [--id ID] "
                 "[--clump-module FX] "
+                "[--clump-guide-index INDEX] "
+                "[--clump-noise-mask MASK] "
+                "[--data-path PATH] "
+                "[--project PATH] "
                 "[--sample FACE,U,V ...] [--sample-file PATH]");
         }
     }
     if (xgen_args.empty() || description_name.empty() || patch_name.empty()) {
         throw std::invalid_argument("missing required patch-oracle argument");
     }
+    if (clump_guide_index && clump_module_name.empty()) {
+        throw std::invalid_argument(
+            "--clump-guide-index requires --clump-module");
+    }
+    if (clump_noise_mask && !clump_guide_index) {
+        throw std::invalid_argument(
+            "--clump-noise-mask requires --clump-guide-index");
+    }
 
     Callbacks callbacks;
     CleanupOnce cleanup;
+    if (!project_path.empty()) {
+        xgapi::setProjectPath(project_path);
+    }
     std::unique_ptr<api::PatchRenderer> renderer{
         api::PatchRenderer::init(&callbacks, xgen_args.c_str())};
     if (!renderer) { throw std::runtime_error("PatchRenderer::init returned null"); }
@@ -269,6 +311,10 @@ int main(int argc, char **argv) try {
         matched_patch = patch;
     }
     if (!matched_patch) { throw std::runtime_error("bound XGen patch was not found"); }
+    if (!data_path.empty() &&
+        !matched_palette->setAttr("xgDataPath", data_path, "string")) {
+        throw std::runtime_error("failed to override palette xgDataPath");
+    }
 
     if (subd_arrays) {
         using FloatArrayMethod = const float *(*)(const void *);
@@ -455,9 +501,33 @@ int main(int argc, char **argv) try {
         }
         std::cout << std::setprecision(17);
         const auto &clump_guides = ClumpGuideProbe::inspect(*loaded);
+        using ComputeNoiseAxis = void (*)(
+            void *, double, unsigned int, safevector<SgVec3d> &);
+        ComputeNoiseAxis compute_noise_axis = nullptr;
+        if (clump_noise_mask) {
+            // This is deliberately confined to the Maya-2027 calibration
+            // executable. computeNoiseAxis is not exported, so locate it
+            // relative to an exported symbol in the already loaded XGen DSO.
+            // The native runtime never depends on this private ABI.
+            void *anchor = dlsym(
+                RTLD_DEFAULT,
+                "_ZN7SgCurve5frameERKSt6vectorI7SgVec3TIdESaIS2_EERKS2_"
+                "S8_RS4_S9_");
+            Dl_info image{};
+            if (!anchor || dladdr(anchor, &image) == 0 || !image.dli_fbase) {
+                throw std::runtime_error(
+                    "cannot locate loaded Maya-2027 XGen image");
+            }
+            constexpr std::uintptr_t maya_2027_compute_noise_axis =
+                0x02f6f70u;
+            compute_noise_axis = reinterpret_cast<ComputeNoiseAxis>(
+                reinterpret_cast<std::uintptr_t>(image.dli_fbase) +
+                maya_2027_compute_noise_axis);
+        }
         std::cout << "clump_guides " << clump_module_name << " count "
                   << clump_guides.size() << '\n';
         for (std::size_t index = 0u; index < clump_guides.size(); ++index) {
+            if (clump_guide_index && index != *clump_guide_index) { continue; }
             const auto &guide = clump_guides[index];
             std::cout << "clump_guide " << index << " valid " << guide.valid
                       << " face " << guide.faceId << " u " << guide.u
@@ -480,7 +550,39 @@ int main(int argc, char **argv) try {
                 std::cout << ' ' << point[0] << ' ' << point[1] << ' '
                           << point[2];
             }
+            safevector<SgVec3d> frame_normals;
+            safevector<SgVec3d> frame_binormals;
+            SgCurve::frame(
+                guide.axis, guide.nVec, guide.uVec,
+                frame_normals, frame_binormals);
+            std::cout << " frame " << frame_normals.size();
+            if (frame_normals.size() != frame_binormals.size()) {
+                throw std::runtime_error(
+                    "clump guide frame arrays are inconsistent");
+            }
+            for (std::size_t cv = 0u; cv < frame_normals.size(); ++cv) {
+                std::cout << ' ' << frame_normals[cv][0] << ' '
+                          << frame_normals[cv][1] << ' '
+                          << frame_normals[cv][2] << ' '
+                          << frame_binormals[cv][0] << ' '
+                          << frame_binormals[cv][1] << ' '
+                          << frame_binormals[cv][2];
+            }
             std::cout << '\n';
+            if (compute_noise_axis) {
+                safevector<SgVec3d> noisy_axis = guide.axis;
+                compute_noise_axis(
+                    module, *clump_noise_mask,
+                    static_cast<unsigned int>(index), noisy_axis);
+                std::cout << "clump_noise_axis " << index << " mask "
+                          << *clump_noise_mask << " count "
+                          << noisy_axis.size();
+                for (const SgVec3d &point : noisy_axis) {
+                    std::cout << ' ' << point[0] << ' ' << point[1] << ' '
+                              << point[2];
+                }
+                std::cout << '\n';
+            }
         }
     }
 

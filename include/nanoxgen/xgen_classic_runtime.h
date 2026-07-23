@@ -58,7 +58,23 @@ struct ClassicFloatClumpModule {
 struct ClassicClumpRuntimeData {
     std::string module_name;
     std::uint32_t cvs_per_guide{};
+    // Authored/generated guide CVs before XGen's mandatory cutFromTip(0)
+    // rebuild. These retain the source spline and determine guide length.
     std::vector<Vec3> guide_axes;
+    // Optional translation-free copies of guide_axes. Production bindings
+    // retain these before adding the surface root so root-relative CPU/GPU
+    // evaluation does not lose local segment precision at large coordinates.
+    // Synthetic/external bindings may leave them empty and keep using the
+    // world-space fields above.
+    std::vector<Vec3> guide_local_axes;
+    // Renderer guide CVs sampled from guide_axes at cv/(N-1). Classic
+    // ClumpingFX uses these rebuilt points for both the clump target and its
+    // guide-noise frame. The distinction matters at non-linear endpoints.
+    std::vector<Vec3> guide_render_axes;
+    // Derived renderer CVs corresponding to guide_local_axes.
+    std::vector<Vec3> guide_local_render_axes;
+    // SgCurve::length approximation of each unreconstructed guide_axes row.
+    std::vector<float> guide_spline_lengths;
     std::vector<Vec3> guide_normals;
     std::vector<Vec3> guide_tangents;
     // XGen evaluates guide noise in the non-deformed/reference patch space,
@@ -69,6 +85,12 @@ struct ClassicClumpRuntimeData {
     std::vector<std::uint32_t> guide_random_prefixes;
     std::vector<std::uint32_t> strand_guide_indices;
 };
+
+// Populate the derived render axes and source spline lengths above. Public so
+// synthetic/runtime clients that construct ClassicClumpRuntimeData directly
+// can prepare exactly the same binding as the production XPD loader.
+void prepare_xgen_classic_clump_runtime_data(
+    ClassicClumpRuntimeData &data);
 
 enum class ClassicFloatEffectType : std::uint8_t {
     Clump,
@@ -173,7 +195,11 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     // NoiseFX uses XGen's cPg/reference patch position for a stable domain.
     // Leave empty only for callers whose curve roots already occupy that
     // space (primarily synthetic tests).
-    std::span<const Vec3> noise_domain_positions = {});
+    std::span<const Vec3> noise_domain_positions = {},
+    // When true, curve CVs are offsets from their RootSample position.
+    // Clump guide goals are translated into the same local frame; noise
+    // domains remain in authored reference space.
+    bool root_relative = false);
 
 // Match the Classic renderer cache convention by adding one extrapolated
 // endpoint before and after every fixed-CV spline. Call after all FX modules

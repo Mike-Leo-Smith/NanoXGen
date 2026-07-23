@@ -437,6 +437,49 @@ void test_float_runtime_clump() {
                 std::abs(curves.points[2].x - 1.0f) < 1.0e-6f,
             "basic ClumpingFX geometry mismatch");
 
+    PackedGeneratedCurves local_curves{};
+    local_curves.strand_count = 1u;
+    local_curves.cvs_per_strand = 3u;
+    local_curves.point_counts = {3u};
+    local_curves.roots.resize(1u);
+    local_curves.roots[0].position = {100000000.0f, 0.0f, 0.0f};
+    local_curves.points = {{0.0f, 0.0f, 0.0f, 0.1f},
+                           {0.0f, 1.0f, 0.0f, 0.1f},
+                           {0.0f, 2.0f, 0.0f, 0.1f}};
+    ClassicClumpRuntimeData local_guide{};
+    local_guide.module_name = "Clumping1";
+    local_guide.cvs_per_guide = 3u;
+    local_guide.guide_local_axes = {{0.0f, 0.0f, 0.0f},
+                                    {0.25f, 1.0f, 0.0f},
+                                    {0.5f, 2.0f, 0.0f}};
+    for (const Vec3 point : local_guide.guide_local_axes) {
+        local_guide.guide_axes.push_back({
+            point.x + local_curves.roots[0].position.x,
+            point.y, point.z});
+    }
+    local_guide.guide_normals = {{0.0f, 1.0f, 0.0f}};
+    local_guide.guide_tangents = {{1.0f, 0.0f, 0.0f}};
+    local_guide.guide_uvs = {{0.0f, 0.0f}};
+    local_guide.guide_face_ids = {0u};
+    local_guide.guide_random_prefixes = {0u};
+    local_guide.strand_guide_indices = {0u};
+    prepare_xgen_classic_clump_runtime_data(local_guide);
+    const std::vector<Vec3> expected_local =
+        local_guide.guide_local_render_axes;
+    const std::array local_bindings{std::move(local_guide)};
+    apply_xgen_classic_float_runtime_plan_cpu(
+        local_curves, plan, 1.0f, {}, {}, {}, local_bindings, {}, {}, true);
+    for (std::size_t cv = 0u; cv < expected_local.size(); ++cv) {
+        require(
+            std::abs(local_curves.points[cv].x - expected_local[cv].x) <
+                    1.0e-6f &&
+                std::abs(local_curves.points[cv].y - expected_local[cv].y) <
+                    1.0e-6f &&
+                std::abs(local_curves.points[cv].z - expected_local[cv].z) <
+                    1.0e-6f,
+            "root-relative ClumpingFX lost local guide precision");
+    }
+
     for (ClassicAttribute &attribute : description.objects[1].attributes) {
         if (attribute.name == "clump") { attribute.value = "0"; }
     }
