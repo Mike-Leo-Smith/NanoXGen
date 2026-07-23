@@ -26,6 +26,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -211,17 +212,77 @@ ErrorStats compare_cache(const nanoxgen::PackedGeneratedCurves &generated,
     const nanoxgen::CurveCacheView view = reference.view();
     if (view.header().strand_count != generated.strand_count ||
         view.header().point_count != generated.points.size() ||
-        !std::equal(generated.point_counts.begin(),
-                    generated.point_counts.end(), view.point_counts())) {
+        !view.face_ids() || !view.face_uvs() ||
+        generated.roots.size() != generated.strand_count) {
         throw std::runtime_error("Luisa/renderer-reference topology mismatch");
     }
-    nanoxgen::PackedGeneratedCurves materialized{};
-    materialized.strand_count = view.header().strand_count;
-    materialized.point_counts.assign(
-        view.point_counts(), view.point_counts() + view.header().strand_count);
-    materialized.points.assign(
-        view.points(), view.points() + view.header().point_count);
-    return compare(generated, materialized);
+    using Identity =
+        std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>;
+    struct IndexedCurve {
+        Identity identity;
+        std::uint64_t point_offset{};
+        std::uint32_t point_count{};
+    };
+    std::vector<IndexedCurve> generated_curves;
+    std::vector<IndexedCurve> reference_curves;
+    generated_curves.reserve(generated.strand_count);
+    reference_curves.reserve(generated.strand_count);
+    std::uint64_t generated_offset{};
+    std::uint64_t reference_offset{};
+    for (std::uint32_t strand = 0u; strand < generated.strand_count; ++strand) {
+        const nanoxgen::RootSample root = generated.roots[strand];
+        generated_curves.push_back({
+            {root.surface_face_id, std::bit_cast<std::uint32_t>(root.uv.x),
+             std::bit_cast<std::uint32_t>(root.uv.y)},
+            generated_offset, generated.point_counts[strand]});
+        const nanoxgen::Vec2 uv = view.face_uvs()[strand];
+        reference_curves.push_back({
+            {view.face_ids()[strand], std::bit_cast<std::uint32_t>(uv.x),
+             std::bit_cast<std::uint32_t>(uv.y)},
+            reference_offset, view.point_counts()[strand]});
+        generated_offset += generated.point_counts[strand];
+        reference_offset += view.point_counts()[strand];
+    }
+    const auto less = [](const IndexedCurve &a, const IndexedCurve &b) {
+        return a.identity < b.identity;
+    };
+    std::sort(generated_curves.begin(), generated_curves.end(), less);
+    std::sort(reference_curves.begin(), reference_curves.end(), less);
+    ErrorStats result{};
+    for (std::size_t strand = 0u; strand < generated_curves.size(); ++strand) {
+        if ((strand != 0u &&
+             (generated_curves[strand - 1u].identity ==
+                  generated_curves[strand].identity ||
+              reference_curves[strand - 1u].identity ==
+                  reference_curves[strand].identity)) ||
+            generated_curves[strand].identity !=
+                reference_curves[strand].identity ||
+            generated_curves[strand].point_count !=
+                reference_curves[strand].point_count) {
+            throw std::runtime_error(
+                "Luisa/renderer-reference canonical identity mismatch");
+        }
+        for (std::uint32_t cv = 0u;
+             cv < generated_curves[strand].point_count; ++cv) {
+            const nanoxgen::PackedCurvePoint &a = generated.points[
+                generated_curves[strand].point_offset + cv];
+            const nanoxgen::PackedCurvePoint &b = view.points()[
+                reference_curves[strand].point_offset + cv];
+            result.position = std::max({
+                result.position, std::abs(a.x - b.x),
+                std::abs(a.y - b.y), std::abs(a.z - b.z)});
+            result.radius = std::max(
+                result.radius, std::abs(a.radius - b.radius));
+            for (const auto [lhs, rhs] : {
+                     std::pair{a.x, b.x}, std::pair{a.y, b.y},
+                     std::pair{a.z, b.z}, std::pair{a.radius, b.radius}}) {
+                result.bit_mismatches +=
+                    std::bit_cast<std::uint32_t>(lhs) !=
+                    std::bit_cast<std::uint32_t>(rhs);
+            }
+        }
+    }
+    return result;
 }
 
 } // namespace
@@ -658,6 +719,7 @@ int main(int argc, char **argv) try {
               << (options.cpu_validation ? "true" : "false")
               << ",\"includes_file_io\":true"
               << ",\"includes_autodesk_serialization\":false"
+              << ",\"reference_comparison_order\":\"canonical-face-uv\""
               << ",\"input_roots\":" << strand_count
               << ",\"patch_culled\":" << root_plan.patch_culled_count
               << ",\"output_strands\":" << gpu.strand_count

@@ -120,7 +120,10 @@ int main(int argc, char **argv) try {
             std::equal(view.point_counts(),
                        view.point_counts() + header.strand_count,
                        other.point_counts());
-        if (!topology_matches) {
+        const bool identity_comparison =
+            view.face_ids() && view.face_uvs() &&
+            other.face_ids() && other.face_uvs();
+        if (!topology_matches || identity_comparison) {
             std::set<Identity> other_identities;
             using CurveRange = std::pair<std::uint64_t, std::uint32_t>;
             std::map<Identity, CurveRange> input_ranges;
@@ -212,6 +215,13 @@ int main(int argc, char **argv) try {
                 ? 0.0
                 : std::sqrt(common_radius_squared_error /
                             static_cast<double>(common_points));
+            const bool canonical_topology_matches = identity_comparison &&
+                only_input.empty() && only_compare.empty() &&
+                common_point_count_mismatches == 0u &&
+                common_curves == header.strand_count &&
+                common_curves == other.header().strand_count &&
+                common_points == header.point_count &&
+                common_points == other.header().point_count;
             const auto length_range = [](const nanoxgen::CurveCacheView &curves,
                                          const auto &ranges,
                                          const std::vector<Identity> &values) {
@@ -246,7 +256,13 @@ int main(int argc, char **argv) try {
             const auto compare_lengths =
                 length_range(other, compare_ranges, only_compare);
             std::cout << "{\"compare\":\"" << compare_path->string()
-                      << "\",\"topology_matches\":false"
+                      << "\",\"topology_matches\":"
+                      << (canonical_topology_matches ? "true" : "false")
+                      << ",\"source_order_topology_matches\":"
+                      << (topology_matches ? "true" : "false")
+                      << ",\"comparison_order\":\""
+                      << (identity_comparison
+                              ? "canonical-face-uv" : "unmatched") << '"'
                       << ",\"only_in_input\":" << only_input.size()
                       << ",\"only_in_compare\":" << only_compare.size()
                       << ",\"common_curves\":" << common_curves
