@@ -374,20 +374,34 @@ ExpandedReference expand_reference(
 }
 
 bool absolute_path_has_symlink_component(const std::filesystem::path &path) {
-    const std::filesystem::path absolute =
-        std::filesystem::absolute(path).lexically_normal();
-    std::filesystem::path current = absolute.root_path();
-    for (const std::filesystem::path &component : absolute.relative_path()) {
-        current /= component;
+    std::filesystem::path current;
+    if (path.is_absolute()) {
+        current = path;
+#if defined(_WIN32)
+    } else if (path.has_root_name()) {
+        // Resolve native drive-relative roots with the filesystem API. A plain
+        // current_path()/path join cannot supply the drive's current directory.
+        current = std::filesystem::absolute(path);
+#endif
+    } else {
+        current = std::filesystem::current_path() / path;
+    }
+    // Inspect the exact lexical path and every ancestor. This catches an
+    // intermediate symlink even on platforms where querying the complete path
+    // follows that component before reporting the final entry's type.
+    for (;;) {
         std::error_code error;
         const std::filesystem::file_status status =
             std::filesystem::symlink_status(current, error);
-        if (error == std::errc::no_such_file_or_directory) { return false; }
-        if (error) {
+        if (!error && std::filesystem::is_symlink(status)) { return true; }
+        if (error && error != std::errc::no_such_file_or_directory &&
+            error != std::errc::not_a_directory) {
             throw std::runtime_error(
                 "cannot inspect package root component: " + current.string());
         }
-        if (std::filesystem::is_symlink(status)) { return true; }
+        const std::filesystem::path parent = current.parent_path();
+        if (parent.empty() || parent == current) { break; }
+        current = parent;
     }
     return false;
 }
