@@ -311,6 +311,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-warmup", type=int, default=3)
     parser.add_argument("--gpu-repeats", type=int, default=11)
     parser.add_argument("--no-outer-warmup", action="store_true")
+    parser.add_argument("--result-json", type=Path)
     args = parser.parse_args()
     if args.rounds < 1 or args.gpu_warmup < 0 or args.gpu_repeats < 1:
         parser.error("rounds/repeats must be positive and warmup non-negative")
@@ -353,7 +354,10 @@ def main() -> int:
         result = summarize_gpu(args)
     else:
         result = summarize_maya(args)
-    print(json.dumps(result, separators=(",", ":"), sort_keys=True))
+    serialized = json.dumps(result, separators=(",", ":"), sort_keys=True)
+    if args.result_json:
+        args.result_json.write_text(serialized + "\n", encoding="utf-8")
+    print(serialized)
     return 0
 
 
