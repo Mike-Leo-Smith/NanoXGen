@@ -25,7 +25,13 @@ struct TempDirectory {
     TempDirectory() {
         const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
         const auto nonce = std::random_device{}();
-        path = std::filesystem::temp_directory_path() /
+        // macOS exposes its temporary directory through /var, which is itself
+        // a system symlink. Resolve only the test harness base so package
+        // fixtures do not accidentally begin behind a symlink; the tests below
+        // still create and verify their own explicit symlink components.
+        const std::filesystem::path temporary_root =
+            std::filesystem::canonical(std::filesystem::temp_directory_path());
+        path = temporary_root /
             ("nanoxgen-package-test-" + std::to_string(stamp) + "-" +
              std::to_string(nonce));
         std::filesystem::create_directories(path);
