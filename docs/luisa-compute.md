@@ -241,6 +241,15 @@ NanoXGen's deformation aliases kept those samples bit-identical.
 A matching Luisa fallback run produced the same moving-point count and a
 `2.00000334` maximum delta in 7.109 s cold; its larger costs were 2.927 s JIT
 and 1.147 s first dispatch/download/packing.
+A matching RADV Vulkan run on the same RX 9070 XT produced 25,738 moving
+points and a `2.00000572` maximum delta in 6.829 s cold: 2.836 s native
+preparation, 3.306 s no-cache JIT, 0.037 s allocation, 0.077 s upload, and
+0.456 s first dispatch/download/packing. Vulkan was 30.4% slower than HIP but
+used 3.9% less wall time than fallback. Against the same Maya measurement it
+was 41.91x faster than typed evaluation/copy and 42.31x faster than total
+process wall. This run used the Vulkan plug-in built from the same
+`ccef52f6f4defa26de07095dc6349cd314eb09b8` checkout as the Luisa runtime;
+Luisa rejects stale plug-ins with a backend-version mismatch.
 
 This is a nonzero-motion correctness/performance calibration, not a
 multi-round p90 claim and not evidence of native compatibility for arbitrary
