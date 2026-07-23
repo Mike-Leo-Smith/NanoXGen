@@ -3,6 +3,7 @@
 #include "nanoxgen/xgen_classic.h"
 #include "nanoxgen/xgen_classic_alembic.h"
 #include "nanoxgen/xgen_classic_clump.h"
+#include "nanoxgen/xgen_classic_collection.h"
 #include "nanoxgen/xgen_classic_ptex.h"
 #include "nanoxgen/xgen_classic_roots.h"
 #include "nanoxgen/xgen_classic_runtime.h"
