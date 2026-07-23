@@ -146,9 +146,32 @@ modules, and produce exact curve/CV counts and canonical identities. It is
 still an engineering result for this calibrated asset, not evidence that
 arbitrary Classic packages are natively compatible.
 
+## Collection-wide renderer handoff
+
+`build_xgen_classic_collection_execution_plan` accepts the one master Classic
+`.xgen`, the resolved Alembic patch input, and the external description-data
+root. It returns every description in authored order with its lowered float
+runtime, generated roots, rebuilt guides, PTEX/runtime inputs, and clump data.
+The overload taking an already parsed `ClassicCollection` lets a renderer or
+package loader avoid reopening the main file.
+
+The optional Luisa layer then receives those description plans as one batch:
+`compile_classic_collection(renderer_device, inputs)` specializes all required
+kernels on the renderer's existing `Device`. It does not take a backend name or
+create a context/device. Its `encode` method records into a caller-owned
+`Stream` using caller-owned buffer views and performs no hidden allocation,
+upload, synchronization, or readback. The Device must outlive the compiled
+pipeline.
+
+Cold JIT uses `std::thread::hardware_concurrency()` when
+`max_parallel_compiles` is zero, uniformly for HIP, Vulkan, and Luisa fallback.
+An explicit positive value is a renderer-controlled resource limit, not a
+backend compatibility switch. See `docs/renderer-integration.md` for the API
+contract and `docs/luisa-compute.md` for the five-round Rabbit measurements.
+
 The optional Luisa path uploads rebuilt float guides, CSR associations, and
 bound clump guide axes/maps, generates final packed base points, and runs the
 same float expression, ClumpingFX, NoiseFX, CutFX, and width kernels through
-HIP or Vulkan. See
+HIP, Vulkan, or the Luisa CPU fallback backend. See
 `docs/luisa-compute.md` for the cold/no-cache Rabbit command and its explicit
 parity boundary.

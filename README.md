@@ -101,11 +101,10 @@ streams and buffers. No backend name is part of that public API; the caller
 chooses the Device. No handwritten CUDA/HIP path remains. Cold JIT defaults to
 the machine's logical-thread count for HIP, Vulkan, and fallback, with an
 explicit limit available to applications that need to share CPU capacity.
-Canonical
-topology and `(faceId, faceUV, patchUV)` identities exactly match fresh Maya
-typed-RenderAPI caches for every description. The ordered runtime covers
-RandomGenerator, spline interpolation, PTEX-bound expressions, palette scalar
-functions, hierarchical ClumpingFX, NoiseFX, CutFX, and width. GPU execution is
+Canonical topology and `(faceId, faceUV, patchUV)` identities exactly match
+fresh Maya typed-RenderAPI caches for every description. The ordered runtime
+covers RandomGenerator, spline interpolation, PTEX-bound expressions, palette
+scalar functions, hierarchical ClumpingFX, NoiseFX, CutFX, and width. GPU execution is
 float-only and uses LuisaCompute kernels; there is no handwritten CUDA or HIP
 path.
 

@@ -163,6 +163,12 @@ python scripts/run_xgen_classic_collection_benchmark.py \
   --rounds 5 --gpu-warmup 0 --gpu-repeats 1 --no-outer-warmup
 ```
 
+The benchmark executable also accepts `--jit-workers N`. Omitting it, or
+leaving the API's `max_parallel_compiles` at zero, selects
+`std::thread::hardware_concurrency()`. Use a positive limit only to model CPU
+sharing with a renderer; backend selection does not silently change the worker
+count.
+
 ### Complete collection result
 
 On 2026-07-23, the RX 9070 XT (`gfx1201`) processed all nine Rabbit

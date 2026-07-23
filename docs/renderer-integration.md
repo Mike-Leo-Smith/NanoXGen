@@ -51,10 +51,11 @@ PackedGeneratedCurves curves = generate_packed_cpu(asset, params);
 ```
 
 The optional LuisaCompute backend records typed generation kernels once and
-dispatches them through HIP or Vulkan. It uploads validated roots, exact random
-identity, CSR guide associations and rebuilt float guides, then writes final
-strand-major `float4(position, radius)` buffers. There is no handwritten
-CUDA/HIP API and the portable CPU library has no Luisa dependency.
+dispatches them through HIP, Vulkan, or Luisa's CPU fallback backend. It
+uploads validated roots, exact random identity, CSR guide associations and
+rebuilt float guides, then writes final strand-major
+`float4(position, radius)` buffers. There is no handwritten CUDA/HIP API and
+the portable CPU library has no Luisa dependency.
 
 The renderer owns Luisa's `Context`, `Device`, `Stream`, and every buffer. It
 passes its existing `Device` directly to NanoXGen; the renderer-facing API does
