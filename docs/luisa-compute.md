@@ -10,6 +10,20 @@ The tested upstream revision is
 `c07bc0824aebb97784cdaff6e2c34b77acab20a8`. The `next` branch moves, so record
 the exact revision used for every benchmark.
 
+That revision needs the checked-in fallback byte-buffer alignment fix on LLVM
+22. Apply it before configuring a build that enables `fallback`:
+
+```bash
+git -C /external/LuisaCompute-next apply --ignore-space-change \
+  /path/to/NanoXGen/patches/luisa-compute-next-fallback-unaligned-byte-buffer.patch
+```
+
+The patch also adds its LuisaCompute unit regression. It is intentionally kept
+as a source patch because LuisaCompute remains an external dependency. The
+`--ignore-space-change` option handles the mixed CRLF/LF line endings already
+present in the upstream fallback source; it does not weaken the patched
+revision or hunk checks.
+
 ## AMD HIP build
 
 Clone recursively outside NanoXGen, then use the checked-in helper to configure
@@ -21,10 +35,15 @@ git clone --branch next --recursive \
   /external/LuisaCompute-next
 
 NANOXGEN_HIP_ARCH=gfx1201 \
+NANOXGEN_LUISA_ENABLE_FALLBACK=ON \
 ./scripts/build_luisa_compute_next.sh \
   /external/LuisaCompute-next \
   /external/LuisaCompute-next/build-nanoxgen-hip
 ```
+
+`NANOXGEN_LUISA_ENABLE_FALLBACK` defaults to `OFF`; setting it to `ON` builds
+the fallback plug-in alongside HIP. The same NanoXGen binaries can then select
+either backend at runtime.
 
 LuisaCompute `next` currently uses an LLVM API newer than the headers bundled
 with some ROCm releases. The helper deliberately selects system LLVM through
@@ -159,15 +178,21 @@ shown below was 156.225 s.
 | native CPU + LTO | 37.699 s | 36.826 s | 37.774 s | 4.24x |
 | Luisa HIP, no shader cache | 17.822 s | 17.658 s | 17.850 s | 8.85x |
 | Luisa Vulkan, no shader cache | 20.996 s | 20.958 s | 20.996 s | 7.45x |
+| Luisa fallback, no shader cache | 28.474 s | 27.996 s | 28.474 s | 5.58x |
 | Maya 2027.1 typed evaluation/copy | 156.225 s | 156.225 s | 156.436 s | 1.00x |
 
 HIP is 2.09x faster than native+LTO CPU, and Vulkan is 1.76x faster, for this
-cold no-cache workload. The median HIP breakdown is 10.513 s native
+cold no-cache workload. Fallback is 1.32x faster than native+LTO CPU;
+HIP is 1.59x faster than fallback, and Vulkan is 1.34x faster than fallback.
+The median HIP breakdown is 10.513 s native
 parse/import/root/rebuild, 6.316 s JIT/allocation, 0.413 s device creation,
 0.069 s upload, and 0.340 s first dispatch/download/packing. Vulkan spends
 10.517 s in native preparation and 9.685 s in JIT/allocation, which explains
-most of its gap to HIP. Warm-dispatch numbers are recorded by the benchmark but
-are deliberately not substituted for the requested cold result.
+most of its gap to HIP. Fallback spends 10.444 s in native preparation,
+16.281 s in JIT/allocation, 0.042 s in device creation, 0.085 s in upload, and
+1.132 s in first dispatch/download/packing. Warm-dispatch numbers are recorded
+by the benchmark but are deliberately not substituted for the requested cold
+result.
 
 The Luisa kernels use `float`, integer identities, and integer hashes. No
 handwritten CUDA/HIP path remains and no device-side `double` is used; the
@@ -189,11 +214,19 @@ amplified by ill-conditioned Clump/Noise transported frames. See
 is a same-topology, same-channel engineering comparison for this Rabbit asset,
 not a bit-exact geometry claim or a native-support claim for arbitrary XGen.
 
-The Luisa `fallback` backend built against system LLVM 22/Embree 4.4.1 on this
-Arch host, but both the matching and an independent runtime build crashed in
-generated fallback worker code before returning JSON, including with
-`LUISA_SINGLE_THREADING=1`. HIP and Vulkan are the working backends on this
-host; the fallback failure is recorded as an upstream/runtime compatibility
-issue rather than replaced with the NanoXGen CPU result. RADV also reports its
-Vulkan implementation as non-conformant, so the Vulkan number is experimental
-and device/driver-specific.
+The original Luisa `fallback` backend generated an LLVM `vmovaps` for a
+`float3` loaded at byte offset 12. Byte buffers and bindless byte-buffer views
+do not promise the natural 16-byte `float3` alignment, so the aligned load
+faulted in the fallback worker. The checked-in patch marks only byte-addressed
+loads and stores as alignment 1; ordinary typed buffers retain their natural
+alignment. Optimized LLVM IR was audited for the direct and bindless
+regressions, and all four loads/stores use `align 1`.
+
+The patched backend passes LuisaCompute's `test_byte_buffer` with both direct
+and bindless unaligned `float3` access, NanoXGen's Luisa differential test in
+multi-threaded and `LUISA_SINGLE_THREADING=1` modes, and all nine Rabbit
+descriptions. Rabbit topology and canonical identities exactly match Maya;
+the same five descriptions meet the strict `1e-3` geometry threshold as HIP
+and native CPU, while the known ill-conditioned Noise/Clump outliers remain.
+RADV reports its Vulkan implementation as non-conformant, so the Vulkan number
+is experimental and device/driver-specific.
