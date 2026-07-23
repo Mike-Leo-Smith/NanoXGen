@@ -228,12 +228,12 @@ plus the moving eyelash), and completed with zero fallback. All 25,738
 eyelash renderer points moved, with maximum delta `2.00000381`; no other
 NanoXGen point moved because static samples alias the base deformation.
 
-One final post-indexing run measured 5.238 s cold end to end: 2.832 s native
-preparation, 1.852 s parallel no-cache JIT, 0.053 s upload, and 0.318 s first
+One final post-indexing run measured 5.237 s cold end to end: 2.804 s native
+preparation, 1.857 s parallel no-cache JIT, 0.058 s upload, and 0.322 s first
 dispatch/download/packing. The Maya 2027.1 typed `PrimitiveCache` bridge on
 the same two samples measured 286.185 s evaluation/copy and 288.976 s total
-process wall. NanoXGen HIP was therefore 54.64x faster than typed evaluation
-and 55.17x faster than summed process wall for this one-round, cold,
+process wall. NanoXGen HIP was therefore 54.65x faster than typed evaluation
+and 55.18x faster than summed process wall for this one-round, cold,
 position/radius-only comparison. Maya reported the same 25,738 genuinely
 moving eyelash points and `2.00000215` maximum delta; it also introduced
 20,280 tiny `1e-6`-scale differences on nominally static descriptions, whereas
