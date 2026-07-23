@@ -3,6 +3,8 @@
 #include "nanoxgen/luisa/xgen_expression.h"
 #include "nanoxgen/seexpr_noise_table.h"
 
+#include "packed_io.h"
+
 #include <luisa/core/stl/vector.h>
 #include <luisa/dsl/constant.h>
 #include <luisa/dsl/sugar.h>
@@ -503,7 +505,8 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
         const UInt first = strand * cvs_per_strand;
         const UInt root_offset = strand *
             static_cast<uint>(sizeof(RootSample));
-        const Float3 strand_root = roots.read<float3>(
+        const Float3 strand_root = packed_io::read_packed_float3(
+            roots,
             root_offset + static_cast<uint>(offsetof(RootSample, position)));
         const UInt raw_guide = strand_guides.read(strand);
         const Bool valid_guide = !(
@@ -785,7 +788,8 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
         const UInt strand = dispatch_id().x;
         const UInt first = strand * cvs_per_strand;
         const UInt root_offset = strand * static_cast<uint>(sizeof(RootSample));
-        const Float3 surface_normal = roots.read<float3>(
+        const Float3 surface_normal = packed_io::read_packed_float3(
+            roots,
             root_offset + static_cast<uint>(offsetof(RootSample, normal)));
         const Float4 state = states.read(strand);
         const Bool live = state.x >= 0.0f;

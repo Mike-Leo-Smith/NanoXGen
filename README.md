@@ -94,8 +94,8 @@ The combined Luisa/Classic preset builds a no-shader-cache cold benchmark from
 the authoring collection, Alembic patch, PTEX density, exact roots and guide
 associations through final renderer points. All nine descriptions in the local
 Rabbit collection now completes on native CPU and Luisa HIP, Vulkan, and
-patched fallback with no Autodesk fallback: 2,456,139 curves and 47,421,673
-points. Canonical
+fallback with no Autodesk fallback: 2,456,139 curves and 47,421,673 points.
+Canonical
 topology and `(faceId, faceUV, patchUV)` identities exactly match fresh Maya
 typed-RenderAPI caches for every description. The ordered runtime covers
 RandomGenerator, spline interpolation, PTEX-bound expressions, palette scalar

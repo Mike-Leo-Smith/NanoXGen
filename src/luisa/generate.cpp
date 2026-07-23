@@ -1,5 +1,7 @@
 #include "nanoxgen/luisa/generate.h"
 
+#include "packed_io.h"
+
 #include <luisa/core/stl/vector.h>
 #include <luisa/dsl/sugar.h>
 
@@ -65,9 +67,11 @@ PackedGenerateFromRootsKernel make_packed_generate_from_roots_kernel(
         set_block_size(128u, 1u, 1u);
         const UInt strand = dispatch_id().x;
         const UInt root_offset = strand * static_cast<uint>(sizeof(RootSample));
-        const Float3 root_position = roots.read<float3>(
+        const Float3 root_position = packed_io::read_packed_float3(
+            roots,
             root_offset + static_cast<uint>(offsetof(RootSample, position)));
-        const Float3 root_normal = roots.read<float3>(
+        const Float3 root_normal = packed_io::read_packed_float3(
+            roots,
             root_offset + static_cast<uint>(offsetof(RootSample, normal)));
         const UInt triangle = roots.read<uint>(
             root_offset +
@@ -91,10 +95,12 @@ PackedGenerateFromRootsKernel make_packed_generate_from_roots_kernel(
             const UInt guide_offset =
                 static_cast<uint>(header.guides_offset) +
                 safe * static_cast<uint>(sizeof(GuideRecord));
-            const Float3 guide_root = asset_bytes.read<float3>(
+            const Float3 guide_root = packed_io::read_packed_float3(
+                asset_bytes,
                 guide_offset +
                 static_cast<uint>(offsetof(GuideRecord, root_position)));
-            const Float3 guide_normal = asset_bytes.read<float3>(
+            const Float3 guide_normal = packed_io::read_packed_float3(
+                asset_bytes,
                 guide_offset +
                 static_cast<uint>(offsetof(GuideRecord, root_normal)));
             const Float3 delta = root_position - guide_root;
@@ -140,8 +146,10 @@ PackedGenerateFromRootsKernel make_packed_generate_from_roots_kernel(
             const UInt cv_offset =
                 static_cast<uint>(header.guide_cvs_offset) +
                 (first_cv + lower) * static_cast<uint>(sizeof(Vec3));
-            const Float3 a = asset_bytes.read<float3>(cv_offset);
-            const Float3 b = asset_bytes.read<float3>(
+            const Float3 a =
+                packed_io::read_packed_float3(asset_bytes, cv_offset);
+            const Float3 b = packed_io::read_packed_float3(
+                asset_bytes,
                 cv_offset + static_cast<uint>(sizeof(Vec3)));
             return lerp(a, b, fraction);
         };
@@ -150,7 +158,8 @@ PackedGenerateFromRootsKernel make_packed_generate_from_roots_kernel(
         const UInt nearest_offset =
             static_cast<uint>(header.guides_offset) +
             safe_nearest * static_cast<uint>(sizeof(GuideRecord));
-        const Float3 nearest_root = asset_bytes.read<float3>(
+        const Float3 nearest_root = packed_io::read_packed_float3(
+            asset_bytes,
             nearest_offset +
             static_cast<uint>(offsetof(GuideRecord, root_position)));
         for (std::uint32_t cv = 0u; cv < params.cvs_per_strand; ++cv) {
@@ -163,8 +172,8 @@ PackedGenerateFromRootsKernel make_packed_generate_from_roots_kernel(
                 const UInt guide_offset =
                     static_cast<uint>(header.guides_offset) +
                     guide * static_cast<uint>(sizeof(GuideRecord));
-                const Float3 guide_root = asset_bytes.read<float3>(
-                    guide_offset + static_cast<uint>(
+                const Float3 guide_root = packed_io::read_packed_float3(
+                    asset_bytes, guide_offset + static_cast<uint>(
                         offsetof(GuideRecord, root_position)));
                 offset += (sample_guide(guide, t) - guide_root) *
                           guide_weights[slot];
@@ -203,7 +212,8 @@ ClassicBaseGenerateKernel make_classic_base_generate_kernel(
         set_block_size(128u, 1u, 1u);
         const UInt strand = dispatch_id().x;
         const UInt root_offset = strand * static_cast<uint>(sizeof(RootSample));
-        const Float3 root_position = roots.read<float3>(
+        const Float3 root_position = packed_io::read_packed_float3(
+            roots,
             root_offset + static_cast<uint>(offsetof(RootSample, position)));
         const UInt begin = influence_offsets.read(strand);
         const UInt end = influence_offsets.read(strand + 1u);

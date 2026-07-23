@@ -11,10 +11,15 @@ luisa_build=${2:-"${luisa_source}/build-nanoxgen-hip"}
 rocm_root=${ROCM_PATH:-/opt/rocm}
 llvm_dir=${LLVM_DIR:-/usr/lib/cmake/llvm}
 hip_arch=${NANOXGEN_HIP_ARCH:-gfx1201}
+enable_hip=${NANOXGEN_LUISA_ENABLE_HIP:-ON}
 enable_fallback=${NANOXGEN_LUISA_ENABLE_FALLBACK:-OFF}
 
 if [[ ! -d "${luisa_source}/.git" || ! -f "${luisa_source}/src/backends/hip/CMakeLists.txt" ]]; then
     echo "error: source must be a recursive LuisaCompute next checkout" >&2
+    exit 1
+fi
+if [[ "${enable_hip}" != "ON" && "${enable_fallback}" != "ON" ]]; then
+    echo "error: enable at least one of HIP or fallback" >&2
     exit 1
 fi
 
@@ -24,7 +29,7 @@ cmake -S "${luisa_source}" -B "${luisa_build}" -G Ninja \
     -DLLVM_DIR="${llvm_dir}" \
     -DCMAKE_HIP_ARCHITECTURES="${hip_arch}" \
     -DHIPRT_GPU_ARCHS="${hip_arch}" \
-    -DLUISA_COMPUTE_ENABLE_HIP=ON \
+    -DLUISA_COMPUTE_ENABLE_HIP="${enable_hip}" \
     -DLUISA_COMPUTE_ENABLE_CUDA=OFF \
     -DLUISA_COMPUTE_ENABLE_DX=OFF \
     -DLUISA_COMPUTE_ENABLE_METAL=OFF \
@@ -36,8 +41,10 @@ cmake -S "${luisa_source}" -B "${luisa_build}" -G Ninja \
     -DLUISA_COMPUTE_ENABLE_TENSOR=OFF \
     -DLUISA_COMPUTE_ENABLE_CLANG_CXX=OFF \
     -DLUISA_COMPUTE_BUILD_TESTS=OFF
-cmake --build "${luisa_build}" --target luisa-compute-backend-hip \
-    -j"${NANOXGEN_BUILD_JOBS:-$(nproc)}"
+if [[ "${enable_hip}" == "ON" ]]; then
+    cmake --build "${luisa_build}" --target luisa-compute-backend-hip \
+        -j"${NANOXGEN_BUILD_JOBS:-$(nproc)}"
+fi
 if [[ "${enable_fallback}" == "ON" ]]; then
     cmake --build "${luisa_build}" --target luisa-compute-backend-fallback \
         -j"${NANOXGEN_BUILD_JOBS:-$(nproc)}"
@@ -45,4 +52,5 @@ fi
 
 echo "LuisaCompute source: $(git -C "${luisa_source}" rev-parse HEAD)"
 echo "LuisaCompute build:  ${luisa_build}"
+echo "HIP backend:         ${enable_hip}"
 echo "Fallback backend:    ${enable_fallback}"
