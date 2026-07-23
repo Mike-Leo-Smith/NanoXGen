@@ -6,14 +6,15 @@ default CPU or Autodesk presets. LuisaCompute sources, submodules,
 shader caches, runtime plug-ins, and build products must remain outside this
 repository.
 
-The original HIP/Vulkan benchmark used upstream revision
+The current renderer/motion validation uses the published `next` revision
+`ccef52f6f4defa26de07095dc6349cd314eb09b8`. The original HIP/Vulkan benchmark used upstream revision
 `c07bc0824aebb97784cdaff6e2c34b77acab20a8`. Fallback ABI validation and the
 correct packed-vector reader were retested after rebasing onto
 `90bbb3b3155f9167dc2d332d95d7a7ffc0032014`. The `next` branch moves, so record
 the exact revision used for every benchmark. The Luisa-side ABI documentation,
-static fallback diagnostic, and unit coverage are commit
-`6ae28747892750dd7e18c5e0b8733a78afe93477` on the published
-`nanoxgen/check-byte-buffer-alignment` branch.
+debug-only static fallback diagnostic, and unit coverage are included in the
+current `next`; typed `float3` buffers retain their required 16-byte alignment,
+while packed byte-buffer clients use scalar/array loads.
 
 ## AMD HIP build
 
@@ -194,6 +195,54 @@ four-by-eight host policy, host work improved by about 5.6%, while the newer
 Luisa/HIP JIT regressed enough that total cold time is 1.6% slower. These
 revision-separated figures are reported explicitly rather than attributing the
 JIT change to NanoXGen scheduling.
+
+### Cold Classic motion result
+
+The motion benchmark uses the same one-Device/no-shader-cache boundary and
+adds repeated `--motion-sample LOOKUP PLACEMENT` arguments. On 2026-07-24 a
+repository-external Rabbit Alembic was made from the complete production mesh:
+all four patches and `xgen_Pref` were retained, while only the
+`xgen_eyelash` parent transform received a second sample translated by +2 on
+X. This avoids a static-archive false positive without committing a generated
+fixture.
+
+```bash
+python scripts/run_xgen_classic_collection_benchmark.py \
+  --luisa-tool \
+    ./build/luisa-classic-hip-release/nanoxgen_xgen_classic_luisa_benchmark \
+  --luisa-runtime /external/LuisaCompute-next/build-hip/bin \
+  --backend hip \
+  --collection /external/rabbit/collection.xgen \
+  --archive /external/rabbit/rabbit-motion.abc \
+  --descriptions-root /external/rabbit/project-root \
+  --single-device-collection --threads 0 \
+  --motion-sample 0 0 --motion-sample 1 1 \
+  --rounds 1 --gpu-warmup 0 --gpu-repeats 1 --no-outer-warmup
+```
+
+The deliberately project-level `descriptions-root` also exercises
+`xgDataPath` relocation and mixed-separator `${DESC}` resolution. The fresh
+HIP process produced 4,912,278 sample curves and 94,843,346 sample points,
+reported ten unique description/deformation pairs (nine base deformations
+plus the moving eyelash), and completed with zero fallback. All 25,738
+eyelash renderer points moved, with maximum delta `2.00000381`; no other
+NanoXGen point moved because static samples alias the base deformation.
+
+One final post-indexing run measured 5.238 s cold end to end: 2.832 s native
+preparation, 1.852 s parallel no-cache JIT, 0.053 s upload, and 0.318 s first
+dispatch/download/packing. The Maya 2027.1 typed `PrimitiveCache` bridge on
+the same two samples measured 286.185 s evaluation/copy and 288.976 s total
+process wall. NanoXGen HIP was therefore 54.64x faster than typed evaluation
+and 55.17x faster than summed process wall for this one-round, cold,
+position/radius-only comparison. Maya reported the same 25,738 genuinely
+moving eyelash points and `2.00000215` maximum delta; it also introduced
+20,280 tiny `1e-6`-scale differences on nominally static descriptions, whereas
+NanoXGen's deformation aliases kept those samples bit-identical.
+
+This is a nonzero-motion correctness/performance calibration, not a
+multi-round p90 claim and not evidence of native compatibility for arbitrary
+Classic assets. The static five-round table below remains the more stable
+backend comparison.
 
 ### Complete collection result
 

@@ -36,6 +36,10 @@ The current prototype provides:
 - a renderer-facing curve payload with radius conversion, motion samples,
   root UV/custom primvars, affine transforms, resampling, and 64K batching;
 - frame-local deformed mesh/normal/guide overlays with stable root identities;
+- Classic `-motionSamplesLookup` evaluation for 1--20 Alembic samples,
+  including operation-aware transform interpolation, invariant PTEX/random
+  topology, duplicate-identity/topology checks, deformation aliases, and
+  Luisa generation into renderer-owned per-sample buffers;
 - a bit-exact evaluated-curve `.nxc` cache with canonical motion matching, for
   bypassing Maya/XGen on repeated static renders;
 - a self-contained v1 Interactive Grooming `XgSplineData` BLOB parser, lossless
@@ -105,6 +109,11 @@ compile tasks use one dynamic queue, so concurrency never multiplies into a
 fixed outer-by-inner worker grid. A default context honors process CPU
 affinity; a renderer can instead wrap its own scheduler. Authored order is
 preserved regardless of task completion order.
+The description-data argument may be either the resolved
+`xgen/collections/<palette>` directory or the project root. Relocated
+`xgProjectPath`/`xgDataPath`, `${PROJECT}xgen/...` without an intervening
+slash, and mixed Windows/Unix separators are resolved before `${DESC}` PTEX
+and clump paths are opened.
 Canonical topology and `(faceId, faceUV, patchUV)` identities exactly match
 fresh Maya typed-RenderAPI caches for every description. The ordered runtime
 covers RandomGenerator, spline interpolation, PTEX-bound expressions, palette

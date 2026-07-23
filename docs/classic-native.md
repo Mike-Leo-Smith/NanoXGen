@@ -155,6 +155,25 @@ runtime, generated roots, rebuilt guides, PTEX/runtime inputs, and clump data.
 The overload taking an already parsed `ClassicCollection` lets a renderer or
 package loader avoid reopening the main file.
 
+The root argument can also be the project root. The plan resolves palette
+`xgDataPath` and `xgProjectPath`, including relocated Windows-authored paths,
+mixed separators, and `${PROJECT}xgen/...` without a slash. This specifically
+prevents an integration from expanding `${DESC}` to
+`project/description/paintmaps/...` when the files actually live under
+`project/xgen/collections/palette/description`. Direct per-description callers
+can use `resolve_xgen_classic_descriptions_root` for the same behavior.
+
+`build_xgen_classic_collection_motion_execution_plan` consumes the renderer's
+`-motionSamplesLookup`/placement table. It evaluates Alembic at
+`(frame + lookup) / fps`, supports previous-sample or linear interpolation,
+and interpolates transform-operation channels before composing the matrix.
+Random roots, PTEX inputs, guide associations, primitive IDs, and reference
+noise positions are generated once. A prepared root-to-face index makes every
+additional mesh deformation O(root count); changing mesh/transform topology
+and duplicate `(patch, face, bit(u), bit(v))` identities are checked errors.
+Static/repeated deformation samples alias an earlier source instead of
+rebuilding host or GPU data.
+
 The optional Luisa layer then receives those description plans as one batch:
 `compile_classic_collection(renderer_device, inputs)` specializes all required
 kernels on the renderer's existing `Device`. It does not take a backend name or
@@ -162,6 +181,13 @@ create a Luisa GPU `Context` or `Device`. Its `encode` method records into a
 caller-owned `Stream` using caller-owned buffer views and performs no hidden
 allocation, upload, synchronization, or readback. The Device must outlive the
 compiled pipeline.
+
+For motion, `encode_motion` records each unique deformation into caller-owned
+sample buffers and accepts the host plan's source-alias table. Placements are
+retained as renderer interpolation metadata; they do not change the generated
+geometry. The current production-consumer example stores sample zero as
+`float4` points and sample one as absolute xyz `pointMotions`; NanoXGen itself
+supports 1--20 samples.
 
 `NanoXGenContext` is separate from Luisa's GPU context. It owns an
 affinity-aware CPU pool or borrows a renderer executor, and the same instance

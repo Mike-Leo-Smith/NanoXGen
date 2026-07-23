@@ -75,12 +75,20 @@ cmake --build --preset autodesk-bridge-release
   --palette collection_name \
   --geom /outside/repository/patches.abc \
   --patch patch_name \
-  --description description_name
+  --description description_name \
+  --frame 101 --fps 24 \
+  --motion-sample 0 0 \
+  --motion-sample 1 1 \
+  --shutter-offset 0.5
 ```
 
 The script keeps its generated `.nxc` under ignored `build/` output unless an
 external `--output` is given, verifies runtime linkage with `ldd`, executes the
 typed bridge, and reads the cache back through the Autodesk-free validator.
+With motion options, the bridge reads every public `PrimitiveCache::Points`
+sample directly, requires 1--20 samples with identical `NumVertices` topology,
+and reports the number of moving points and maximum absolute position delta.
+It never writes an intermediate evaluated XGen BLOB.
 Missing dependencies reported by the collection remain XGen errors; a missing
 patch or empty result is a checked bridge failure rather than a crash. Classic
 archive/card/sphere primitives are outside this curve-only bridge.

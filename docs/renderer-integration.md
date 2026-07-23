@@ -126,6 +126,64 @@ device creation, no-cache JIT, upload, execution, download and renderer packing.
 Warm dispatch is reported separately and must not be used as a cold-start
 speedup.
 
+### Classic motion samples
+
+Classic motion uses the same external `Device`, `Stream`, and
+`NanoXGenContext`. Lookup values are frame offsets used to evaluate Alembic at
+`(frame + lookup) / fps`; placements are the renderer's interpolation times
+and do not select archive samples. `shutterOffset` remains renderer metadata,
+not another geometry time.
+
+```cpp
+nanoxgen::ClassicMotionSampling sampling{};
+sampling.frame = current_frame;
+sampling.frames_per_second = fps;
+sampling.lookup_offsets.assign(lookup.begin(), lookup.end());
+sampling.placements.assign(placement.begin(), placement.end());
+
+auto motion_plan =
+    nanoxgen::build_xgen_classic_collection_motion_execution_plan(
+        collection, collection_path, archive_path, project_or_data_root,
+        sampling, host_options);
+
+ClassicCollectionPipeline pipeline =
+    compile_classic_collection(renderer_device,
+                               make_compile_inputs(motion_plan),
+                               compile_options);
+
+// One entry per placement. Invariant CSR, runtime-input and clump-index
+// buffers can alias; roots, guides, clump axes, states and final points are
+// per unique deformation.
+pipeline.encode_motion(
+    renderer_stream, description_index, sample_resources,
+    sampling.placements, deformation_sources, strand_count);
+```
+
+The host plan accepts 1--20 samples, rejects non-finite or non-increasing
+tables, preserves the authored root identity, and rejects duplicate
+`(patch, faceId, bit(u), bit(v))` identities or changing Alembic topology.
+It builds the root-to-coarse-face index once, so later samples are linear in
+the number of roots. Static archives, repeated lookups, and bit-identical
+deformations expose `deformation_source_index`; the renderer should bind the
+source sample's final point buffer instead of dispatching or copying it again.
+Transform stacks are interpolated by Alembic operation channel rather than by
+linearly blending a 4x4 matrix.
+
+The supplied `CurveParser.cpp` currently consumes two samples: base
+`float4(position, radius)` in `Curve::points` and the second sample's absolute
+xyz in `Curve::pointMotions`. Bind motion-plan sample zero to `points`, resolve
+sample one through its `deformation_source_index`, and copy/view that final
+buffer as `pointMotions`. Apply scene offsets and the object transform to both
+samples. More than two samples require extending that renderer container, but
+NanoXGen does not impose the two-sample restriction.
+
+Do not construct `${DESC}` paths as `supplied_root / description` directly.
+Call `resolve_xgen_classic_descriptions_root`, or use either collection-plan
+builder, which calls it automatically. The supplied argument may be the final
+collection data directory or a project root; `xgDataPath`, relocated
+`xgProjectPath`, `${PROJECT}xgen/...`, and mixed `\`/`/` separators are
+handled without a recursive filesystem scan.
+
 The verified noise parameters map to Maya as follows:
 
 | NanoXGen field | Maya/XGen value |
@@ -140,9 +198,10 @@ The current native path implements the default linear magnitude-scale ramp.
 Authored ramp curves, expressions, and PTEX/texture masks require additional
 asset sections and are not silently approximated.
 
-Motion output remains implemented in the portable CPU payload path and the
-evaluated `.nxc` format. A Luisa motion path is not exposed until it can retain
-the same exact root identity and pass topology-change/duplicate-identity tests.
+Motion output is implemented in the portable payload path, evaluated `.nxc`,
+Classic Alembic host planner, and Luisa collection pipeline. The typed Autodesk
+bridge remains the oracle for `PrimitiveCache` sample topology and absolute
+positions.
 
 ## Compiler modes and numerical policy
 
@@ -215,8 +274,8 @@ BLOB from the renderer-relevant curve view.
 | Positions and per-CV radius | implemented on CPU and in the Luisa Classic kernels |
 | Fixed or variable point counts in output | implemented; Luisa currently compacts Cut-culled fixed-CV strands after download |
 | Root UV, uniform float, uniform color | implemented payload contract |
-| Multiple absolute motion samples | implemented payload contract and evaluated `.nxc`; Luisa generation pending |
-| Deformed mesh/normal/guide overlays | implemented on CPU; Luisa Classic currently evaluates one imported sample |
+| Multiple absolute motion samples | implemented for payload/`.nxc` and 1--20 Classic Luisa samples with deformation aliases |
+| Deformed mesh/normal/guide overlays | implemented on CPU and per unique Classic Luisa motion deformation |
 | Object-to-world transform | implemented |
 | 65,536-strand chunking | implemented and boundary-tested |
 | Optional uniform CV resampling | implemented |
@@ -224,7 +283,7 @@ BLOB from the renderer-relevant curve view.
 | Exact XGen root RNG | implemented for the supported Classic random-generator path |
 | Cut and width taper parity | CPU/Luisa implemented; exact Rabbit eyelash topology verified |
 | XGen noise core | CPU/Luisa implemented and oracle-verified for supported mode-0 bindings |
-| XGen clump/coil/collision | not implemented |
+| XGen clump/coil/collision | hierarchical Rabbit ClumpingFX implemented; coil and collision remain fallbacks |
 | XGen expressions and PTEX | float runtime plan and CPU/Luisa lowering include root-sampled PTEX `map()`, palette scalars, and `noise($Prefg*constant)`; general vector SeExpr and remaining FX passes remain |
 | Camera-frustum generation culling | not implemented |
 | Classic archive/card/sphere primitives | outside the current curve-only scope |
