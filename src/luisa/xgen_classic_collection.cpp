@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -216,6 +217,62 @@ void ClassicCollectionPipeline::encode(
                       resources.root_runtime, resources.runtime_inputs,
                       resources.states)
                       .dispatch(strand_count);
+    }
+}
+
+void ClassicCollectionPipeline::encode_motion(
+    Stream &stream,
+    std::size_t description,
+    std::span<const ClassicCollectionDispatchResources> samples,
+    std::span<const float> placements,
+    std::uint32_t strand_count,
+    bool base_only) const {
+    std::vector<std::uint32_t> sources(samples.size());
+    for (std::size_t index = 0u; index < sources.size(); ++index) {
+        sources[index] = static_cast<std::uint32_t>(index);
+    }
+    encode_motion(
+        stream, description, samples, placements, sources,
+        strand_count, base_only);
+}
+
+void ClassicCollectionPipeline::encode_motion(
+    Stream &stream,
+    std::size_t description,
+    std::span<const ClassicCollectionDispatchResources> samples,
+    std::span<const float> placements,
+    std::span<const std::uint32_t> deformation_sources,
+    std::uint32_t strand_count,
+    bool base_only) const {
+    constexpr std::size_t maximum_motion_samples = 20u;
+    if (samples.empty() || samples.size() > maximum_motion_samples ||
+        samples.size() != placements.size() ||
+        samples.size() != deformation_sources.size()) {
+        throw std::invalid_argument(
+            "Classic collection motion dispatch needs 1-20 matching samples, placements, and sources");
+    }
+    for (std::size_t index = 0u; index < placements.size(); ++index) {
+        if (!std::isfinite(placements[index]) ||
+            (index != 0u && !(placements[index] > placements[index - 1u]))) {
+            throw std::invalid_argument(
+                "Classic collection motion placements must be finite and strictly increasing");
+        }
+        const std::uint32_t source = deformation_sources[index];
+        if (source > index ||
+            deformation_sources[source] != source) {
+            throw std::invalid_argument(
+                "Classic collection motion deformation source is invalid");
+        }
+    }
+    // Validation is deliberately complete before the first command is
+    // recorded. Otherwise a later bad placement could unwind and destroy the
+    // pipeline while an asynchronous backend is still executing sample zero.
+    for (std::size_t index = 0u; index < placements.size(); ++index) {
+        if (deformation_sources[index] == index) {
+            encode(
+                stream, description, samples[index], strand_count,
+                base_only);
+        }
     }
 }
 

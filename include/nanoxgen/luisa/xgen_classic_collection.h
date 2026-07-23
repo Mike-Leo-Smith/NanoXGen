@@ -97,6 +97,30 @@ public:
         std::uint32_t strand_count,
         bool base_only = false) const;
 
+    // Encode an arbitrary RenderAPI motion table in sample order. Each entry
+    // must name distinct output/scratch buffers (sample-invariant views may be
+    // aliased). Placement controls renderer interpolation only; lookup has
+    // already been resolved by the host motion execution plan.
+    void encode_motion(
+        luisa::compute::Stream &stream,
+        std::size_t description,
+        std::span<const ClassicCollectionDispatchResources> samples,
+        std::span<const float> placements,
+        std::uint32_t strand_count,
+        bool base_only = false) const;
+
+    // Optimized form for repeated lookup/strobe/static archive samples.
+    // source[i] <= i; only entries with source[i] == i are dispatched, and
+    // later placements reuse that sample's renderer buffer.
+    void encode_motion(
+        luisa::compute::Stream &stream,
+        std::size_t description,
+        std::span<const ClassicCollectionDispatchResources> samples,
+        std::span<const float> placements,
+        std::span<const std::uint32_t> deformation_sources,
+        std::uint32_t strand_count,
+        bool base_only = false) const;
+
 private:
     struct Impl;
     explicit ClassicCollectionPipeline(std::unique_ptr<Impl> impl) noexcept;

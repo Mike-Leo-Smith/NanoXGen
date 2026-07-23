@@ -20,6 +20,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -79,6 +80,10 @@ void test_external_device_collection_compile(
         {0.0f, 0.0f, 0.0f}, {0.0f, 0.5f, 0.0f},
         {0.0f, 1.0f, 0.0f}, {0.0f, 1.5f, 0.0f},
     }};
+    const std::array<luisa::float3, 4u> deformed_guides{{
+        {0.0f, 0.0f, 0.0f}, {0.1f, 0.5f, 0.0f},
+        {0.2f, 1.0f, 0.0f}, {0.3f, 1.5f, 0.0f},
+    }};
     const std::array<std::uint32_t, 2u> root_runtime{{0u, 0u}};
     const std::array<float, 1u> runtime_inputs{{0.0f}};
     const std::array<luisa::float3, 1u> vector_inputs{{
@@ -89,6 +94,8 @@ void test_external_device_collection_compile(
         device.create_buffer<std::uint32_t>(offsets.size());
     auto influence_buffer = device.create_byte_buffer(sizeof(influences));
     auto guide_buffer = device.create_buffer<luisa::float3>(guides.size());
+    auto deformed_guide_buffer =
+        device.create_buffer<luisa::float3>(deformed_guides.size());
     auto root_runtime_buffer =
         device.create_buffer<std::uint32_t>(root_runtime.size());
     auto runtime_input_buffer =
@@ -100,6 +107,9 @@ void test_external_device_collection_compile(
     auto points_a = device.create_buffer<luisa::float4>(4u);
     auto points_b = device.create_buffer<luisa::float4>(4u);
     auto states = device.create_buffer<luisa::float4>(1u);
+    auto motion_points_a = device.create_buffer<luisa::float4>(4u);
+    auto motion_points_b = device.create_buffer<luisa::float4>(4u);
+    auto motion_states = device.create_buffer<luisa::float4>(1u);
     const nanoxgen::luisa_backend::ClassicCollectionDispatchResources
         resources{
             root_buffer.view(), offset_buffer.view(),
@@ -113,6 +123,7 @@ void test_external_device_collection_compile(
            << offset_buffer.copy_from(offsets.data())
            << influence_buffer.copy_from(influences.data())
            << guide_buffer.copy_from(guides.data())
+           << deformed_guide_buffer.copy_from(deformed_guides.data())
            << root_runtime_buffer.copy_from(root_runtime.data())
            << runtime_input_buffer.copy_from(runtime_inputs.data())
            << tangent_buffer.copy_from(vector_inputs.data())
@@ -128,6 +139,44 @@ void test_external_device_collection_compile(
                 "external-device Classic collection encode mismatch");
         }
     }
+
+    const nanoxgen::luisa_backend::ClassicCollectionDispatchResources
+        motion_resources{
+            root_buffer.view(), offset_buffer.view(),
+            influence_buffer.view(), deformed_guide_buffer.view(),
+            root_runtime_buffer.view(), runtime_input_buffer.view(),
+            tangent_buffer.view(), noise_domain_buffer.view(),
+            motion_points_a.view(), motion_points_b.view(),
+            motion_states.view(), {}, {}, {}, {}};
+    const std::array<
+        nanoxgen::luisa_backend::ClassicCollectionDispatchResources, 3u>
+        motion_samples{{resources, motion_resources, resources}};
+    const std::array<float, 3u> placements{{-0.25f, 0.5f, 1.25f}};
+    const std::array<std::uint32_t, 3u> deformation_sources{{0u, 1u, 0u}};
+    std::array<luisa::float4, 4u> motion_output{};
+    pipeline.encode_motion(
+        stream, 0u, motion_samples, placements, deformation_sources, 1u);
+    stream << motion_points_b.copy_to(luisa::span{motion_output})
+           << synchronize();
+    for (std::size_t cv = 0u; cv < motion_output.size(); ++cv) {
+        if (motion_output[cv].x != deformed_guides[cv].x ||
+            motion_output[cv].y != deformed_guides[cv].y ||
+            motion_output[cv].z != deformed_guides[cv].z ||
+            motion_output[cv].w != 0.05f) {
+            throw std::runtime_error(
+                "external-device Classic motion encode lost deformation");
+        }
+    }
+    const std::array<float, 2u> invalid_placements{{0.0f, 0.0f}};
+    try {
+        const std::span invalid_samples{motion_samples.data(), 2u};
+        pipeline.encode_motion(
+            stream, 0u, invalid_samples, invalid_placements, 1u);
+    } catch (const std::invalid_argument &) {
+        return;
+    }
+    throw std::runtime_error(
+        "external-device Classic motion encode accepted duplicate placements");
 }
 
 nanoxgen::Asset make_luisa_generation_asset() {

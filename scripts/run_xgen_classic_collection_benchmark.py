@@ -218,6 +218,13 @@ def summarize_gpu_single_device(args: argparse.Namespace) -> dict[str, Any]:
         str(args.threads),
         "--no-cpu-validation",
     ]
+    if args.motion_samples:
+        command.extend(["--frame", str(args.frame), "--fps", str(args.fps)])
+        if args.motion_step:
+            command.append("--motion-step")
+        for lookup, placement in args.motion_samples:
+            command.extend([
+                "--motion-sample", str(lookup), str(placement)])
     environment = os.environ.copy()
     environment.setdefault("LUISA_LOG_LEVEL", "error")
     if not args.no_outer_warmup:
@@ -228,11 +235,14 @@ def summarize_gpu_single_device(args: argparse.Namespace) -> dict[str, Any]:
         summary = next(
             record for record in records if record.get("collection_summary"))
         rounds.append(summary)
-    validate_stable(
-        rounds,
-        ("description_count", "strands", "points", "checksum", "jit_kernel_count"),
-        "single-device Luisa collection",
-    )
+    stable_fields = (
+        ("description_count", "motion_samples", "sample_strands",
+         "sample_points", "unique_deformations", "moving_points",
+         "max_motion_position_delta", "checksum", "jit_kernel_count")
+        if args.motion_samples else
+        ("description_count", "strands", "points", "checksum",
+         "jit_kernel_count"))
+    validate_stable(rounds, stable_fields, "single-device Luisa collection")
     samples = [float(record["cold_end_to_end_ms"]) for record in rounds]
     component_fields = (
         "device_create_ms",
@@ -259,8 +269,18 @@ def summarize_gpu_single_device(args: argparse.Namespace) -> dict[str, Any]:
         "includes_file_io": True,
         "includes_autodesk_serialization": False,
         "descriptions": rounds[0]["description_count"],
-        "strands": rounds[0]["strands"],
-        "points": rounds[0]["points"],
+        "motion_samples":
+            rounds[0].get("motion_samples", 1),
+        "unique_deformations":
+            rounds[0].get("unique_deformations",
+                          rounds[0]["description_count"]),
+        "strands":
+            rounds[0].get("sample_strands", rounds[0].get("strands")),
+        "points":
+            rounds[0].get("sample_points", rounds[0].get("points")),
+        "moving_points": rounds[0].get("moving_points", 0),
+        "max_motion_position_delta":
+            rounds[0].get("max_motion_position_delta", 0.0),
         "checksum": rounds[0]["checksum"],
         "context_workers": rounds[0]["context_workers"],
         "jit_kernel_count": rounds[0]["jit_kernel_count"],
@@ -278,18 +298,31 @@ def summarize_gpu_single_device(args: argparse.Namespace) -> dict[str, Any]:
 def maya_command(args: argparse.Namespace, description: str) -> list[str]:
     patch = args.patch_map[description]
     xgen_args = (
-        f"-debug 0 -warning 1 -stats 0 -frame 1 -shutter 0.0 "
+        f"-debug 0 -warning 1 -stats 0 -frame {args.frame} "
+        f"-fps {args.fps} -shutter 0.0 "
         f"-file {args.collection} -palette {args.palette} "
         f"-geom {args.archive} -patch {patch} -description {description} "
         "-world 1;0;0;0;0;1;0;0;0;0;1;0;0;0;0;1"
     )
-    return [
+    command = [
         str(args.maya_tool),
         "--xgen-args",
         xgen_args,
         "--description",
         description,
     ]
+    if args.motion_samples:
+        interpolation = "none" if args.motion_step else "linear"
+        lookups = " ".join(str(value[0]) for value in args.motion_samples)
+        placements = " ".join(str(value[1]) for value in args.motion_samples)
+        command[2] += (
+            f" -interpolation {interpolation}"
+            f" -motionSamplesLookup {lookups}"
+            f" -motionSamplesPlacement {placements}")
+        for _, placement in args.motion_samples:
+            command.extend(["--shutter-sample", str(placement)])
+        command.extend(["--shutter-offset", str(args.shutter_offset)])
+    return command
 
 
 def summarize_maya(args: argparse.Namespace) -> dict[str, Any]:
@@ -339,13 +372,21 @@ def summarize_maya(args: argparse.Namespace) -> dict[str, Any]:
         # order on every evaluation. Topology must remain stable, but a raw
         # source-order checksum is deliberately diagnostic rather than an
         # invariant; canonical identity validation is a separate oracle.
-        validate_stable(records, ("curves", "points"), name)
+        validate_stable(
+            records,
+            ("curves", "points", "motion_samples", "moving_points",
+             "max_motion_position_delta"),
+            name)
         evaluation = [float(record["evaluation_ms"]) for record in records]
         wall = by_description_wall[name]
         source_checksums = sorted({record["checksum"] for record in records})
         descriptions[name] = {
             "strands": records[0]["curves"],
             "points": records[0]["points"],
+            "motion_samples": records[0]["motion_samples"],
+            "moving_points": records[0]["moving_points"],
+            "max_motion_position_delta":
+                records[0]["max_motion_position_delta"],
             "source_checksum_unique_count": len(source_checksums),
             "source_checksums": source_checksums,
             "evaluation_median_ms": statistics.median(evaluation),
@@ -370,8 +411,21 @@ def summarize_maya(args: argparse.Namespace) -> dict[str, Any]:
         "includes_cache_write": False,
         "includes_autodesk_serialization": False,
         "descriptions": len(args.descriptions),
+        "motion_samples":
+            len(args.motion_samples) if args.motion_samples else 1,
         "strands": sum(value["strands"] for value in descriptions.values()),
         "points": sum(value["points"] for value in descriptions.values()),
+        "sample_strands": sum(
+            value["strands"] * value["motion_samples"]
+            for value in descriptions.values()),
+        "sample_points": sum(
+            value["points"] * value["motion_samples"]
+            for value in descriptions.values()),
+        "moving_points": sum(
+            value["moving_points"] for value in descriptions.values()),
+        "max_motion_position_delta": max(
+            value["max_motion_position_delta"]
+            for value in descriptions.values()),
         "evaluation_samples_ms": evaluation_rounds,
         "evaluation_median_ms": statistics.median(evaluation_rounds),
         "evaluation_p90_ms": percentile(evaluation_rounds, 0.9),
@@ -394,6 +448,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--maya-tool", type=Path)
     parser.add_argument("--luisa-runtime", type=Path)
     parser.add_argument("--backend", default="hip")
+    parser.add_argument("--frame", type=float, default=1.0)
+    parser.add_argument("--fps", type=float, default=24.0)
+    parser.add_argument(
+        "--motion-sample", action="append", nargs=2, type=float,
+        metavar=("LOOKUP", "PLACEMENT"), default=[])
+    parser.add_argument("--motion-step", action="store_true")
+    parser.add_argument("--shutter-offset", type=float, default=0.0)
     parser.add_argument("--palette")
     parser.add_argument("--patch-map", action="append", default=[])
     parser.add_argument("--collection", type=Path, required=True)
@@ -425,6 +486,21 @@ def parse_args() -> argparse.Namespace:
         parser.error("--luisa-runtime is required with --luisa-tool")
     if args.threads < 0:
         parser.error("--threads must be non-negative")
+    args.motion_samples = args.motion_sample
+    if not (args.fps > 0.0):
+        parser.error("--fps must be positive")
+    if args.motion_samples:
+        if len(args.motion_samples) > 20:
+            parser.error("at most 20 --motion-sample values are supported")
+        placements = [sample[1] for sample in args.motion_samples]
+        if any(
+            placements[index] <= placements[index - 1]
+            for index in range(1, len(placements))
+        ):
+            parser.error("motion placements must be strictly increasing")
+        if args.luisa_tool and not args.single_device_collection:
+            parser.error(
+                "Luisa motion requires --single-device-collection")
     if ((args.maya_tool or
          (args.luisa_tool and not args.single_device_collection)) and
             not args.descriptions):
