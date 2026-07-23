@@ -188,12 +188,15 @@ void test_context_thread_pool() {
             "thread pool must execute every task exactly once");
 
     std::atomic_size_t nested_visits{};
-    pool.parallel_for(7u, [&](std::size_t) {
-        pool.parallel_for(13u, [&](std::size_t) {
-            nested_visits.fetch_add(1u, std::memory_order_relaxed);
+    constexpr std::size_t nested_repeats = 512u;
+    for (std::size_t repeat = 0u; repeat < nested_repeats; ++repeat) {
+        pool.parallel_for(7u, [&](std::size_t) {
+            pool.parallel_for(13u, [&](std::size_t) {
+                nested_visits.fetch_add(1u, std::memory_order_relaxed);
+            });
         });
-    });
-    require(nested_visits.load() == 91u,
+    }
+    require(nested_visits.load() == nested_repeats * 91u,
             "thread pool must support recursive parallel work");
 
     ThreadPool one_worker{1u};

@@ -1,9 +1,11 @@
 #include "nanoxgen/task_executor.h"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <exception>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -37,6 +39,11 @@ struct ThreadPool::Impl {
         std::mutex mutex;
         std::condition_variable complete;
         std::exception_ptr error;
+    };
+
+    struct Job {
+        std::shared_ptr<Group> group;
+        std::function<void()> function;
     };
 
     explicit Impl(std::size_t count) : count{count} {
@@ -77,7 +84,7 @@ struct ThreadPool::Impl {
         active_pool = nullptr;
     }
 
-    bool execute_one(bool wait) {
+    bool execute_one(bool wait, const Group *preferred = nullptr) {
         std::function<void()> job;
         {
             std::unique_lock lock{queue_mutex};
@@ -87,8 +94,17 @@ struct ThreadPool::Impl {
                 });
             }
             if (jobs.empty()) { return false; }
-            job = std::move(jobs.front());
-            jobs.pop_front();
+            auto selected = jobs.begin();
+            if (preferred && selected->group.get() != preferred) {
+                const auto match = std::find_if(
+                    std::next(selected), jobs.end(),
+                    [preferred](const Job &candidate) {
+                        return candidate.group.get() == preferred;
+                    });
+                if (match != jobs.end()) { selected = match; }
+            }
+            job = std::move(selected->function);
+            jobs.erase(selected);
         }
         job();
         return true;
@@ -108,31 +124,47 @@ struct ThreadPool::Impl {
                     "NanoXGen thread pool is stopping");
             }
             for (std::size_t index = 0u; index < task_count; ++index) {
-                jobs.emplace_back([this, group, shared_task, index] {
+                jobs.push_back({group, [this, group, shared_task, index] {
+                    std::exception_ptr task_error;
                     try {
                         (*shared_task)(index);
                     } catch (...) {
-                        std::scoped_lock lock{group->mutex};
-                        if (!group->error) {
-                            group->error = std::current_exception();
-                        }
+                        task_error = std::current_exception();
                     }
-                    if (group->remaining.fetch_sub(
-                            1u, std::memory_order_acq_rel) == 1u) {
+                    bool last = false;
+                    {
+                        // Predicate updates must synchronize through the same
+                        // mutex used by condition_variable::wait(). Updating
+                        // only the atomic can lose the final notification
+                        // between a waiter's predicate check and its sleep.
+                        std::scoped_lock lock{group->mutex};
+                        if (task_error && !group->error) {
+                            group->error = task_error;
+                        }
+                        last = group->remaining.fetch_sub(
+                            1u, std::memory_order_acq_rel) == 1u;
+                    }
+                    if (last) {
                         group->complete.notify_all();
                         // A pool worker waiting inside nested parallel_for()
                         // sleeps on ready so it can also service unrelated
                         // queued work while its own group is incomplete.
-                        ready.notify_all();
+                        {
+                            std::scoped_lock lock{queue_mutex};
+                            ready.notify_all();
+                        }
                     }
-                });
+                }});
             }
         }
         ready.notify_all();
 
         if (active_pool == this) {
             while (group->remaining.load(std::memory_order_acquire) != 0u) {
-                if (execute_one(false)) { continue; }
+                // Prefer this nested group's leaves. Taking another outer job
+                // first can make every worker recursively wait while all leaf
+                // work remains queued.
+                if (execute_one(false, group.get())) { continue; }
                 std::unique_lock lock{queue_mutex};
                 ready.wait(lock, [this, &group] {
                     return stopping || !jobs.empty() ||
@@ -158,7 +190,7 @@ struct ThreadPool::Impl {
     const std::size_t count;
     std::mutex queue_mutex;
     std::condition_variable ready;
-    std::deque<std::function<void()>> jobs;
+    std::deque<Job> jobs;
     std::vector<std::thread> workers;
     bool stopping{};
     static thread_local Impl *active_pool;
