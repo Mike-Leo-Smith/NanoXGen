@@ -8,11 +8,13 @@
 #include <xgen/src/xgcore/XgGenerator.h>
 #include <xgen/src/xgcore/XgPalette.h>
 #include <xgen/src/xgcore/XgPrimitive.h>
+#include <xgen/src/xgcore/XgRenderer.h>
 #else
 #error "Autodesk XgRenderAPI.h was not found"
 #endif
 
 #include <chrono>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -56,9 +58,11 @@ private:
 
 class TypedCallbacks final : public api::ProceduralCallbacks {
 public:
-    TypedCallbacks(std::string cache_dir, bool dump_surface_frame)
+    TypedCallbacks(std::string cache_dir, bool dump_surface_frame,
+                   std::optional<std::uint32_t> dump_primitive_face)
         : _cache_dir(std::move(cache_dir)),
-          _dump_surface_frame(dump_surface_frame) {}
+          _dump_surface_frame(dump_surface_frame),
+          _dump_primitive_face(dump_primitive_face) {}
 
     void flush(const char *, api::PrimitiveCache *cache) override {
         if (!_error.empty()) { return; }
@@ -101,6 +105,33 @@ public:
                 (face_id_count != 0u && !face_ids)) {
                 throw std::runtime_error("Classic PrimitiveCache returned a null channel");
             }
+            if (_dump_primitive_face) {
+                const unsigned int primitive_id_count =
+                    cache->getSize(api::PrimitiveCache::PrimitiveID_XP);
+                const int *primitive_ids =
+                    cache->get(api::PrimitiveCache::PrimitiveID_XP);
+                if (primitive_id_count != primitive_count || !primitive_ids ||
+                    u_count != primitive_count || v_count != primitive_count ||
+                    face_id_count != primitive_count) {
+                    throw std::runtime_error(
+                        "PrimitiveID calibration channel cardinality mismatch");
+                }
+                for (unsigned int primitive = 0u;
+                     primitive < primitive_count; ++primitive) {
+                    if (face_ids[primitive] !=
+                        static_cast<int>(*_dump_primitive_face)) {
+                        continue;
+                    }
+                    std::cerr << std::setprecision(9)
+                              << "primitive " << face_ids[primitive] << ' '
+                              << u[primitive] << ' ' << v[primitive]
+                              << " bits "
+                              << std::bit_cast<std::uint32_t>(u[primitive])
+                              << ' '
+                              << std::bit_cast<std::uint32_t>(v[primitive])
+                              << " id " << primitive_ids[primitive] << '\n';
+                }
+            }
             if (_dump_surface_frame && _flush_count == 0u) {
                 const unsigned int normal_count =
                     cache->getSize(api::PrimitiveCache::N_XS);
@@ -114,6 +145,10 @@ public:
                     cache->get(api::PrimitiveCache::P_XS);
                 const api::vec3 *reference_positions =
                     cache->get(api::PrimitiveCache::Pg_XS);
+                const unsigned int primitive_id_count =
+                    cache->getSize(api::PrimitiveCache::PrimitiveID_XP);
+                const int *primitive_ids =
+                    cache->get(api::PrimitiveCache::PrimitiveID_XP);
                 if (normal_count != 0u && tangent_count != 0u &&
                     normals && tangents) {
                     std::cerr << std::setprecision(9)
@@ -131,6 +166,11 @@ public:
                                   << reference_positions[0].x << ' '
                                   << reference_positions[0].y << ' '
                                   << reference_positions[0].z;
+                    }
+                    std::cerr << " primitive_id_count "
+                              << primitive_id_count;
+                    if (primitive_id_count != 0u && primitive_ids) {
+                        std::cerr << " primitive_id " << primitive_ids[0];
                     }
                     std::cerr << '\n';
                 }
@@ -205,6 +245,7 @@ public:
 private:
     std::string _cache_dir;
     bool _dump_surface_frame{};
+    std::optional<std::uint32_t> _dump_primitive_face;
     classic::Curves _curves;
     std::string _error;
     std::size_t _flush_count{};
@@ -255,6 +296,7 @@ int main(int argc, char **argv) try {
     std::vector<ModuleAttributeOverride> module_attribute_overrides;
     std::optional<std::filesystem::path> output_path;
     bool dump_surface_frame = false;
+    std::optional<std::uint32_t> dump_primitive_face;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if (argument == "--xgen-args" && index + 1 < argc) {
@@ -277,6 +319,9 @@ int main(int argc, char **argv) try {
                 argv[++index], argv[++index], argv[++index], argv[++index]});
         } else if (argument == "--dump-surface-frame") {
             dump_surface_frame = true;
+        } else if (argument == "--dump-primitive-ids" && index + 1 < argc) {
+            dump_primitive_face = static_cast<std::uint32_t>(
+                std::stoul(argv[++index]));
         } else if (argument == "--nxc" && index + 1 < argc) {
             output_path = argv[++index];
         } else if (argument == "--help") {
@@ -286,7 +331,7 @@ int main(int argc, char **argv) try {
                    "[--description <name> [--generator-mask <expression>] "
                    "[--fx-count <count>] "
                    "[--module-attr <module> <attribute> <type> <value> ...]] "
-                   "[--dump-surface-frame]\n";
+                   "[--dump-surface-frame] [--dump-primitive-ids <face>]\n";
             return 0;
         } else {
             throw std::invalid_argument("unknown or incomplete argument: " + argument);
@@ -295,20 +340,23 @@ int main(int argc, char **argv) try {
     if (xgen_args.empty()) {
         throw std::invalid_argument("--xgen-args must not be empty");
     }
-    if ((generator_mask || fx_count || !module_attribute_overrides.empty()) &&
+    if ((generator_mask || fx_count || !module_attribute_overrides.empty() ||
+         dump_surface_frame || dump_primitive_face) &&
         description_name.empty()) {
         throw std::invalid_argument(
-            "runtime overrides require --description");
+            "runtime overrides and calibration dumps require --description");
     }
 
-    TypedCallbacks callbacks{std::move(cache_dir), dump_surface_frame};
+    TypedCallbacks callbacks{
+        std::move(cache_dir), dump_surface_frame, dump_primitive_face};
     const auto evaluation_begin = std::chrono::steady_clock::now();
     {
         CleanupOnce cleanup;
         std::unique_ptr<api::PatchRenderer> patch{
             api::PatchRenderer::init(&callbacks, xgen_args.c_str())};
         if (!patch) { throw std::runtime_error("PatchRenderer::init returned null"); }
-        if (generator_mask || fx_count || !module_attribute_overrides.empty()) {
+        if (generator_mask || fx_count || !module_attribute_overrides.empty() ||
+            dump_surface_frame || dump_primitive_face) {
             XgDescription *matched_description = nullptr;
             for (const std::string &palette_name : XgPalette::palettes()) {
                 XgPalette *palette = XgPalette::palette(palette_name);
@@ -332,6 +380,14 @@ int main(int argc, char **argv) try {
                     !generator->setAttr("mask", *generator_mask, "float")) {
                     throw std::runtime_error(
                         "failed to override the active generator mask");
+                }
+            }
+            if (dump_surface_frame || dump_primitive_face) {
+                XgRenderer *renderer = matched_description->activeRenderer();
+                if (!renderer ||
+                    !renderer->setAttr("id_XP", "true", "bool")) {
+                    throw std::runtime_error(
+                        "failed to enable PrimitiveID_XP calibration channel");
                 }
             }
             if (fx_count) {
