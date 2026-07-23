@@ -238,6 +238,9 @@ position/radius-only comparison. Maya reported the same 25,738 genuinely
 moving eyelash points and `2.00000215` maximum delta; it also introduced
 20,280 tiny `1e-6`-scale differences on nominally static descriptions, whereas
 NanoXGen's deformation aliases kept those samples bit-identical.
+A matching Luisa fallback run produced the same moving-point count and a
+`2.00000334` maximum delta in 7.109 s cold; its larger costs were 2.927 s JIT
+and 1.147 s first dispatch/download/packing.
 
 This is a nonzero-motion correctness/performance calibration, not a
 multi-round p90 claim and not evidence of native compatibility for arbitrary
