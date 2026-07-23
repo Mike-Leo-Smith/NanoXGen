@@ -78,16 +78,21 @@ struct ClassicFloatRuntimeLuisaContext {
     const ClassicFloatCutModule &cut,
     std::uint32_t cvs_per_strand);
 
-// guide_axes stores float4(position, 0) guide-major; guide_frames stores three
-// float4 records per guide as (normal.xyz, u), (tangent.xyz, v), and
-// (referencePosition.xyz, 0);
+// guide_axes stores the cutFromTip(0)-rebuilt
+// float4(position, sourceGuideCumulativeDistance) render guides, guide-major.
+// guide_frames stores three float4 records per guide as
+// (normal.xyz, u), (tangent.xyz, v), and
+// (referencePosition.xyz, sourceSplineLength);
+// root-relative kernels require a fourth (worldGuideRoot.xyz, unused) record
+// and guide_axes then contains translation-free guide points.
 // guide_runtime stores uint2(faceId, exactSeExprPrefix); strand_guides stores
 // one guide index (or kInvalidIndex) per strand.
 [[nodiscard]] ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
     const ClassicFloatRuntimePlan &plan,
     const ClassicFloatClumpModule &clump,
     std::uint32_t cvs_per_strand,
-    std::uint32_t guide_count);
+    std::uint32_t guide_count,
+    bool root_relative = false);
 
 [[nodiscard]] ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
     const ClassicFloatRuntimePlan &plan,

@@ -35,6 +35,7 @@ make_packed_generate_from_roots_kernel(
 [[nodiscard]] ClassicBaseGenerateKernel make_classic_base_generate_kernel(
     std::uint32_t cvs_per_strand,
     float diameter = 0.0f,
-    float radius_scale = 1.0f);
+    float radius_scale = 1.0f,
+    bool root_relative = false);
 
 } // namespace nanoxgen::luisa_backend

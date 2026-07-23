@@ -186,7 +186,8 @@ PackedGenerateFromRootsKernel make_packed_generate_from_roots_kernel(
 }
 
 ClassicBaseGenerateKernel make_classic_base_generate_kernel(
-    std::uint32_t cvs_per_strand, float diameter, float radius_scale) {
+    std::uint32_t cvs_per_strand, float diameter, float radius_scale,
+    bool root_relative) {
     if (cvs_per_strand < 3u || !std::isfinite(diameter) || diameter < 0.0f ||
         !std::isfinite(radius_scale) || radius_scale < 0.0f) {
         throw std::invalid_argument(
@@ -231,8 +232,9 @@ ClassicBaseGenerateKernel make_classic_base_generate_kernel(
                            rebuilt_guides.read(first)) * weight;
                 influence += 1u;
             };
-            const Float3 position = root_position +
-                offset / max(weight_sum, 1.0e-20f);
+            const Float3 local = offset / max(weight_sum, 1.0e-20f);
+            const Float3 position =
+                root_relative ? local : root_position + local;
             points.write(strand * cvs_per_strand + cv,
                          make_float4(position, radius));
         };

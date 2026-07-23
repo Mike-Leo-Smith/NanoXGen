@@ -154,9 +154,12 @@ nanoxgen::PackedGeneratedCurves compact_gpu_output(
     for (std::size_t strand = 0u; strand < states.size(); ++strand) {
         if (states[strand].x < 0.0f) { continue; }
         const auto begin = raw_points.begin() + strand * cvs_per_strand;
+        const nanoxgen::Vec3 root = root_plan.roots[strand].position;
         for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
             const luisa::float4 point = begin[cv];
-            result.points.push_back({point.x, point.y, point.z, point.w});
+            result.points.push_back({
+                point.x + root.x, point.y + root.y, point.z + root.z,
+                point.w});
         }
         result.roots.push_back(root_plan.roots[strand]);
         result.root_uvs.push_back(root_plan.roots[strand].uv);
@@ -377,11 +380,35 @@ int main(int argc, char **argv) try {
         ClumpHostData host{};
         host.guide_count = static_cast<std::uint32_t>(
             binding.guide_axes.size() / cvs);
-        host.axes.reserve(binding.guide_axes.size());
-        for (const nanoxgen::Vec3 value : binding.guide_axes) {
-            host.axes.emplace_back(value.x, value.y, value.z, 0.0f);
+        if (binding.guide_render_axes.size() != binding.guide_axes.size() ||
+            binding.guide_local_axes.size() != binding.guide_axes.size() ||
+            binding.guide_local_render_axes.size() !=
+                binding.guide_axes.size() ||
+            binding.guide_spline_lengths.size() != host.guide_count) {
+            throw std::runtime_error(
+                "Classic clump binding has no prepared local render guides");
         }
-        host.frames.reserve(static_cast<std::size_t>(host.guide_count) * 3u);
+        host.axes.reserve(binding.guide_local_render_axes.size());
+        for (std::uint32_t guide = 0u; guide < host.guide_count; ++guide) {
+            float distance = 0.0f;
+            for (std::uint32_t cv = 0u; cv < cvs; ++cv) {
+                const std::size_t index =
+                    static_cast<std::size_t>(guide) * cvs + cv;
+                if (cv != 0u) {
+                    const nanoxgen::Vec3 delta =
+                        binding.guide_local_axes[index] -
+                        binding.guide_local_axes[index - 1u];
+                    distance += std::sqrt(
+                        delta.x * delta.x + delta.y * delta.y +
+                        delta.z * delta.z);
+                }
+                const nanoxgen::Vec3 value =
+                    binding.guide_local_render_axes[index];
+                host.axes.emplace_back(
+                    value.x, value.y, value.z, distance);
+            }
+        }
+        host.frames.reserve(static_cast<std::size_t>(host.guide_count) * 4u);
         host.runtime.reserve(static_cast<std::size_t>(host.guide_count) * 2u);
         for (std::uint32_t guide = 0u; guide < host.guide_count; ++guide) {
             const nanoxgen::Vec3 normal = binding.guide_normals[guide];
@@ -394,7 +421,12 @@ int main(int argc, char **argv) try {
                 ? binding.guide_axes[static_cast<std::size_t>(guide) * cvs]
                 : binding.guide_reference_positions[guide];
             host.frames.emplace_back(
-                domain_position.x, domain_position.y, domain_position.z, 0.0f);
+                domain_position.x, domain_position.y, domain_position.z,
+                binding.guide_spline_lengths[guide]);
+            const nanoxgen::Vec3 guide_root =
+                binding.guide_axes[static_cast<std::size_t>(guide) * cvs];
+            host.frames.emplace_back(
+                guide_root.x, guide_root.y, guide_root.z, 0.0f);
             host.runtime.push_back(binding.guide_face_ids[guide]);
             host.runtime.push_back(binding.guide_random_prefixes[guide]);
         }
@@ -474,7 +506,8 @@ int main(int argc, char **argv) try {
         Buffer<luisa::float4>, Buffer<std::uint32_t>,
         Buffer<std::uint32_t>>;
     auto base_kernel =
-        nanoxgen::luisa_backend::make_classic_base_generate_kernel(cvs);
+        nanoxgen::luisa_backend::make_classic_base_generate_kernel(
+            cvs, 0.0f, 1.0f, true);
     auto primitive_kernel =
         nanoxgen::luisa_backend::make_classic_runtime_primitive_kernel(
             runtime, cvs);
@@ -539,7 +572,7 @@ int main(int argc, char **argv) try {
                 auto kernel =
                     nanoxgen::luisa_backend::make_classic_runtime_clump_kernel(
                         runtime, runtime.clumps[effect.module_index], cvs,
-                        clump_host[effect.module_index].guide_count);
+                        clump_host[effect.module_index].guide_count, true);
                 future.emplace(std::async(
                     jit_launch,
                     [&device, shader_option,
@@ -667,13 +700,14 @@ int main(int argc, char **argv) try {
     std::optional<ErrorStats> error;
     if (options.cpu_validation) {
         cpu.emplace(nanoxgen::generate_xgen_classic_base_curves_cpu(
-            imported.asset, root_plan, cvs));
+            imported.asset, root_plan, cvs, 0.0f, 1.0f, true));
         if (!options.base_only) {
             nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
                 *cpu, runtime, 1.0f, root_plan.surface_tangents,
                 root_plan.random_prefixes, root_plan.primitive_ids, clump_data,
-                runtime_inputs.values, root_plan.reference_positions);
+                runtime_inputs.values, root_plan.reference_positions, true);
         }
+        nanoxgen::make_xgen_classic_curves_world_space(*cpu);
         nanoxgen::add_xgen_classic_renderer_endpoints(*cpu);
         error = compare(gpu, *cpu);
     }

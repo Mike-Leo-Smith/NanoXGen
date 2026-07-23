@@ -99,14 +99,12 @@ Expr<float> lower_ramp(span<const XgenFloatRampPoint> points,
             const float scale = 1.0f / (p1 - p0);
             const float d0 = lower == 0u
                 ? (k1 - k0) / (scale * (2.0f * p1 - 2.0f * p0))
-                : 0.5f *
-                      ((k1 - points[lower - 1u].value) /
-                       (scale * (p1 - points[lower - 1u].position)));
+                : (k1 - points[lower - 1u].value) /
+                      (scale * (p1 - points[lower - 1u].position));
             const float d1 = upper + 1u == points.size()
                 ? (k1 - k0) / (scale * (2.0f * p1 - 2.0f * p0))
-                : 0.5f *
-                      ((points[upper + 1u].value - k0) /
-                       (scale * (points[upper + 1u].position - p0)));
+                : (points[upper + 1u].value - k0) /
+                      (scale * (points[upper + 1u].position - p0));
             candidate = k0 * (u - 1.0f) * (u - 1.0f) *
                             (2.0f * u + 1.0f) +
                         k1 * u * u * (3.0f - 2.0f * u) +

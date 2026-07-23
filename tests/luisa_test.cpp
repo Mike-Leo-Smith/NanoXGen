@@ -278,6 +278,7 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
         nanoxgen::xgen_seexpr_hash_prefix(guide_prefix_input)};
     clump_data.strand_guide_indices.assign(strand_count, 0u);
     clump_data.strand_guide_indices.back() = nanoxgen::kInvalidIndex;
+    nanoxgen::prepare_xgen_classic_clump_runtime_data(clump_data);
     const std::array clump_bindings{clump_data};
     nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
         reference, plan, 1.0f, cpu_tangents, prefixes, primitive_ids,
@@ -294,8 +295,19 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
     auto noise_domain_buffer =
         device.create_buffer<luisa::float3>(noise_domains.size());
     std::vector<luisa::float4> clump_axes;
-    for (const nanoxgen::Vec3 value : clump_data.guide_axes) {
-        clump_axes.emplace_back(value.x, value.y, value.z, 0.0f);
+    float clump_distance = 0.0f;
+    for (std::size_t cv = 0u;
+         cv < clump_data.guide_render_axes.size(); ++cv) {
+        if (cv != 0u) {
+            const nanoxgen::Vec3 delta =
+                clump_data.guide_axes[cv] -
+                clump_data.guide_axes[cv - 1u];
+            clump_distance += std::sqrt(
+                delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+        }
+        const nanoxgen::Vec3 value = clump_data.guide_render_axes[cv];
+        clump_axes.emplace_back(
+            value.x, value.y, value.z, clump_distance);
     }
     const nanoxgen::Vec3 clump_normal = clump_data.guide_normals.front();
     const nanoxgen::Vec3 clump_tangent = clump_data.guide_tangents.front();
@@ -308,7 +320,8 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
         luisa::make_float4(
             clump_data.guide_reference_positions.front().x,
             clump_data.guide_reference_positions.front().y,
-            clump_data.guide_reference_positions.front().z, 0.0f)};
+            clump_data.guide_reference_positions.front().z,
+            clump_data.guide_spline_lengths.front())};
     const std::array<std::uint32_t, 2u> clump_runtime{
         clump_data.guide_face_ids.front(),
         clump_data.guide_random_prefixes.front()};
