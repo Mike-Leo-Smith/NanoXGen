@@ -207,14 +207,20 @@ def maya_command(args: argparse.Namespace, description: str) -> list[str]:
 def summarize_maya(args: argparse.Namespace) -> dict[str, Any]:
     if not args.no_outer_warmup:
         for description in args.descriptions:
+            print(f"maya warmup: {description}", file=sys.stderr, flush=True)
             run_json(maya_command(args, description))
 
     rounds: list[list[dict[str, Any]]] = []
     wall_rounds: list[list[float]] = []
-    for _ in range(args.rounds):
+    for round_index in range(args.rounds):
         current: list[dict[str, Any]] = []
         current_wall: list[float] = []
         for description in args.descriptions:
+            print(
+                f"maya round {round_index + 1}/{args.rounds}: {description}",
+                file=sys.stderr,
+                flush=True,
+            )
             records, wall_ms = run_json_timed(
                 maya_command(args, description))
             record = records[-1]
