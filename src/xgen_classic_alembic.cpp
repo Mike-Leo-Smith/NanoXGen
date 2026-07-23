@@ -39,6 +39,13 @@ struct LoadedMesh {
     Imath::M44d transform{};
 };
 
+struct ArchiveSampleSelection {
+    bool first_sample{true};
+    double time_seconds{};
+    ClassicAlembicInterpolation interpolation{
+        ClassicAlembicInterpolation::None};
+};
+
 struct SubdPosition {
     float x{};
     float y{};
@@ -193,6 +200,7 @@ struct MeshSearch {
     std::string target;
     std::size_t visited{};
     std::size_t max_objects{};
+    ArchiveSampleSelection selection;
     std::vector<std::pair<Abc::IObject, Imath::M44d>> matches;
 };
 
@@ -205,6 +213,76 @@ bool finite(const Imath::V3d &value) noexcept {
            std::isfinite(value.z);
 }
 
+struct SampleBlend {
+    AbcCore::index_t lower{};
+    AbcCore::index_t upper{};
+    double alpha{};
+};
+
+template<typename Schema>
+SampleBlend select_samples(
+    const Schema &schema, const ArchiveSampleSelection &selection) {
+    const std::size_t sample_count = schema.getNumSamples();
+    if (sample_count == 0u) { fail("schema has no samples"); }
+    if (selection.first_sample || sample_count == 1u) {
+        return {};
+    }
+    const auto sampling = schema.getTimeSampling();
+    if (!sampling) { fail("schema has no time sampling"); }
+    const auto lower = sampling->getFloorIndex(
+        selection.time_seconds,
+        static_cast<AbcCore::index_t>(sample_count));
+    if (selection.interpolation == ClassicAlembicInterpolation::None) {
+        return {lower.first, lower.first, 0.0};
+    }
+    const auto upper = sampling->getCeilIndex(
+        selection.time_seconds,
+        static_cast<AbcCore::index_t>(sample_count));
+    if (lower.first == upper.first || !(upper.second > lower.second)) {
+        return {lower.first, lower.first, 0.0};
+    }
+    const double alpha = std::clamp(
+        (selection.time_seconds - lower.second) /
+            (upper.second - lower.second),
+        0.0, 1.0);
+    return {lower.first, upper.first, alpha};
+}
+
+Imath::M44d sample_transform(
+    const AbcGeom::IXformSchema &schema,
+    const ArchiveSampleSelection &selection) {
+    const SampleBlend blend = select_samples(schema, selection);
+    AbcGeom::XformSample lower;
+    schema.get(lower, Abc::ISampleSelector{blend.lower});
+    Imath::M44d result = lower.getMatrix();
+    if (blend.lower == blend.upper) { return result; }
+    AbcGeom::XformSample upper;
+    schema.get(upper, Abc::ISampleSelector{blend.upper});
+    if (!lower.isTopologyEqual(upper) ||
+        lower.getInheritsXforms() != upper.getInheritsXforms()) {
+        fail("transform topology changes between motion samples");
+    }
+    AbcGeom::XformSample interpolated;
+    interpolated.setInheritsXforms(lower.getInheritsXforms());
+    for (std::size_t op_index = 0u;
+         op_index < lower.getNumOps(); ++op_index) {
+        AbcGeom::XformOp op = lower.getOp(op_index);
+        const AbcGeom::XformOp upper_op = upper.getOp(op_index);
+        for (std::size_t channel = 0u;
+             channel < op.getNumChannels(); ++channel) {
+            const double value =
+                op.getChannelValue(channel) * (1.0 - blend.alpha) +
+                upper_op.getChannelValue(channel) * blend.alpha;
+            if (!std::isfinite(value)) {
+                fail("transform interpolation produced a non-finite value");
+            }
+            op.setChannelValue(channel, value);
+        }
+        interpolated.addOp(op);
+    }
+    return interpolated.getMatrix();
+}
+
 void find_meshes(const Abc::IObject &object, const Imath::M44d &parent_transform,
                  bool inside_target, MeshSearch &search) {
     if (++search.visited > search.max_objects) {
@@ -214,10 +292,8 @@ void find_meshes(const Abc::IObject &object, const Imath::M44d &parent_transform
     if (AbcGeom::IXform::matches(object.getHeader())) {
         AbcGeom::IXform xform{object, Abc::kWrapExisting};
         if (xform.getSchema().getNumSamples() != 0u) {
-            AbcGeom::XformSample sample;
-            xform.getSchema().get(
-                sample, Abc::ISampleSelector{AbcCore::index_t{0}});
-            transform = sample.getMatrix() * parent_transform;
+            transform = sample_transform(
+                xform.getSchema(), search.selection) * parent_transform;
         }
     }
     const bool selected = inside_target || object.getName() == search.target;
@@ -229,6 +305,39 @@ void find_meshes(const Abc::IObject &object, const Imath::M44d &parent_transform
         const Abc::ObjectHeader &header = object.getChildHeader(index);
         find_meshes(Abc::IObject{object, header.getName()}, transform,
                     selected, search);
+    }
+}
+
+void inspect_static_deformation(
+    const Abc::IObject &object, std::string_view target,
+    bool inside_target, bool animated_ancestor,
+    std::size_t &visited, std::size_t max_objects,
+    std::size_t &matches, bool &is_static) {
+    if (++visited > max_objects) { fail("object limit exceeded"); }
+    bool animated = animated_ancestor;
+    if (AbcGeom::IXform::matches(object.getHeader())) {
+        AbcGeom::IXform xform{object, Abc::kWrapExisting};
+        animated |= xform.getSchema().getNumSamples() > 1u;
+    }
+    const bool selected = inside_target || object.getName() == target;
+    if (selected && (AbcGeom::IPolyMesh::matches(object.getHeader()) ||
+                     AbcGeom::ISubD::matches(object.getHeader()))) {
+        ++matches;
+        std::size_t samples{};
+        if (AbcGeom::IPolyMesh::matches(object.getHeader())) {
+            AbcGeom::IPolyMesh mesh{object, Abc::kWrapExisting};
+            samples = mesh.getSchema().getNumSamples();
+        } else {
+            AbcGeom::ISubD mesh{object, Abc::kWrapExisting};
+            samples = mesh.getSchema().getNumSamples();
+        }
+        is_static &= !animated && samples <= 1u;
+    }
+    for (std::size_t index = 0u; index < object.getNumChildren(); ++index) {
+        const Abc::ObjectHeader &header = object.getChildHeader(index);
+        inspect_static_deformation(
+            Abc::IObject{object, header.getName()}, target, selected,
+            animated, visited, max_objects, matches, is_static);
     }
 }
 
@@ -256,6 +365,49 @@ LoadedMesh copy_mesh_sample(const Sample &sample, const Imath::M44d &transform,
     result.face_counts.assign(counts->get(), counts->get() + counts->size());
     result.face_indices.assign(indices->get(), indices->get() + indices->size());
     result.transform = transform;
+    return result;
+}
+
+template<typename Schema, typename Sample>
+LoadedMesh load_mesh_sample(
+    const Schema &schema, const Imath::M44d &transform,
+    const ClassicAlembicLimits &limits,
+    const ArchiveSampleSelection &selection) {
+    const SampleBlend blend = select_samples(schema, selection);
+    Sample lower;
+    schema.get(lower, Abc::ISampleSelector{blend.lower});
+    LoadedMesh result = copy_mesh_sample(lower, transform, limits);
+    if (blend.lower == blend.upper) { return result; }
+    Sample upper;
+    schema.get(upper, Abc::ISampleSelector{blend.upper});
+    const auto upper_positions = upper.getPositions();
+    const auto upper_counts = upper.getFaceCounts();
+    const auto upper_indices = upper.getFaceIndices();
+    if (!upper_positions || !upper_counts || !upper_indices ||
+        upper_positions->size() != result.positions.size() ||
+        upper_counts->size() != result.face_counts.size() ||
+        upper_indices->size() != result.face_indices.size() ||
+        !std::equal(
+            upper_counts->get(),
+            upper_counts->get() + upper_counts->size(),
+            result.face_counts.begin()) ||
+        !std::equal(
+            upper_indices->get(),
+            upper_indices->get() + upper_indices->size(),
+            result.face_indices.begin())) {
+        fail("mesh topology changes between motion samples");
+    }
+    const float alpha = static_cast<float>(blend.alpha);
+    for (std::size_t index = 0u; index < result.positions.size(); ++index) {
+        const Imath::V3f a = result.positions[index];
+        const Imath::V3f b = (*upper_positions)[index];
+        const Imath::V3f value = a * (1.0f - alpha) + b * alpha;
+        if (!std::isfinite(value.x) || !std::isfinite(value.y) ||
+            !std::isfinite(value.z)) {
+            fail("position interpolation produced a non-finite value");
+        }
+        result.positions[index] = value;
+    }
     return result;
 }
 
@@ -289,8 +441,10 @@ void load_reference_positions(const Schema &schema, LoadedMesh &mesh) {
 }
 
 LoadedMesh load_patch_mesh(const Abc::IArchive &archive, std::string_view name,
-                           const ClassicAlembicLimits &limits) {
-    MeshSearch search{std::string{name}, 0u, limits.max_objects, {}};
+                           const ClassicAlembicLimits &limits,
+                           const ArchiveSampleSelection &selection) {
+    MeshSearch search{
+        std::string{name}, 0u, limits.max_objects, selection, {}};
     find_meshes(archive.getTop(), Imath::M44d{}, false, search);
     if (search.matches.empty()) {
         fail("patch object not found: " + std::string{name});
@@ -304,10 +458,11 @@ LoadedMesh load_patch_mesh(const Abc::IArchive &archive, std::string_view name,
         if (mesh.getSchema().getNumSamples() == 0u) {
             fail("polygon mesh has no samples: " + object.getFullName());
         }
-        AbcGeom::IPolyMeshSchema::Sample sample;
-        mesh.getSchema().get(
-            sample, Abc::ISampleSelector{AbcCore::index_t{0}});
-        LoadedMesh result = copy_mesh_sample(sample, transform, limits);
+        LoadedMesh result =
+            load_mesh_sample<
+                AbcGeom::IPolyMeshSchema,
+                AbcGeom::IPolyMeshSchema::Sample>(
+                mesh.getSchema(), transform, limits, selection);
         load_reference_positions(mesh.getSchema(), result);
         return result;
     }
@@ -315,10 +470,9 @@ LoadedMesh load_patch_mesh(const Abc::IArchive &archive, std::string_view name,
     if (mesh.getSchema().getNumSamples() == 0u) {
         fail("subdivision mesh has no samples: " + object.getFullName());
     }
-    AbcGeom::ISubDSchema::Sample sample;
-    mesh.getSchema().get(
-        sample, Abc::ISampleSelector{AbcCore::index_t{0}});
-    LoadedMesh result = copy_mesh_sample(sample, transform, limits);
+    LoadedMesh result =
+        load_mesh_sample<AbcGeom::ISubDSchema, AbcGeom::ISubDSchema::Sample>(
+            mesh.getSchema(), transform, limits, selection);
     load_reference_positions(mesh.getSchema(), result);
     return result;
 }
@@ -777,10 +931,11 @@ std::uint32_t vertex_index(const LoadedMesh &mesh, std::size_t index,
 
 } // namespace
 
-ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
+ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input_impl(
     const ClassicDescription &description,
     const std::filesystem::path &archive_path,
-    const ClassicAlembicLimits &limits) {
+    const ClassicAlembicLimits &limits,
+    const ArchiveSampleSelection &selection) {
     if (description.patches.empty()) {
         fail("description has no patches");
     }
@@ -800,7 +955,8 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
     float guide_cage_root_squared_distance_sum = 0.0f;
     std::size_t subdivision_guide_count = 0u;
     for (const ClassicPatch &patch : description.patches) {
-        const LoadedMesh mesh = load_patch_mesh(archive, patch.name, limits);
+        const LoadedMesh mesh = load_patch_mesh(
+            archive, patch.name, limits, selection);
         result.source_vertex_count += mesh.positions.size();
         result.source_face_count += mesh.face_counts.size();
         const std::vector<std::size_t> offsets = face_offsets(mesh);
@@ -1252,6 +1408,68 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
         result.guide_cage_root_rms_distance = std::sqrt(
             guide_cage_root_squared_distance_sum /
             static_cast<float>(subdivision_guide_count));
+    }
+    return result;
+}
+
+ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
+    const ClassicDescription &description,
+    const std::filesystem::path &archive_path,
+    const ClassicAlembicLimits &limits) {
+    return build_xgen_classic_alembic_asset_input_impl(
+        description, archive_path, limits, {});
+}
+
+ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
+    const ClassicDescription &description,
+    const std::filesystem::path &archive_path,
+    const ClassicAlembicFrameSample &sample,
+    const ClassicAlembicLimits &limits) {
+    if (!std::isfinite(sample.frame) ||
+        !std::isfinite(sample.lookup_offset) ||
+        !std::isfinite(sample.frames_per_second) ||
+        !(sample.frames_per_second > 0.0)) {
+        fail("motion frame, lookup offset, and FPS must be finite with positive FPS");
+    }
+    const double time_seconds =
+        (sample.frame + sample.lookup_offset) /
+        sample.frames_per_second;
+    if (!std::isfinite(time_seconds)) {
+        fail("motion lookup time is not finite");
+    }
+    return build_xgen_classic_alembic_asset_input_impl(
+        description, archive_path, limits,
+        {false, time_seconds, sample.interpolation});
+}
+
+bool xgen_classic_alembic_deformation_is_static(
+    const ClassicDescription &description,
+    const std::filesystem::path &archive_path,
+    const ClassicAlembicLimits &limits) {
+    if (description.patches.empty()) {
+        fail("description has no patches");
+    }
+    if (limits.max_objects == 0u) {
+        fail("object limit must be nonzero");
+    }
+    AbcFactory::IFactory factory;
+    const Abc::IArchive archive = factory.getArchive(archive_path.string());
+    if (!archive.valid()) {
+        fail("cannot open archive: " + archive_path.string());
+    }
+    bool result = true;
+    for (const ClassicPatch &patch : description.patches) {
+        std::size_t visited{};
+        std::size_t matches{};
+        inspect_static_deformation(
+            archive.getTop(), patch.name, false, false, visited,
+            limits.max_objects, matches, result);
+        if (matches == 0u) {
+            fail("patch object not found: " + patch.name);
+        }
+        if (matches != 1u) {
+            fail("patch object resolves to multiple meshes: " + patch.name);
+        }
     }
     return result;
 }

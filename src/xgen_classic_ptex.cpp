@@ -1,6 +1,7 @@
 #include "nanoxgen/xgen_classic_ptex.h"
 
 #include "nanoxgen/xgen_ptex.h"
+#include "xgen_classic_path.h"
 
 #include <algorithm>
 #include <array>
@@ -20,11 +21,11 @@ std::filesystem::path resolve_map(
     std::filesystem::path result;
     if (value.starts_with(prefix)) {
         value.remove_prefix(prefix.size());
-        while (value.starts_with('/')) { value.remove_prefix(1u); }
+        value = detail::strip_classic_root_separators(value);
         result = description_directory /
-                 std::filesystem::path{std::string{value}};
+                 detail::classic_path(value);
     } else {
-        result = std::filesystem::path{std::string{value}};
+        result = detail::classic_path(value);
     }
     if (result.extension() != ".ptx") {
         result /= std::string{patch_name} + ".ptx";

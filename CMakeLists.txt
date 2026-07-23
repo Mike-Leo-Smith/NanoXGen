@@ -324,6 +324,11 @@ if(NANOXGEN_ENABLE_ALEMBIC AND NANOXGEN_ENABLE_PTEX)
     tools/xgen_classic_cold_benchmark.cpp)
   target_link_libraries(
     nanoxgen_xgen_classic_cold_benchmark PRIVATE nanoxgen_classic_native)
+  add_executable(
+    nanoxgen_xgen_classic_motion
+    tools/xgen_classic_motion.cpp)
+  target_link_libraries(
+    nanoxgen_xgen_classic_motion PRIVATE nanoxgen_classic_native)
   if(NANOXGEN_BUILD_TESTS)
     add_executable(nanoxgen_classic_root_tests tests/classic_root_test.cpp)
     target_link_libraries(

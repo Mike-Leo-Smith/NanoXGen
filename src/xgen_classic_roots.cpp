@@ -1,5 +1,6 @@
 #include "nanoxgen/xgen_classic_roots.h"
 
+#include "xgen_classic_path.h"
 #include "nanoxgen/generate.h"
 #include "nanoxgen/xgen_expression.h"
 #include "nanoxgen/xgen_ptex.h"
@@ -7,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <memory>
@@ -120,11 +122,11 @@ std::filesystem::path map_path(
     std::filesystem::path result;
     if (value.starts_with(prefix)) {
         value.remove_prefix(prefix.size());
-        while (value.starts_with('/')) { value.remove_prefix(1u); }
+        value = detail::strip_classic_root_separators(value);
         result = description_directory /
-                 std::filesystem::path{std::string{value}};
+                 detail::classic_path(value);
     } else {
-        result = std::filesystem::path{std::string{value}};
+        result = detail::classic_path(value);
     }
     if (result.extension() != ".ptx") {
         result /= std::string{patch_name} + ".ptx";
@@ -736,6 +738,7 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
             }
             result.roots.push_back({position, normal, uv, triangle_index,
                                     barycentric, face.face_id});
+            result.patch_names.push_back(face.patch_name);
             result.reference_positions.push_back(reference_position);
             result.surface_tangents.push_back(surface_tangent);
             result.primitive_ids.push_back(accepted_candidate);
@@ -832,6 +835,7 @@ ClassicRootPlan build_xgen_classic_explicit_root_plan(
         result.roots.push_back({
             current_position, current.normal, sample.uv, 0u, {},
             sample.face_id});
+        result.patch_names.emplace_back(patch_name);
         result.reference_positions.push_back(reference.position);
         result.surface_tangents.push_back(current.tangent);
         result.primitive_ids.push_back(sample.primitive_id);
@@ -852,6 +856,194 @@ ClassicRootPlan build_xgen_classic_explicit_root_plan(
             static_cast<std::uint32_t>(result.influences.size()));
     }
     return result;
+}
+
+ClassicRootDeformationTopology prepare_xgen_classic_root_deformation(
+    const ClassicRootPlan &reference,
+    const ClassicAlembicAssetInput &reference_surface) {
+    const std::size_t count = reference.roots.size();
+    if (count == 0u || reference.patch_names.size() != count ||
+        reference.surface_tangents.size() != count ||
+        reference.reference_positions.size() != count ||
+        reference.primitive_ids.size() != count ||
+        reference.random_prefixes.size() != count ||
+        reference.influence_offsets.size() != count + 1u) {
+        fail("motion reference root plan is inconsistent");
+    }
+    struct FaceIdentity {
+        std::string_view patch;
+        std::uint32_t face{};
+        bool operator==(const FaceIdentity &) const noexcept = default;
+    };
+    struct FaceIdentityHash {
+        std::size_t operator()(const FaceIdentity &value) const noexcept {
+            std::size_t hash = std::hash<std::string_view>{}(value.patch);
+            hash ^= static_cast<std::size_t>(value.face) +
+                0x9e3779b9u + (hash << 6u) + (hash >> 2u);
+            return hash;
+        }
+    };
+    struct RootIdentity {
+        std::uint32_t face_index{};
+        std::uint32_t u{};
+        std::uint32_t v{};
+        bool operator==(const RootIdentity &) const noexcept = default;
+    };
+    if (reference_surface.surface_faces.size() >
+        std::numeric_limits<std::uint32_t>::max()) {
+        fail("motion surface face count exceeds uint32");
+    }
+    std::unordered_map<FaceIdentity, std::uint32_t, FaceIdentityHash>
+        face_indices;
+    face_indices.reserve(reference_surface.surface_faces.size());
+    for (std::size_t index = 0u;
+         index < reference_surface.surface_faces.size(); ++index) {
+        const auto &face = reference_surface.surface_faces[index];
+        if (!face_indices.emplace(
+                FaceIdentity{face.patch_name, face.face_id},
+                static_cast<std::uint32_t>(index)).second) {
+            fail("motion surface contains a duplicate coarse face identity");
+        }
+    }
+    ClassicRootDeformationTopology result{};
+    result.surface_face_indices.resize(count);
+    std::vector<RootIdentity> identities;
+    identities.reserve(count);
+    for (std::size_t index = 0u; index < count; ++index) {
+        const RootSample &root = reference.roots[index];
+        const FaceIdentity face{
+            reference.patch_names[index], root.surface_face_id};
+        const auto found = face_indices.find(face);
+        if (found == face_indices.end()) {
+            fail("motion sample is missing a reference root face");
+        }
+        result.surface_face_indices[index] = found->second;
+        identities.push_back({
+            found->second, std::bit_cast<std::uint32_t>(root.uv.x),
+            std::bit_cast<std::uint32_t>(root.uv.y)});
+    }
+    std::sort(
+        identities.begin(), identities.end(),
+        [](const RootIdentity &a, const RootIdentity &b) {
+            if (a.face_index != b.face_index) {
+                return a.face_index < b.face_index;
+            }
+            if (a.u != b.u) { return a.u < b.u; }
+            return a.v < b.v;
+        });
+    if (std::adjacent_find(identities.begin(), identities.end()) !=
+        identities.end()) {
+        fail("motion reference contains a duplicate root identity");
+    }
+    return result;
+}
+
+ClassicDeformedRootPlan deform_xgen_classic_root_plan(
+    const ClassicRootPlan &reference,
+    const ClassicRootDeformationTopology &topology,
+    const ClassicAlembicAssetInput &surface) {
+    const std::size_t count = reference.roots.size();
+    if (topology.surface_face_indices.size() != count) {
+        fail("motion root deformation topology is inconsistent");
+    }
+    ClassicDeformedRootPlan result{};
+    result.roots.resize(count);
+    result.surface_tangents.resize(count);
+    for (std::size_t index = 0u; index < count; ++index) {
+        const RootSample &reference_root = reference.roots[index];
+        RootSample root = reference_root;
+        const std::uint32_t face_index =
+            topology.surface_face_indices[index];
+        if (face_index >= surface.surface_faces.size()) {
+            fail("motion sample is missing a reference root face");
+        }
+        const auto &face = surface.surface_faces[face_index];
+        if (face.patch_name != reference.patch_names[index] ||
+            face.face_id != reference_root.surface_face_id) {
+            fail("motion surface coarse face topology changed");
+        }
+        if (face.uv_resolution != 0u) {
+            if (!surface.reference_surface) {
+                fail("motion subdivision sample has no surface evaluator");
+            }
+            const ClassicReferenceSurfaceSample current =
+                surface.reference_surface->evaluate_current(
+                    face.patch_name, face.face_id,
+                    reference_root.uv.x, reference_root.uv.y);
+            root.position = current.position;
+            root.normal = current.normal;
+            result.surface_tangents[index] = current.tangent;
+
+            const std::uint32_t resolution = face.uv_resolution;
+            const float scaled_u =
+                reference_root.uv.x * static_cast<float>(resolution);
+            const float scaled_v =
+                reference_root.uv.y * static_cast<float>(resolution);
+            const std::uint32_t cell_u = std::min(
+                static_cast<std::uint32_t>(scaled_u), resolution - 1u);
+            const std::uint32_t cell_v = std::min(
+                static_cast<std::uint32_t>(scaled_v), resolution - 1u);
+            const float local_u = scaled_u - static_cast<float>(cell_u);
+            const float local_v = scaled_v - static_cast<float>(cell_v);
+            root.triangle_index = face.first_triangle +
+                (cell_v * resolution + cell_u) * 2u;
+            if (local_u >= local_v) {
+                root.barycentric = {local_u - local_v, local_v};
+            } else {
+                ++root.triangle_index;
+                root.barycentric = {local_u, local_v - local_u};
+            }
+        } else {
+            if (reference_root.triangle_index >=
+                surface.asset.triangles.size()) {
+                fail("motion polygon root triangle is out of range");
+            }
+            const UInt3 triangle =
+                surface.asset.triangles[reference_root.triangle_index];
+            if (triangle.x >= surface.asset.positions.size() ||
+                triangle.y >= surface.asset.positions.size() ||
+                triangle.z >= surface.asset.positions.size()) {
+                fail("motion polygon root topology changed");
+            }
+            const float b0 =
+                1.0f - reference_root.barycentric.x -
+                reference_root.barycentric.y;
+            root.position =
+                surface.asset.positions[triangle.x] * b0 +
+                surface.asset.positions[triangle.y] *
+                    reference_root.barycentric.x +
+                surface.asset.positions[triangle.z] *
+                    reference_root.barycentric.y;
+            root.normal = normalize(
+                surface.asset.normals[triangle.x] * b0 +
+                surface.asset.normals[triangle.y] *
+                    reference_root.barycentric.x +
+                surface.asset.normals[triangle.z] *
+                    reference_root.barycentric.y);
+            result.surface_tangents[index] = normalize(
+                surface.asset.positions[triangle.y] -
+                surface.asset.positions[triangle.x]);
+        }
+        if (!std::isfinite(root.position.x) ||
+            !std::isfinite(root.position.y) ||
+            !std::isfinite(root.position.z) ||
+            !std::isfinite(root.normal.x) ||
+            !std::isfinite(root.normal.y) ||
+            !std::isfinite(root.normal.z)) {
+            fail("motion root evaluation produced a non-finite value");
+        }
+        result.roots[index] = root;
+    }
+    return result;
+}
+
+ClassicDeformedRootPlan deform_xgen_classic_root_plan(
+    const ClassicRootPlan &reference,
+    const ClassicAlembicAssetInput &surface) {
+    return deform_xgen_classic_root_plan(
+        reference,
+        prepare_xgen_classic_root_deformation(reference, surface),
+        surface);
 }
 
 namespace {

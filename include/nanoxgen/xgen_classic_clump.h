@@ -5,6 +5,7 @@
 #include "nanoxgen/xgen_classic_runtime.h"
 
 #include <filesystem>
+#include <span>
 #include <vector>
 
 namespace nanoxgen {
@@ -22,6 +23,16 @@ namespace nanoxgen {
     std::uint32_t cvs_per_guide,
     NanoXGenContext *context = nullptr);
 
+[[nodiscard]] ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
+    const ClassicDescription &description,
+    const ClassicAlembicAssetInput &surface,
+    const std::filesystem::path &description_directory,
+    std::span<const RootSample> strand_roots,
+    const ClassicFloatRuntimePlan &runtime_plan,
+    std::size_t module_index,
+    std::uint32_t cvs_per_guide,
+    NanoXGenContext *context = nullptr);
+
 // Bind independent top-level ClumpingFX modules using the same optional
 // executor as description/PTEX preparation. Results retain authored module
 // order; recursive upstream evaluation inside each module remains deterministic.
@@ -31,6 +42,16 @@ build_xgen_classic_clump_runtime_data_parallel(
     const ClassicAlembicAssetInput &surface,
     const std::filesystem::path &description_directory,
     const ClassicRootPlan &strand_roots,
+    const ClassicFloatRuntimePlan &runtime_plan,
+    std::uint32_t cvs_per_guide,
+    NanoXGenContext *context = nullptr);
+
+[[nodiscard]] std::vector<ClassicClumpRuntimeData>
+build_xgen_classic_clump_runtime_data_parallel(
+    const ClassicDescription &description,
+    const ClassicAlembicAssetInput &surface,
+    const std::filesystem::path &description_directory,
+    std::span<const RootSample> strand_roots,
     const ClassicFloatRuntimePlan &runtime_plan,
     std::uint32_t cvs_per_guide,
     NanoXGenContext *context = nullptr);

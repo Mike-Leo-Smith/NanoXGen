@@ -1,5 +1,6 @@
 #include "nanoxgen/asset.h"
 #include "nanoxgen/xgen_classic_roots.h"
+#include "nanoxgen/xgen_classic_collection.h"
 #include "nanoxgen/xgen_classic_ptex.h"
 #include "nanoxgen/xgen_samples.h"
 
@@ -303,6 +304,129 @@ void test_directional_guide_weight() {
             "opposite-facing guide was not rejected");
 }
 
+void test_motion_root_rebind_and_duplicate_identity() {
+    nanoxgen::ClassicAlembicAssetInput deformed = surface();
+    deformed.surface_faces.front().uv_resolution = 0u;
+    for (nanoxgen::Vec3 &position : deformed.asset.positions) {
+        position.y += 2.0f;
+    }
+    nanoxgen::ClassicRootPlan reference{};
+    reference.roots.push_back({
+        {0.25f, 0.0f, 0.25f}, {0.0f, 1.0f, 0.0f},
+        {0.25f, 0.25f}, 0u, {0.0f, 0.25f}, 0u});
+    reference.patch_names.emplace_back("testPatch");
+    reference.reference_positions.push_back({0.25f, 0.0f, 0.25f});
+    reference.surface_tangents.push_back({1.0f, 0.0f, 0.0f});
+    reference.primitive_ids.push_back(1u);
+    reference.random_prefixes.push_back(2u);
+    reference.influence_offsets = {0u, 0u};
+    const nanoxgen::ClassicDeformedRootPlan motion =
+        nanoxgen::deform_xgen_classic_root_plan(reference, deformed);
+    require(
+        motion.roots.size() == 1u &&
+            std::abs(motion.roots.front().position.x - 0.25f) < 1.0e-6f &&
+            std::abs(motion.roots.front().position.y - 2.0f) < 1.0e-6f &&
+            std::abs(motion.roots.front().position.z - 0.25f) < 1.0e-6f,
+        "motion root did not follow the deformed polygon sample");
+    require(
+        std::bit_cast<std::uint32_t>(motion.roots.front().uv.x) ==
+                std::bit_cast<std::uint32_t>(
+                    reference.roots.front().uv.x) &&
+            motion.roots.front().surface_face_id ==
+                reference.roots.front().surface_face_id,
+        "motion root identity changed during deformation");
+
+    reference.roots.push_back(reference.roots.front());
+    reference.patch_names.push_back(reference.patch_names.front());
+    reference.reference_positions.push_back(
+        reference.reference_positions.front());
+    reference.surface_tangents.push_back(
+        reference.surface_tangents.front());
+    reference.primitive_ids.push_back(2u);
+    reference.random_prefixes.push_back(3u);
+    reference.influence_offsets.push_back(0u);
+    try {
+        (void)nanoxgen::deform_xgen_classic_root_plan(
+            reference, deformed);
+    } catch (const std::runtime_error &error) {
+        require(
+            std::string{error.what()}.find("duplicate root identity") !=
+                std::string::npos,
+            "wrong duplicate motion root diagnostic");
+        return;
+    }
+    throw std::runtime_error("duplicate motion root identity was accepted");
+}
+
+void test_motion_sampling_contract() {
+    nanoxgen::ClassicMotionSampling sampling{};
+    sampling.frame = 101.0;
+    sampling.frames_per_second = 24.0;
+    sampling.lookup_offsets = {-0.25, 0.0, 0.5};
+    sampling.placements = {-0.25f, 0.0f, 0.5f};
+    nanoxgen::validate_xgen_classic_motion_sampling(sampling);
+
+    sampling.lookup_offsets[1u] = sampling.lookup_offsets[0u];
+    // Repeated lookup is legal and implements a strobe while placement still
+    // advances through the renderer shutter.
+    nanoxgen::validate_xgen_classic_motion_sampling(sampling);
+    sampling.placements[2u] = sampling.placements[1u];
+    try {
+        nanoxgen::validate_xgen_classic_motion_sampling(sampling);
+    } catch (const std::invalid_argument &error) {
+        require(
+            std::string{error.what()}.find("strictly increasing") !=
+                std::string::npos,
+            "wrong motion placement diagnostic");
+        return;
+    }
+    throw std::runtime_error(
+        "duplicate renderer motion placement was accepted");
+}
+
+void test_description_root_resolution() {
+    const auto stamp = std::chrono::steady_clock::now()
+                           .time_since_epoch().count();
+    const std::filesystem::path project =
+        std::filesystem::temp_directory_path() /
+        ("nanoxgen-classic-root-resolution-" +
+         std::to_string(stamp));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code error;
+            std::filesystem::remove_all(path, error);
+        }
+    } cleanup{project};
+    const std::filesystem::path expected =
+        project / "xgen" / "collections" / "rabbit";
+    std::filesystem::create_directories(expected / "body");
+    std::filesystem::create_directories(expected / "eyelash");
+    nanoxgen::ClassicCollection collection{};
+    collection.palette_attributes = {
+        {"name", "rabbit", 1u},
+        {"xgProjectPath", "Z:\\old\\rabbit\\", 2u},
+        {"xgDataPath",
+         "Z:\\old\\rabbit\\xgen/collections\\rabbit", 3u}};
+    collection.descriptions = {
+        {"body", {}, {}, {}, {}, 4u},
+        {"eyelash", {}, {}, {}, {}, 5u}};
+    require(
+        nanoxgen::resolve_xgen_classic_descriptions_root(
+            collection, project / "rabbit.xgen", project) == expected,
+        "relocated mixed-separator xgDataPath was not resolved");
+    collection.palette_attributes[2u].value =
+        "${PROJECT}xgen\\collections/rabbit";
+    require(
+        nanoxgen::resolve_xgen_classic_descriptions_root(
+            collection, project / "rabbit.xgen", project) == expected,
+        "${PROJECT} path without a separator was not resolved");
+    require(
+        nanoxgen::resolve_xgen_classic_descriptions_root(
+            collection, project / "rabbit.xgen", expected) == expected,
+        "explicit description root was not preserved");
+}
+
 } // namespace
 
 int main() try {
@@ -312,6 +436,9 @@ int main() try {
     test_face_umbrella_guide_prefilter();
     test_maya_2027_sample_pattern();
     test_directional_guide_weight();
+    test_motion_root_rebind_and_duplicate_identity();
+    test_motion_sampling_contract();
+    test_description_root_resolution();
     std::cout << "Classic root generation tests passed\n";
     return 0;
 } catch (const std::exception &error) {

@@ -182,6 +182,9 @@ int main(int argc, char **argv) try {
     const nanoxgen::ClassicCollection collection =
         nanoxgen::load_xgen_classic_collection(options.collection);
     const Clock::time_point parse_end = Clock::now();
+    const std::filesystem::path descriptions_root =
+        nanoxgen::resolve_xgen_classic_descriptions_root(
+            collection, options.collection, options.descriptions_root);
     std::uint64_t total_candidates{};
     std::uint64_t total_strands{};
     std::uint64_t total_points{};
@@ -249,7 +252,7 @@ int main(int argc, char **argv) try {
                 ? options.archive_directory
                 : options.archive_directory / (description.name + ".abc");
         const std::filesystem::path description_directory =
-            options.descriptions_root / description.name;
+            descriptions_root / description.name;
         const Clock::time_point import_begin = Clock::now();
         const nanoxgen::ClassicAlembicAssetInput imported =
             nanoxgen::build_xgen_classic_alembic_asset_input(

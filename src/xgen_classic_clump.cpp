@@ -3,6 +3,7 @@
 #include "nanoxgen/xgen_classic_ptex.h"
 #include "nanoxgen/xgen_ptex.h"
 #include "nanoxgen/xpd.h"
+#include "xgen_classic_path.h"
 
 #include <algorithm>
 #include <array>
@@ -64,12 +65,10 @@ std::filesystem::path module_file(
     std::filesystem::path path;
     if (value.starts_with(desc)) {
         value.erase(0u, desc.size());
-        while (!value.empty() && (value.front() == '/' || value.front() == '\\')) {
-            value.erase(value.begin());
-        }
-        path = description_directory / value;
+        path = description_directory / detail::classic_path(
+            detail::strip_classic_root_separators(value));
     } else {
-        path = value;
+        path = detail::classic_path(value);
     }
     if (path.extension() != extension) {
         path /= std::string{patch_name} + std::string{extension};
@@ -108,6 +107,21 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
     const ClassicAlembicAssetInput &surface,
     const std::filesystem::path &description_directory,
     const ClassicRootPlan &strand_roots,
+    const ClassicFloatRuntimePlan &runtime_plan,
+    std::size_t module_index,
+    std::uint32_t cvs_per_guide,
+    NanoXGenContext *context) {
+    return build_xgen_classic_clump_runtime_data(
+        description, surface, description_directory,
+        std::span<const RootSample>{strand_roots.roots}, runtime_plan,
+        module_index, cvs_per_guide, context);
+}
+
+ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
+    const ClassicDescription &description,
+    const ClassicAlembicAssetInput &surface,
+    const std::filesystem::path &description_directory,
+    std::span<const RootSample> strand_roots,
     const ClassicFloatRuntimePlan &runtime_plan,
     std::size_t module_index,
     std::uint32_t cvs_per_guide,
@@ -308,13 +322,13 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
     if (metadata_map.info().channel_count < 3u) {
         fail("clump ID map needs at least three channels");
     }
-    result.strand_guide_indices.resize(strand_roots.roots.size());
+    result.strand_guide_indices.resize(strand_roots.size());
     const auto bind_range = [&](const XgenPtexMap &map, std::size_t begin,
                                 std::size_t end) {
         XgenPtexSampleOptions options{};
         options.filter = XgenPtexFilter::Point;
         for (std::size_t strand = begin; strand < end; ++strand) {
-            const RootSample &root = strand_roots.roots[strand];
+            const RootSample &root = strand_roots[strand];
             if (root.surface_face_id >= map.info().face_count) {
                 fail("clump ID map has fewer faces than the patch");
             }
@@ -340,12 +354,12 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
     constexpr std::size_t minimum_strands_per_task = 16384u;
     constexpr std::size_t chunk_size = 4096u;
     const std::size_t useful_tasks = std::max<std::size_t>(
-        1u, (strand_roots.roots.size() + minimum_strands_per_task - 1u) /
+        1u, (strand_roots.size() + minimum_strands_per_task - 1u) /
                 minimum_strands_per_task);
     const std::size_t task_count =
         std::min(tasks.worker_count(), useful_tasks);
     if (task_count <= 1u) {
-        bind_range(metadata_map, 0u, strand_roots.roots.size());
+        bind_range(metadata_map, 0u, strand_roots.size());
     } else {
         std::atomic_size_t next_strand{};
         tasks.parallel_for(task_count, [&](std::size_t) {
@@ -353,12 +367,12 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
             while (true) {
                 const std::size_t begin = next_strand.fetch_add(
                     chunk_size, std::memory_order_relaxed);
-                if (begin >= strand_roots.roots.size()) { return; }
+                if (begin >= strand_roots.size()) { return; }
                 bind_range(
                     map, begin,
                     std::min(
                         begin + chunk_size,
-                        strand_roots.roots.size()));
+                        strand_roots.size()));
             }
         });
     }
@@ -372,6 +386,21 @@ build_xgen_classic_clump_runtime_data_parallel(
     const ClassicAlembicAssetInput &surface,
     const std::filesystem::path &description_directory,
     const ClassicRootPlan &strand_roots,
+    const ClassicFloatRuntimePlan &runtime_plan,
+    std::uint32_t cvs_per_guide,
+    NanoXGenContext *context) {
+    return build_xgen_classic_clump_runtime_data_parallel(
+        description, surface, description_directory,
+        std::span<const RootSample>{strand_roots.roots}, runtime_plan,
+        cvs_per_guide, context);
+}
+
+std::vector<ClassicClumpRuntimeData>
+build_xgen_classic_clump_runtime_data_parallel(
+    const ClassicDescription &description,
+    const ClassicAlembicAssetInput &surface,
+    const std::filesystem::path &description_directory,
+    std::span<const RootSample> strand_roots,
     const ClassicFloatRuntimePlan &runtime_plan,
     std::uint32_t cvs_per_guide,
     NanoXGenContext *context) {

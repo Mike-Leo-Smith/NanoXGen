@@ -56,6 +56,54 @@ TemporaryArchive write_archive() {
     return result;
 }
 
+TemporaryArchive write_animated_archive(bool changing_topology = false) {
+    const auto stamp = std::chrono::steady_clock::now()
+        .time_since_epoch().count();
+    TemporaryArchive result{
+        std::filesystem::temp_directory_path() /
+        ("nanoxgen-classic-alembic-motion-" +
+         std::to_string(stamp) + ".abc")};
+    {
+        Alembic::Abc::OArchive archive{
+            Alembic::AbcCoreOgawa::WriteArchive(), result.path.string()};
+        const auto sampling =
+            std::make_shared<Alembic::AbcCoreAbstract::TimeSampling>(
+                1.0, 1.0);
+        Alembic::AbcGeom::OXform xform{archive.getTop(), "testPatch"};
+        xform.getSchema().setTimeSampling(sampling);
+        Alembic::AbcGeom::OPolyMesh mesh{xform, "testPatchShape"};
+        mesh.getSchema().setTimeSampling(sampling);
+        const std::int32_t quad_indices[]{0, 1, 2, 3};
+        const std::int32_t triangle_indices[]{0, 1, 2};
+        const std::int32_t quad_counts[]{4};
+        const std::int32_t triangle_counts[]{3};
+        for (std::uint32_t sample_index = 0u;
+             sample_index < 3u; ++sample_index) {
+            Alembic::AbcGeom::XformSample xform_sample;
+            xform_sample.setTranslation(
+                {3.0 + static_cast<double>(sample_index), 4.0, 5.0});
+            xform_sample.setZRotation(
+                90.0 * static_cast<double>(sample_index));
+            xform.getSchema().set(xform_sample);
+            const float height = 2.0f * static_cast<float>(sample_index);
+            const Imath::V3f positions[]{
+                {0.0f, height, 0.0f}, {2.0f, height, 0.0f},
+                {2.0f, height, 2.0f}, {0.0f, height, 2.0f}};
+            const bool triangle =
+                changing_topology && sample_index == 2u;
+            mesh.getSchema().set(
+                Alembic::AbcGeom::OPolyMeshSchema::Sample{
+                    Alembic::Abc::P3fArraySample{positions, 4u},
+                    Alembic::Abc::Int32ArraySample{
+                        triangle ? triangle_indices : quad_indices,
+                        triangle ? 3u : 4u},
+                    Alembic::Abc::Int32ArraySample{
+                        triangle ? triangle_counts : quad_counts, 1u}});
+        }
+    }
+    return result;
+}
+
 nanoxgen::ClassicDescription description() {
     nanoxgen::ClassicGuide guide{};
     guide.id = 7u;
@@ -82,6 +130,10 @@ nanoxgen::ClassicDescription description() {
 
 void test_import() {
     const TemporaryArchive archive = write_archive();
+    require(
+        nanoxgen::xgen_classic_alembic_deformation_is_static(
+            description(), archive.path),
+        "single-sample archive was not classified as static");
     const nanoxgen::ClassicAlembicAssetInput imported =
         nanoxgen::build_xgen_classic_alembic_asset_input(
             description(), archive.path);
@@ -150,12 +202,65 @@ void test_subd_import() {
             "subdivision guide relative CV mismatch");
 }
 
+void test_motion_lookup_and_interpolation() {
+    const TemporaryArchive archive = write_animated_archive();
+    require(
+        !nanoxgen::xgen_classic_alembic_deformation_is_static(
+            description(), archive.path),
+        "animated archive was classified as static");
+    nanoxgen::ClassicAlembicFrameSample sample{};
+    sample.frame = 24.0;
+    sample.lookup_offset = 12.0;
+    sample.frames_per_second = 24.0;
+    sample.interpolation =
+        nanoxgen::ClassicAlembicInterpolation::Linear;
+    const nanoxgen::ClassicAlembicAssetInput interpolated =
+        nanoxgen::build_xgen_classic_alembic_asset_input(
+            description(), archive.path, sample);
+    require(
+        near(interpolated.asset.positions[0].x, 2.79289322f) &&
+            near(interpolated.asset.positions[0].y, 4.70710678f) &&
+            near(interpolated.asset.positions[0].z, 5.0f),
+        "linear frame lookup did not interpolate transform op channels");
+
+    sample.interpolation = nanoxgen::ClassicAlembicInterpolation::None;
+    const nanoxgen::ClassicAlembicAssetInput previous =
+        nanoxgen::build_xgen_classic_alembic_asset_input(
+            description(), archive.path, sample);
+    require(
+        near(previous.asset.positions[0].x, 3.0f) &&
+            near(previous.asset.positions[0].y, 4.0f) &&
+            near(previous.asset.positions[0].z, 5.0f),
+        "none interpolation did not select the previous archive sample");
+}
+
+void test_motion_topology_change_rejected() {
+    const TemporaryArchive archive = write_animated_archive(true);
+    nanoxgen::ClassicAlembicFrameSample sample{};
+    sample.frame = 48.0;
+    sample.lookup_offset = 12.0;
+    sample.frames_per_second = 24.0;
+    try {
+        (void)nanoxgen::build_xgen_classic_alembic_asset_input(
+            description(), archive.path, sample);
+    } catch (const std::runtime_error &error) {
+        require(
+            std::string{error.what()}.find("topology changes") !=
+                std::string::npos,
+            "wrong animated topology diagnostic");
+        return;
+    }
+    throw std::runtime_error("animated topology change was accepted");
+}
+
 } // namespace
 
 int main() try {
     test_import();
     test_subd_import();
     test_missing_patch();
+    test_motion_lookup_and_interpolation();
+    test_motion_topology_change_rejected();
     std::cout << "Classic Alembic import tests passed\n";
     return 0;
 } catch (const std::exception &error) {

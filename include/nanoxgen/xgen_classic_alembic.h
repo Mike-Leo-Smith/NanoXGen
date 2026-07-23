@@ -21,6 +21,25 @@ struct ClassicAlembicLimits {
     std::uint32_t subd_face_resolution{2u};
 };
 
+enum class ClassicAlembicInterpolation {
+    // XGen's "none" mode: use the previous archive sample.
+    None,
+    // Linearly interpolate positions between the surrounding samples.
+    Linear,
+};
+
+// XGen RenderAPI interprets -motionSamplesLookup values as frame offsets:
+// archive time in seconds is (frame + lookup_offset) / frames_per_second.
+// The renderer-facing -motionSamplesPlacement values are intentionally not
+// part of this structure because they do not affect archive evaluation.
+struct ClassicAlembicFrameSample {
+    double frame{};
+    double lookup_offset{};
+    double frames_per_second{24.0};
+    ClassicAlembicInterpolation interpolation{
+        ClassicAlembicInterpolation::Linear};
+};
+
 struct ClassicReferenceSurfaceSample {
     Vec3 position{};
     Vec3 normal{};
@@ -78,6 +97,22 @@ struct ClassicAlembicAssetInput {
 // CVs into absolute positions. The system Alembic dependency is confined to
 // the optional nanoxgen_classic_alembic target.
 [[nodiscard]] ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
+    const ClassicDescription &description,
+    const std::filesystem::path &archive_path,
+    const ClassicAlembicLimits &limits = {});
+
+// Evaluate one XGen motion lookup from an Alembic archive. Topology and
+// xgen_Pref remain sample-invariant; current positions use the requested
+// interpolation mode.
+[[nodiscard]] ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
+    const ClassicDescription &description,
+    const std::filesystem::path &archive_path,
+    const ClassicAlembicFrameSample &sample,
+    const ClassicAlembicLimits &limits = {});
+
+// Cheap schema-only query used to collapse static archives before importing
+// OpenSubdiv cages or rebuilding roots/guides for every shutter placement.
+[[nodiscard]] bool xgen_classic_alembic_deformation_is_static(
     const ClassicDescription &description,
     const std::filesystem::path &archive_path,
     const ClassicAlembicLimits &limits = {});

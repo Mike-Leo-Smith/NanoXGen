@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -32,6 +33,9 @@ struct ClassicGuideInfluence {
 
 struct ClassicRootPlan {
     std::vector<RootSample> roots;
+    // Patch name is part of the motion identity because face IDs are local to
+    // each patch and can repeat inside one description.
+    std::vector<std::string> patch_names;
     // Reference-pose global position used by Classic's $Prefg expression
     // variable. This remains separate from the current renderer root.
     std::vector<Vec3> reference_positions;
@@ -55,6 +59,21 @@ struct ClassicRootPlan {
     std::uint64_t mask_rejected_count{};
     std::uint64_t patch_culled_count{};
     std::uint64_t guide_rejected_count{};
+};
+
+// The deformation-varying portion of a Classic root plan. All association,
+// PTEX, random, and primitive identity data remains in the reference plan and
+// can be shared by every motion sample.
+struct ClassicDeformedRootPlan {
+    std::vector<RootSample> roots;
+    std::vector<Vec3> surface_tangents;
+};
+
+// Sample-invariant root-to-coarse-face lookup for motion deformation. Building
+// it once validates root identity uniqueness and turns every later sample
+// rebind into a linear pass over roots.
+struct ClassicRootDeformationTopology {
+    std::vector<std::uint32_t> surface_face_indices;
 };
 
 struct ClassicExplicitRoot {
@@ -95,6 +114,23 @@ struct ClassicExplicitRoot {
     const ClassicAlembicAssetInput &surface,
     std::string_view patch_name,
     std::span<const ClassicExplicitRoot> samples);
+
+// Re-evaluate an existing root topology on another Alembic sample. Identity
+// and guide association are never regenerated, so RandomGenerator mask
+// thresholds and PTEX/XPD bindings stay bit-stable across the shutter.
+[[nodiscard]] ClassicDeformedRootPlan deform_xgen_classic_root_plan(
+    const ClassicRootPlan &reference,
+    const ClassicAlembicAssetInput &surface);
+
+[[nodiscard]] ClassicRootDeformationTopology
+prepare_xgen_classic_root_deformation(
+    const ClassicRootPlan &reference,
+    const ClassicAlembicAssetInput &reference_surface);
+
+[[nodiscard]] ClassicDeformedRootPlan deform_xgen_classic_root_plan(
+    const ClassicRootPlan &reference,
+    const ClassicRootDeformationTopology &topology,
+    const ClassicAlembicAssetInput &surface);
 
 // Rebuild each authored guide using XGen's uniform SgCurve convention, then
 // blend guide offsets with the exact associations retained by the root plan.
