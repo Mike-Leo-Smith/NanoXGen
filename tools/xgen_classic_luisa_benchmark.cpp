@@ -1,9 +1,11 @@
 #include "nanoxgen/curve_cache.h"
 #include "nanoxgen/luisa/generate.h"
+#include "nanoxgen/luisa/xgen_classic_collection.h"
 #include "nanoxgen/luisa/xgen_classic_runtime.h"
 #include "nanoxgen/xgen_classic.h"
 #include "nanoxgen/xgen_classic_alembic.h"
 #include "nanoxgen/xgen_classic_clump.h"
+#include "nanoxgen/xgen_classic_collection.h"
 #include "nanoxgen/xgen_classic_ptex.h"
 #include "nanoxgen/xgen_classic_roots.h"
 #include "nanoxgen/xgen_classic_runtime.h"
@@ -122,20 +124,28 @@ struct Options {
     std::optional<std::filesystem::path> output_nxc;
     bool fast_math{true};
     bool cpu_validation{true};
+    std::uint32_t jit_workers{};
 };
 
 Options parse_options(int argc, char **argv) {
-    if (argc < 7) {
+    if (argc < 6) {
         throw std::invalid_argument(
             "usage: nanoxgen_xgen_classic_luisa_benchmark RUNTIME_DIR "
             "BACKEND COLLECTION.xgen PATCHES.abc DESCRIPTIONS_ROOT "
-            "DESCRIPTION [--warmup N] [--repeats N] [--base-only] "
-            "[--effect-count N] [--strict-math] "
+            "[DESCRIPTION] [--warmup N] [--repeats N] [--base-only] "
+            "[--effect-count N] [--jit-workers N] [--strict-math] "
             "[--no-cpu-validation] "
-            "[--reference-nxc FILE] [--output-nxc FILE]");
+            "[--reference-nxc FILE] [--output-nxc FILE]\n"
+            "Omit DESCRIPTION to execute every description from the "
+            "collection on one device.");
     }
-    Options result{argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]};
-    for (int index = 7; index < argc; ++index) {
+    Options result{argv[1], argv[2], argv[3], argv[4], argv[5], {}};
+    int first_option = 6;
+    if (first_option < argc &&
+        !std::string_view{argv[first_option]}.starts_with("--")) {
+        result.description = argv[first_option++];
+    }
+    for (int index = first_option; index < argc; ++index) {
         const std::string_view argument{argv[index]};
         if (argument == "--base-only") {
             result.base_only = true;
@@ -151,7 +161,7 @@ Options parse_options(int argc, char **argv) {
         }
         if (argument != "--warmup" && argument != "--repeats" &&
             argument != "--effect-count" && argument != "--reference-nxc" &&
-            argument != "--output-nxc") {
+            argument != "--output-nxc" && argument != "--jit-workers") {
             throw std::invalid_argument(
                 "unknown argument: " + std::string{argument});
         }
@@ -167,9 +177,16 @@ Options parse_options(int argc, char **argv) {
             result.warmup = parse_u32(argv[index], "warmup", true);
         } else if (argument == "--effect-count") {
             result.effect_count = parse_u32(argv[index], "effect count", true);
+        } else if (argument == "--jit-workers") {
+            result.jit_workers = parse_u32(argv[index], "JIT workers");
         } else {
             result.repeats = parse_u32(argv[index], "repeats");
         }
+    }
+    if (result.description.empty() &&
+        (result.reference_nxc || result.output_nxc)) {
+        throw std::invalid_argument(
+            "collection mode does not accept a single reference/output cache");
     }
     return result;
 }
@@ -239,6 +256,16 @@ struct ClumpHostData {
     std::vector<std::uint32_t> runtime;
     std::vector<std::uint32_t> strand_guides;
     std::uint32_t guide_count{};
+};
+
+struct DescriptionRunResult {
+    std::uint64_t strands{};
+    std::uint64_t points{};
+    std::uint64_t output_checksum{};
+    double cold_ms{};
+    double native_ms{};
+    double jit_ms{};
+    double first_dispatch_ms{};
 };
 
 ErrorStats compare(const nanoxgen::PackedGeneratedCurves &a,
@@ -345,6 +372,417 @@ ErrorStats compare_cache(const nanoxgen::PackedGeneratedCurves &generated,
     return result;
 }
 
+struct PreparedCollectionDescription {
+    const nanoxgen::ClassicDescription *description{};
+    nanoxgen::ClassicFloatRuntimePlan runtime;
+    nanoxgen::ClassicAlembicAssetInput imported;
+    nanoxgen::ClassicRootPlan roots;
+    nanoxgen::ClassicRuntimeInputData runtime_inputs;
+    std::vector<nanoxgen::ClassicClumpRuntimeData> clump_data;
+    std::vector<luisa::float3> guides;
+    std::vector<luisa::float3> tangents;
+    std::vector<luisa::float3> noise_domain_positions;
+    std::vector<std::uint32_t> root_runtime;
+    std::vector<ClumpHostData> clumps;
+    std::vector<std::uint32_t> clump_guide_counts;
+    std::vector<float> runtime_upload;
+};
+
+PreparedCollectionDescription prepare_collection_description(
+    const nanoxgen::ClassicDescription &description,
+    nanoxgen::ClassicCollectionExecutionDescription host_plan) {
+    PreparedCollectionDescription result{};
+    result.description = &description;
+    result.runtime = std::move(host_plan.runtime);
+    result.imported = std::move(host_plan.surface);
+    result.roots = std::move(host_plan.roots);
+    result.runtime_inputs = std::move(host_plan.runtime_inputs);
+    result.clump_data = std::move(host_plan.clumps);
+    const std::uint32_t cvs = result.runtime.fx_cv_count;
+
+    const std::vector<nanoxgen::Vec3> &rebuilt = host_plan.rebuilt_guides;
+    result.guides.reserve(rebuilt.size());
+    for (const nanoxgen::Vec3 value : rebuilt) {
+        result.guides.emplace_back(value.x, value.y, value.z);
+    }
+    result.tangents.reserve(result.roots.surface_tangents.size());
+    for (const nanoxgen::Vec3 value : result.roots.surface_tangents) {
+        result.tangents.emplace_back(value.x, value.y, value.z);
+    }
+    result.noise_domain_positions.reserve(
+        result.roots.reference_positions.size());
+    for (const nanoxgen::Vec3 value : result.roots.reference_positions) {
+        result.noise_domain_positions.emplace_back(
+            value.x, value.y, value.z);
+    }
+    result.root_runtime.resize(result.roots.roots.size() * 2u);
+    for (std::size_t strand = 0u; strand < result.roots.roots.size();
+         ++strand) {
+        result.root_runtime[strand * 2u] =
+            result.roots.primitive_ids[strand];
+        result.root_runtime[strand * 2u + 1u] =
+            result.roots.random_prefixes[strand];
+    }
+    result.clumps.reserve(result.clump_data.size());
+    result.clump_guide_counts.reserve(result.clump_data.size());
+    for (const nanoxgen::ClassicClumpRuntimeData &binding :
+         result.clump_data) {
+        ClumpHostData host{};
+        host.guide_count = static_cast<std::uint32_t>(
+            binding.guide_axes.size() / cvs);
+        if (binding.guide_render_axes.size() != binding.guide_axes.size() ||
+            binding.guide_local_axes.size() != binding.guide_axes.size() ||
+            binding.guide_local_render_axes.size() !=
+                binding.guide_axes.size() ||
+            binding.guide_spline_lengths.size() != host.guide_count) {
+            throw std::runtime_error(
+                "Classic clump binding has no prepared local render guides");
+        }
+        host.axes.reserve(binding.guide_local_render_axes.size());
+        for (std::uint32_t guide = 0u; guide < host.guide_count; ++guide) {
+            float distance = 0.0f;
+            for (std::uint32_t cv = 0u; cv < cvs; ++cv) {
+                const std::size_t index =
+                    static_cast<std::size_t>(guide) * cvs + cv;
+                if (cv != 0u) {
+                    const nanoxgen::Vec3 delta =
+                        binding.guide_local_axes[index] -
+                        binding.guide_local_axes[index - 1u];
+                    distance += std::sqrt(
+                        delta.x * delta.x + delta.y * delta.y +
+                        delta.z * delta.z);
+                }
+                const nanoxgen::Vec3 value =
+                    binding.guide_local_render_axes[index];
+                host.axes.emplace_back(
+                    value.x, value.y, value.z, distance);
+            }
+        }
+        host.frames.reserve(static_cast<std::size_t>(
+            host.guide_count) * 4u);
+        host.runtime.reserve(static_cast<std::size_t>(
+            host.guide_count) * 2u);
+        for (std::uint32_t guide = 0u; guide < host.guide_count; ++guide) {
+            const nanoxgen::Vec3 normal = binding.guide_normals[guide];
+            const nanoxgen::Vec3 tangent = binding.guide_tangents[guide];
+            const nanoxgen::Vec2 uv = binding.guide_uvs[guide];
+            host.frames.emplace_back(normal.x, normal.y, normal.z, uv.x);
+            host.frames.emplace_back(tangent.x, tangent.y, tangent.z, uv.y);
+            const nanoxgen::Vec3 domain_position =
+                binding.guide_reference_positions.empty()
+                ? binding.guide_axes[
+                    static_cast<std::size_t>(guide) * cvs]
+                : binding.guide_reference_positions[guide];
+            host.frames.emplace_back(
+                domain_position.x, domain_position.y, domain_position.z,
+                binding.guide_spline_lengths[guide]);
+            const nanoxgen::Vec3 guide_root = binding.guide_axes[
+                static_cast<std::size_t>(guide) * cvs];
+            host.frames.emplace_back(
+                guide_root.x, guide_root.y, guide_root.z, 0.0f);
+            host.runtime.push_back(binding.guide_face_ids[guide]);
+            host.runtime.push_back(binding.guide_random_prefixes[guide]);
+        }
+        host.strand_guides = binding.strand_guide_indices;
+        result.clump_guide_counts.push_back(host.guide_count);
+        result.clumps.emplace_back(std::move(host));
+    }
+    result.runtime_upload = result.runtime_inputs.values;
+    if (result.runtime_upload.empty()) {
+        result.runtime_upload.push_back(0.0f);
+    }
+    return result;
+}
+
+struct CollectionDeviceResources {
+    ByteBuffer roots;
+    Buffer<std::uint32_t> offsets;
+    ByteBuffer influences;
+    Buffer<luisa::float3> guides;
+    Buffer<std::uint32_t> root_runtime;
+    Buffer<float> runtime_inputs;
+    Buffer<luisa::float3> tangents;
+    Buffer<luisa::float3> noise_domain_positions;
+    Buffer<luisa::float4> points_a;
+    Buffer<luisa::float4> points_b;
+    Buffer<luisa::float4> states;
+    std::vector<Buffer<luisa::float4>> clump_axes;
+    std::vector<Buffer<luisa::float4>> clump_frames;
+    std::vector<Buffer<std::uint32_t>> clump_runtime;
+    std::vector<Buffer<std::uint32_t>> clump_strand_guides;
+    std::vector<BufferView<luisa::float4>> clump_axis_views;
+    std::vector<BufferView<luisa::float4>> clump_frame_views;
+    std::vector<BufferView<std::uint32_t>> clump_runtime_views;
+    std::vector<BufferView<std::uint32_t>> clump_strand_guide_views;
+    std::vector<luisa::float4> raw_points;
+    std::vector<luisa::float4> raw_states;
+};
+
+int run_collection_mode(
+    const Options &options,
+    Device &device,
+    Stream &stream,
+    const nanoxgen::ClassicCollection &collection,
+    Clock::time_point process_begin,
+    Clock::time_point device_end,
+    Clock::time_point collection_load_end) {
+    const Clock::time_point native_begin = Clock::now();
+    nanoxgen::ClassicCollectionExecutionOptions host_options{};
+    host_options.effect_count = options.effect_count;
+    nanoxgen::ClassicCollectionExecutionPlan host_plan =
+        nanoxgen::build_xgen_classic_collection_execution_plan(
+            collection, options.collection, options.archive,
+            options.descriptions_root, host_options);
+    std::vector<PreparedCollectionDescription> prepared;
+    prepared.reserve(host_plan.descriptions.size());
+    for (std::size_t index = 0u;
+         index < host_plan.descriptions.size(); ++index) {
+        const nanoxgen::ClassicDescription &description =
+            collection.descriptions.at(index);
+        if (host_plan.descriptions[index].name != description.name) {
+            throw std::runtime_error(
+                "Classic collection host plan changed description order");
+        }
+        prepared.push_back(prepare_collection_description(
+            description, std::move(host_plan.descriptions[index])));
+    }
+    const Clock::time_point native_end = Clock::now();
+
+    std::vector<nanoxgen::luisa_backend::ClassicCollectionCompileInput>
+        compile_inputs;
+    compile_inputs.reserve(prepared.size());
+    for (const PreparedCollectionDescription &description : prepared) {
+        compile_inputs.push_back({
+            &description.runtime, description.runtime.fx_cv_count,
+            description.clump_guide_counts, true});
+    }
+    nanoxgen::luisa_backend::ClassicCollectionCompileOptions compile_options{};
+    compile_options.fast_math = options.fast_math;
+    compile_options.enable_cache = false;
+    compile_options.max_parallel_compiles = options.jit_workers;
+    auto pipeline = nanoxgen::luisa_backend::compile_classic_collection(
+        device, compile_inputs, compile_options);
+    const Clock::time_point compile_end = Clock::now();
+
+    const Clock::time_point allocate_begin = Clock::now();
+    std::vector<CollectionDeviceResources> resources(prepared.size());
+    for (std::size_t index = 0u; index < prepared.size(); ++index) {
+        const PreparedCollectionDescription &host = prepared[index];
+        CollectionDeviceResources &gpu = resources[index];
+        const std::size_t strands = host.roots.roots.size();
+        const std::size_t points =
+            strands * host.runtime.fx_cv_count;
+        gpu.roots = device.create_byte_buffer(
+            strands * sizeof(nanoxgen::RootSample));
+        gpu.offsets = device.create_buffer<std::uint32_t>(
+            host.roots.influence_offsets.size());
+        gpu.influences = device.create_byte_buffer(
+            host.roots.influences.size() *
+            sizeof(nanoxgen::ClassicGuideInfluence));
+        gpu.guides = device.create_buffer<luisa::float3>(
+            host.guides.size());
+        gpu.root_runtime = device.create_buffer<std::uint32_t>(
+            host.root_runtime.size());
+        gpu.runtime_inputs = device.create_buffer<float>(
+            host.runtime_upload.size());
+        gpu.tangents = device.create_buffer<luisa::float3>(
+            host.tangents.size());
+        gpu.noise_domain_positions = device.create_buffer<luisa::float3>(
+            host.noise_domain_positions.size());
+        gpu.points_a = device.create_buffer<luisa::float4>(points);
+        gpu.points_b = device.create_buffer<luisa::float4>(points);
+        gpu.states = device.create_buffer<luisa::float4>(strands);
+        for (const ClumpHostData &clump : host.clumps) {
+            gpu.clump_axes.emplace_back(
+                device.create_buffer<luisa::float4>(clump.axes.size()));
+            gpu.clump_frames.emplace_back(
+                device.create_buffer<luisa::float4>(clump.frames.size()));
+            gpu.clump_runtime.emplace_back(
+                device.create_buffer<std::uint32_t>(clump.runtime.size()));
+            gpu.clump_strand_guides.emplace_back(
+                device.create_buffer<std::uint32_t>(
+                    clump.strand_guides.size()));
+        }
+        for (const auto &buffer : gpu.clump_axes) {
+            gpu.clump_axis_views.push_back(buffer.view());
+        }
+        for (const auto &buffer : gpu.clump_frames) {
+            gpu.clump_frame_views.push_back(buffer.view());
+        }
+        for (const auto &buffer : gpu.clump_runtime) {
+            gpu.clump_runtime_views.push_back(buffer.view());
+        }
+        for (const auto &buffer : gpu.clump_strand_guides) {
+            gpu.clump_strand_guide_views.push_back(buffer.view());
+        }
+        gpu.raw_points.resize(points);
+        gpu.raw_states.assign(
+            strands, luisa::make_float4(0.0f));
+    }
+    const Clock::time_point allocate_end = Clock::now();
+
+    for (std::size_t index = 0u; index < prepared.size(); ++index) {
+        const PreparedCollectionDescription &host = prepared[index];
+        CollectionDeviceResources &gpu = resources[index];
+        stream << gpu.roots.copy_from(host.roots.roots.data())
+               << gpu.offsets.copy_from(
+                      host.roots.influence_offsets.data())
+               << gpu.influences.copy_from(host.roots.influences.data())
+               << gpu.guides.copy_from(host.guides.data())
+               << gpu.root_runtime.copy_from(host.root_runtime.data())
+               << gpu.runtime_inputs.copy_from(host.runtime_upload.data())
+               << gpu.tangents.copy_from(host.tangents.data())
+               << gpu.noise_domain_positions.copy_from(
+                      host.noise_domain_positions.data());
+        for (std::size_t module = 0u; module < host.clumps.size(); ++module) {
+            stream << gpu.clump_axes[module].copy_from(
+                          host.clumps[module].axes.data())
+                   << gpu.clump_frames[module].copy_from(
+                          host.clumps[module].frames.data())
+                   << gpu.clump_runtime[module].copy_from(
+                          host.clumps[module].runtime.data())
+                   << gpu.clump_strand_guides[module].copy_from(
+                          host.clumps[module].strand_guides.data());
+        }
+    }
+    stream << synchronize();
+    const Clock::time_point upload_end = Clock::now();
+
+    const auto encode_collection = [&] {
+        for (std::size_t index = 0u; index < prepared.size(); ++index) {
+            const PreparedCollectionDescription &host = prepared[index];
+            CollectionDeviceResources &gpu = resources[index];
+            const nanoxgen::luisa_backend::ClassicCollectionDispatchResources
+                bindings{
+                    gpu.roots.view(), gpu.offsets.view(),
+                    gpu.influences.view(), gpu.guides.view(),
+                    gpu.root_runtime.view(), gpu.runtime_inputs.view(),
+                    gpu.tangents.view(), gpu.noise_domain_positions.view(),
+                    gpu.points_a.view(), gpu.points_b.view(),
+                    gpu.states.view(), gpu.clump_axis_views,
+                    gpu.clump_frame_views, gpu.clump_runtime_views,
+                    gpu.clump_strand_guide_views};
+            pipeline.encode(
+                stream, index, bindings,
+                static_cast<std::uint32_t>(host.roots.roots.size()),
+                options.base_only);
+        }
+    };
+    const Clock::time_point first_begin = Clock::now();
+    encode_collection();
+    for (std::size_t index = 0u; index < prepared.size(); ++index) {
+        CollectionDeviceResources &gpu = resources[index];
+        const bool output_a = pipeline.output_is_points_a(
+            index, options.base_only);
+        if (output_a) {
+            stream << gpu.points_a.copy_to(luisa::span{gpu.raw_points});
+        } else {
+            stream << gpu.points_b.copy_to(luisa::span{gpu.raw_points});
+        }
+        if (!options.base_only) {
+            stream << gpu.states.copy_to(luisa::span{gpu.raw_states});
+        }
+    }
+    stream << synchronize();
+    std::vector<nanoxgen::PackedGeneratedCurves> outputs;
+    outputs.reserve(prepared.size());
+    for (std::size_t index = 0u; index < prepared.size(); ++index) {
+        outputs.push_back(compact_gpu_output(
+            resources[index].raw_points, resources[index].raw_states,
+            prepared[index].roots, prepared[index].runtime.fx_cv_count));
+    }
+    const Clock::time_point first_end = Clock::now();
+
+    for (std::uint32_t repeat = 0u; repeat < options.warmup; ++repeat) {
+        encode_collection();
+        stream << synchronize();
+    }
+    std::vector<double> warm_samples;
+    warm_samples.reserve(options.repeats);
+    for (std::uint32_t repeat = 0u; repeat < options.repeats; ++repeat) {
+        const Clock::time_point begin = Clock::now();
+        encode_collection();
+        stream << synchronize();
+        warm_samples.push_back(milliseconds(begin, Clock::now()));
+    }
+
+    std::uint64_t total_strands{};
+    std::uint64_t total_points{};
+    std::uint64_t collection_checksum = 1469598103934665603ull;
+    for (std::size_t index = 0u; index < outputs.size(); ++index) {
+        const auto &output = outputs[index];
+        const std::uint64_t output_checksum = checksum(output);
+        if (options.cpu_validation) {
+            nanoxgen::PackedGeneratedCurves cpu =
+                nanoxgen::generate_xgen_classic_base_curves_cpu(
+                    prepared[index].imported.asset,
+                    prepared[index].roots,
+                    prepared[index].runtime.fx_cv_count,
+                    0.0f, 1.0f, true);
+            if (!options.base_only) {
+                nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
+                    cpu, prepared[index].runtime, 1.0f,
+                    prepared[index].roots.surface_tangents,
+                    prepared[index].roots.random_prefixes,
+                    prepared[index].roots.primitive_ids,
+                    prepared[index].clump_data,
+                    prepared[index].runtime_inputs.values,
+                    prepared[index].roots.reference_positions, true);
+            }
+            nanoxgen::make_xgen_classic_curves_world_space(cpu);
+            nanoxgen::add_xgen_classic_renderer_endpoints(cpu);
+            (void)compare(output, cpu);
+        }
+        total_strands += output.strand_count;
+        total_points += output.points.size();
+        collection_checksum ^= output_checksum;
+        collection_checksum *= 1099511628211ull;
+        std::cout << std::setprecision(9)
+                  << "{\"backend\":\"" << options.backend
+                  << "\",\"description\":\""
+                  << prepared[index].description->name
+                  << "\",\"output_strands\":" << output.strand_count
+                  << ",\"output_points\":" << output.points.size()
+                  << ",\"checksum\":" << output_checksum
+                  << ",\"fallback_count\":0}\n";
+    }
+    const auto &compile_stats = pipeline.compile_stats();
+    std::cout << std::setprecision(9)
+              << "{\"collection_summary\":true,\"backend\":\""
+              << options.backend << "\",\"description_count\":"
+              << prepared.size() << ",\"single_device\":true"
+              << ",\"external_device_api\":true"
+              << ",\"parallel_jit_across_descriptions\":"
+              << (compile_stats.worker_limit > 1u
+                      ? "true" : "false")
+              << ",\"shader_cache\":false,\"strands\":"
+              << total_strands << ",\"points\":" << total_points
+              << ",\"device_create_ms\":"
+              << milliseconds(process_begin, device_end)
+              << ",\"collection_parse_ms\":"
+              << milliseconds(device_end, collection_load_end)
+              << ",\"native_prepare_ms\":"
+              << milliseconds(native_begin, native_end)
+              << ",\"jit_compile_wall_ms\":" << compile_stats.wall_ms
+              << ",\"jit_workers\":"
+              << compile_stats.worker_limit
+              << ",\"jit_kernel_count\":" << compile_stats.kernel_count
+              << ",\"jit_task_sum_ms\":" << compile_stats.task_sum_ms
+              << ",\"jit_task_max_ms\":" << compile_stats.task_max_ms
+              << ",\"buffer_allocate_ms\":"
+              << milliseconds(allocate_begin, allocate_end)
+              << ",\"upload_ms\":" << milliseconds(compile_end, upload_end)
+              << ",\"first_dispatch_download_pack_ms\":"
+              << milliseconds(first_begin, first_end)
+              << ",\"warm_median_ms\":"
+              << percentile(warm_samples, 0.5)
+              << ",\"warm_p90_ms\":" << percentile(warm_samples, 0.9)
+              << ",\"cold_end_to_end_ms\":"
+              << milliseconds(process_begin, first_end)
+              << ",\"checksum\":" << collection_checksum << "}\n";
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) try {
@@ -361,11 +799,21 @@ int main(int argc, char **argv) try {
     const nanoxgen::ClassicCollection collection =
         nanoxgen::load_xgen_classic_collection(options.collection);
     const Clock::time_point collection_load_end = Clock::now();
-    const nanoxgen::ClassicDescription *description =
-        nanoxgen::find_classic_description(collection, options.description);
-    if (description == nullptr) {
-        throw std::runtime_error("Classic description was not found");
+    const bool collection_mode = options.description.empty();
+    if (collection_mode) {
+        return run_collection_mode(
+            options, device, stream, collection,
+            process_begin, device_end, collection_load_end);
     }
+    const auto run_description = [&](
+        const nanoxgen::ClassicDescription *description,
+        bool include_shared_start) -> DescriptionRunResult {
+    const Clock::time_point description_begin = Clock::now();
+    const Clock::time_point cold_begin =
+        include_shared_start ? process_begin : description_begin;
+    const Clock::time_point native_begin =
+        include_shared_start ? device_end : description_begin;
+    const Clock::time_point runtime_plan_begin = Clock::now();
     nanoxgen::ClassicFloatRuntimePlan runtime =
         nanoxgen::compile_xgen_classic_float_runtime_plan(
             *description, collection.palette_attributes);
@@ -381,16 +829,11 @@ int main(int argc, char **argv) try {
     ShaderOption shader_option{};
     shader_option.enable_cache = false;
     shader_option.enable_fast_math = options.fast_math;
-    // HIP and Vulkan use independent external compiler invocations for these
-    // kernels and Luisa's device compilation path is safe to enter in
-    // parallel. Keep other backends sequential until they are validated: in
-    // particular, the fallback backend currently has process-global compiler
-    // state in the Luisa next branch.
-    const bool parallel_jit =
-        options.backend == "hip" || options.backend == "vk";
-    const std::launch jit_launch = parallel_jit
-        ? std::launch::async
-        : std::launch::deferred;
+    // All supported Luisa backends are validated for concurrent compilation.
+    // The renderer-facing collection API applies a native-thread-count
+    // semaphore; this legacy single-description path has at most one task per
+    // specialized kernel.
+    constexpr std::launch jit_launch = std::launch::async;
     using NoiseShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
         ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
         Buffer<luisa::float3>, Buffer<luisa::float3>,
@@ -836,6 +1279,7 @@ int main(int argc, char **argv) try {
     const bool oracle_within_tolerance = reference_error &&
         reference_error->position <= oracle_position_tolerance &&
         reference_error->radius <= oracle_radius_tolerance;
+    const std::uint64_t output_checksum = checksum(gpu);
 
     std::cout << std::setprecision(9)
               << "{\"backend\":\"" << options.backend
@@ -843,8 +1287,7 @@ int main(int argc, char **argv) try {
               << "\",\"base_only\":"
               << (options.base_only ? "true" : "false")
               << ",\"effect_count\":" << runtime.effects.size()
-              << ",\"parallel_jit\":"
-              << (parallel_jit ? "true" : "false")
+              << ",\"parallel_jit\":true"
               << ",\"shader_cache\":false,\"fast_math\":"
               << (options.fast_math ? "true" : "false")
               << ",\"cpu_validation\":"
@@ -857,13 +1300,15 @@ int main(int argc, char **argv) try {
               << ",\"output_strands\":" << gpu.strand_count
               << ",\"output_points\":" << gpu.points.size()
               << ",\"device_create_ms\":"
-              << milliseconds(process_begin, device_end)
+              << (include_shared_start
+                      ? milliseconds(process_begin, device_end) : 0.0)
               << ",\"native_parse_import_root_rebuild_ms\":"
-              << milliseconds(device_end, native_prepare_end)
+              << milliseconds(native_begin, native_prepare_end)
               << ",\"collection_parse_ms\":"
-              << milliseconds(device_end, collection_load_end)
+              << (include_shared_start
+                      ? milliseconds(device_end, collection_load_end) : 0.0)
               << ",\"runtime_plan_lower_ms\":"
-              << milliseconds(collection_load_end, runtime_plan_end)
+              << milliseconds(runtime_plan_begin, runtime_plan_end)
               << ",\"alembic_import_ms\":"
               << milliseconds(runtime_plan_end, alembic_import_end)
               << ",\"root_plan_ms\":"
@@ -900,7 +1345,7 @@ int main(int argc, char **argv) try {
               << ",\"first_dispatch_download_pack_ms\":"
               << milliseconds(first_begin, first_output_end)
               << ",\"cold_end_to_end_ms\":"
-              << milliseconds(process_begin, first_output_end)
+              << milliseconds(cold_begin, first_output_end)
               << ",\"warm_median_ms\":"
               << percentile(warm_samples, 0.5)
               << ",\"warm_p90_ms\":"
@@ -929,9 +1374,69 @@ int main(int argc, char **argv) try {
               << oracle_radius_tolerance
               << ",\"oracle_within_tolerance\":"
               << (oracle_within_tolerance ? "true" : "false")
-              << ",\"checksum\":" << checksum(gpu)
+              << ",\"checksum\":" << output_checksum
               << ",\"fallback_count\":0"
               << ",\"handwritten_gpu_api\":false}\n";
+    return {
+        gpu.strand_count, gpu.points.size(), output_checksum,
+        milliseconds(cold_begin, first_output_end),
+        milliseconds(native_begin, native_prepare_end),
+        jit_compile_active_wall_ms,
+        milliseconds(first_begin, first_output_end)};
+    };
+
+    std::vector<const nanoxgen::ClassicDescription *> descriptions;
+    if (collection_mode) {
+        descriptions.reserve(collection.descriptions.size());
+        for (const nanoxgen::ClassicDescription &description :
+             collection.descriptions) {
+            descriptions.push_back(&description);
+        }
+    } else {
+        const nanoxgen::ClassicDescription *description =
+            nanoxgen::find_classic_description(
+                collection, options.description);
+        if (description == nullptr) {
+            throw std::runtime_error("Classic description was not found");
+        }
+        descriptions.push_back(description);
+    }
+    if (descriptions.empty()) {
+        throw std::runtime_error("Classic collection has no descriptions");
+    }
+    std::uint64_t total_strands{};
+    std::uint64_t total_points{};
+    std::uint64_t collection_checksum = 1469598103934665603ull;
+    double native_sum{};
+    double jit_sum{};
+    double dispatch_sum{};
+    for (std::size_t index = 0u; index < descriptions.size(); ++index) {
+        const DescriptionRunResult result = run_description(
+            descriptions[index], index == 0u);
+        total_strands += result.strands;
+        total_points += result.points;
+        collection_checksum ^= result.output_checksum;
+        collection_checksum *= 1099511628211ull;
+        native_sum += result.native_ms;
+        jit_sum += result.jit_ms;
+        dispatch_sum += result.first_dispatch_ms;
+    }
+    if (collection_mode) {
+        std::cout << std::setprecision(9)
+                  << "{\"collection_summary\":true,\"backend\":\""
+                  << options.backend << "\",\"description_count\":"
+                  << descriptions.size() << ",\"single_device\":true"
+                  << ",\"parallel_jit_within_description\":true"
+                  << ",\"parallel_jit_across_descriptions\":false"
+                  << ",\"shader_cache\":false,\"strands\":"
+                  << total_strands << ",\"points\":" << total_points
+                  << ",\"native_sum_ms\":" << native_sum
+                  << ",\"jit_active_sum_ms\":" << jit_sum
+                  << ",\"first_dispatch_sum_ms\":" << dispatch_sum
+                  << ",\"cold_end_to_end_ms\":"
+                  << milliseconds(process_begin, Clock::now())
+                  << ",\"checksum\":" << collection_checksum << "}\n";
+    }
     return 0;
 } catch (const std::exception &error) {
     std::cerr << "error: " << error.what() << '\n';

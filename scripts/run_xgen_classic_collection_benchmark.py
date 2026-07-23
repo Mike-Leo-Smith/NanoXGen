@@ -202,6 +202,75 @@ def summarize_gpu(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def summarize_gpu_single_device(args: argparse.Namespace) -> dict[str, Any]:
+    command = [
+        str(args.luisa_tool),
+        str(args.luisa_runtime),
+        args.backend,
+        str(args.collection),
+        str(args.archive),
+        str(args.descriptions_root),
+        "--warmup",
+        str(args.gpu_warmup),
+        "--repeats",
+        str(args.gpu_repeats),
+        "--no-cpu-validation",
+    ]
+    environment = os.environ.copy()
+    environment.setdefault("LUISA_LOG_LEVEL", "error")
+    if not args.no_outer_warmup:
+        run_json(command, environment)
+    rounds: list[dict[str, Any]] = []
+    for _ in range(args.rounds):
+        records = run_json(command, environment)
+        summary = next(
+            record for record in records if record.get("collection_summary"))
+        rounds.append(summary)
+    validate_stable(
+        rounds,
+        ("description_count", "strands", "points", "checksum", "jit_kernel_count"),
+        "single-device Luisa collection",
+    )
+    samples = [float(record["cold_end_to_end_ms"]) for record in rounds]
+    component_fields = (
+        "device_create_ms",
+        "collection_parse_ms",
+        "native_prepare_ms",
+        "jit_compile_wall_ms",
+        "jit_task_sum_ms",
+        "jit_task_max_ms",
+        "buffer_allocate_ms",
+        "upload_ms",
+        "first_dispatch_download_pack_ms",
+    )
+    return {
+        "path": f"luisa-{args.backend}-single-device",
+        "rounds": args.rounds,
+        "outer_warmup": not args.no_outer_warmup,
+        "description_process_isolation": False,
+        "single_device": True,
+        "external_device_api": True,
+        "parallel_jit_across_descriptions": True,
+        "shader_cache": False,
+        "includes_file_io": True,
+        "includes_autodesk_serialization": False,
+        "descriptions": rounds[0]["description_count"],
+        "strands": rounds[0]["strands"],
+        "points": rounds[0]["points"],
+        "checksum": rounds[0]["checksum"],
+        "jit_workers": rounds[0]["jit_workers"],
+        "jit_kernel_count": rounds[0]["jit_kernel_count"],
+        "cold_samples_ms": samples,
+        "cold_median_ms": statistics.median(samples),
+        "cold_p90_ms": percentile(samples, 0.9),
+        "component_median_ms": {
+            field: statistics.median(
+                float(record[field]) for record in rounds)
+            for field in component_fields
+        },
+    }
+
+
 def maya_command(args: argparse.Namespace, description: str) -> list[str]:
     patch = args.patch_map[description]
     xgen_args = (
@@ -330,6 +399,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--gpu-warmup", type=int, default=3)
     parser.add_argument("--gpu-repeats", type=int, default=11)
+    parser.add_argument("--single-device-collection", action="store_true")
     parser.add_argument("--no-outer-warmup", action="store_true")
     parser.add_argument("--result-json", type=Path)
     args = parser.parse_args()
@@ -343,8 +413,13 @@ def parse_args() -> argparse.Namespace:
             "select exactly one of --cpu-tool, --luisa-tool, or --maya-tool")
     if args.luisa_tool and not args.luisa_runtime:
         parser.error("--luisa-runtime is required with --luisa-tool")
-    if (args.luisa_tool or args.maya_tool) and not args.descriptions:
+    if ((args.maya_tool or
+         (args.luisa_tool and not args.single_device_collection)) and
+            not args.descriptions):
         parser.error("--descriptions is required for Luisa and Maya")
+    if args.single_device_collection and not args.luisa_tool:
+        parser.error(
+            "--single-device-collection requires --luisa-tool")
     if len(set(args.descriptions)) != len(args.descriptions):
         parser.error("--descriptions must not contain duplicates")
     parsed_patch_map: dict[str, str] = {}
@@ -371,7 +446,11 @@ def main() -> int:
     if args.cpu_tool:
         result = summarize_cpu(args)
     elif args.luisa_tool:
-        result = summarize_gpu(args)
+        result = (
+            summarize_gpu_single_device(args)
+            if args.single_device_collection
+            else summarize_gpu(args)
+        )
     else:
         result = summarize_maya(args)
     serialized = json.dumps(result, separators=(",", ":"), sort_keys=True)
