@@ -895,14 +895,27 @@ void apply_noise(
             }
         }
         const Vec3 axis = cross(prior_tangent, next_tangent);
-        if (length_squared(axis) > 1.0e-20f) {
-            const float angle = std::acos(std::clamp(
-                dot(prior_tangent, next_tangent), -1.0f, 1.0f));
-            transported_normal = normalize(rotate_by(
-                transported_normal, normalize(axis), angle));
+        const float tangent_dot = std::clamp(
+            dot(prior_tangent, next_tangent), -1.0f, 1.0f);
+        if (length_squared(axis) > 1.0e-20f &&
+            tangent_dot > -0.999999f) {
+            // This is the minimal rotation taking prior_tangent to
+            // next_tangent, written without acos/sin/cos. Besides matching
+            // the quaternion form used by spline frame transport, it avoids
+            // device-libm drift being amplified by several NoiseFX modules.
+            const Vec3 first_cross = cross(axis, transported_normal);
+            transported_normal = normalize(
+                transported_normal + first_cross +
+                cross(axis, first_cross) * (1.0f / (1.0f + tangent_dot)));
         }
         const Vec3 normal = transported_normal;
-        const Vec3 binormal = cross(normal, next_tangent);
+        Vec3 binormal = cross(normal, next_tangent);
+        if (length_squared(binormal) > 1.0e-20f) {
+            // SgCurve::frame normalizes both returned frame axes. This is
+            // material after several NoiseFX passes make the curve sharply
+            // bent: using the raw cross product attenuates two noise axes.
+            binormal = normalize(binormal);
+        }
         const Vec3 tangent = cross(binormal, normal);
         context.t = static_cast<float>(cv) /
                     static_cast<float>(points.size() - 1u);

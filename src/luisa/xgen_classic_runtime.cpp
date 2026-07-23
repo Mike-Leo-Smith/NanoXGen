@@ -797,18 +797,21 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
             const Float3 rotation_axis = cross(prior_tangent, next_tangent);
             const Float rotation_axis_length_squared =
                 dot(rotation_axis, rotation_axis);
-            const Float3 normalized_axis = safe_normalize(
-                rotation_axis, make_float3(1.0f, 0.0f, 0.0f));
-            const Float angle = acos(clamp(
-                dot(prior_tangent, next_tangent), -1.0f, 1.0f));
+            const Float tangent_dot = clamp(
+                dot(prior_tangent, next_tangent), -1.0f, 1.0f);
+            const Float3 first_cross =
+                cross(rotation_axis, transported_normal);
+            const Float3 rotated = transported_normal + first_cross +
+                cross(rotation_axis, first_cross) /
+                    max(1.0f + tangent_dot, 1.0e-20f);
             transported_normal = ite(
-                rotation_axis_length_squared > 1.0e-20f,
-                safe_normalize(
-                    rotate_by(transported_normal, normalized_axis, angle),
-                    transported_normal),
+                (rotation_axis_length_squared > 1.0e-20f) &
+                    (tangent_dot > -0.999999f),
+                safe_normalize(rotated, transported_normal),
                 transported_normal);
             const Float3 normal = transported_normal;
-            const Float3 binormal = cross(normal, next_tangent);
+            const Float3 binormal = safe_normalize(
+                cross(normal, next_tangent), make_float3(0.0f));
             const Float3 tangent = cross(binormal, normal);
             const auto cv_context = make_context(
                 plan, strand, roots, root_runtime, &ptex_values,
