@@ -232,6 +232,7 @@ void test_float_runtime_plan() {
     id_curves.cvs_per_strand = 2u;
     id_curves.point_counts = {2u};
     id_curves.points.resize(2u);
+    id_curves.points[1u].y = 1.0f;
     id_curves.roots.resize(1u);
     const std::uint32_t primitive_id = 7u;
     apply_xgen_classic_float_runtime_plan_cpu(
@@ -276,9 +277,31 @@ void test_float_runtime_fallbacks_and_validation() {
                      {0.0f, 1.0f, 0.0f, 0.1f}};
     curves.roots.resize(1u);
     apply_xgen_classic_float_runtime_plan_cpu(curves, plan);
-    require(curves.points[0u].radius == 0.0f &&
-                curves.points[1u].radius == 0.0f,
-            "negative authored Classic width was not clamped like XGen");
+    require(curves.strand_count == 0u && curves.points.empty(),
+            "negative authored Classic width was not culled like XGen");
+
+    ClassicDescription threshold{};
+    threshold.name = "threshold";
+    threshold.objects.push_back({"SplinePrimitive", {
+        {"width", "$id == 1 ? 0.0001 : 0.000099", 1u}}, 1u});
+    const ClassicFloatRuntimePlan threshold_plan =
+        compile_xgen_classic_float_runtime_plan(threshold);
+    PackedGeneratedCurves threshold_curves{};
+    threshold_curves.strand_count = 2u;
+    threshold_curves.cvs_per_strand = 2u;
+    threshold_curves.point_counts = {2u, 2u};
+    threshold_curves.points = {{0.0f, 0.0f, 0.0f, 0.1f},
+                               {0.0f, 1.0f, 0.0f, 0.1f},
+                               {1.0f, 0.0f, 0.0f, 0.1f},
+                               {1.0f, 1.0f, 0.0f, 0.1f}};
+    threshold_curves.roots.resize(2u);
+    const std::array<std::uint32_t, 2u> ids{1u, 2u};
+    apply_xgen_classic_float_runtime_plan_cpu(
+        threshold_curves, threshold_plan, 1.0f, {}, {}, ids);
+    require(threshold_curves.strand_count == 1u &&
+                threshold_curves.points.size() == 2u &&
+                threshold_curves.points[0u].radius == 0.00005f,
+            "Classic width culling threshold does not match XGen");
 }
 
 void test_float_runtime_cut_culling() {
@@ -364,9 +387,9 @@ void test_float_runtime_clump() {
     curves.cvs_per_strand = 3u;
     curves.point_counts = {3u};
     curves.roots.resize(1u);
-    curves.points = {{0.0f, 0.0f, 0.0f, 0.0f},
-                     {0.0f, 1.0f, 0.0f, 0.0f},
-                     {0.0f, 2.0f, 0.0f, 0.0f}};
+    curves.points = {{0.0f, 0.0f, 0.0f, 0.1f},
+                     {0.0f, 1.0f, 0.0f, 0.1f},
+                     {0.0f, 2.0f, 0.0f, 0.1f}};
     ClassicClumpRuntimeData data{};
     data.module_name = "Clumping1";
     data.cvs_per_guide = 3u;
@@ -397,10 +420,10 @@ void test_float_runtime_clump() {
     curved.cvs_per_strand = 4u;
     curved.point_counts = {4u};
     curved.roots.resize(1u);
-    curved.points = {{0.0f, 0.0f, 0.0f, 0.0f},
-                     {0.5f, 0.7f, 0.0f, 0.0f},
-                     {-0.2f, 1.4f, 0.0f, 0.0f},
-                     {0.0f, 2.0f, 0.0f, 0.0f}};
+    curved.points = {{0.0f, 0.0f, 0.0f, 0.1f},
+                     {0.5f, 0.7f, 0.0f, 0.1f},
+                     {-0.2f, 1.4f, 0.0f, 0.1f},
+                     {0.0f, 2.0f, 0.0f, 0.1f}};
     ClassicClumpRuntimeData long_guide{};
     long_guide.module_name = "Clumping1";
     long_guide.cvs_per_guide = 4u;

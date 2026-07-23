@@ -1536,10 +1536,16 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             throw std::runtime_error(
                 "Classic width expression produced a non-finite value");
         }
-        // XGen accepts extrapolating fit() expressions and clamps the final
-        // authored diameter to zero before exposing PrimitiveCache::Widths.
-        // The typed bridge still rejects a negative cache value as corrupt.
-        context.c_width = std::max(raw_width, 0.0f);
+        // XgSplinePrimitive::mkGeometry rejects a primitive before applying
+        // FX when either its spline length or authored diameter is below
+        // 1e-4. This is observable with extrapolating PTEX fit() expressions:
+        // the generator silently omits the strand instead of publishing a
+        // zero/negative PrimitiveCache width.
+        if (context.c_length < 1.0e-4f || raw_width < 1.0e-4f) {
+            keep[strand] = 0u;
+            continue;
+        }
+        context.c_width = raw_width;
         for (const ClassicFloatEffect effect : plan.effects) {
             if (effect.type == ClassicFloatEffectType::Clump) {
                 if (effect.module_index >= plan.clumps.size()) {

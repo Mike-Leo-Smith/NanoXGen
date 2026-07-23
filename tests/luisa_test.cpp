@@ -16,6 +16,7 @@
 #include <chrono>
 #include <bit>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -100,6 +101,56 @@ float test_luisa_generation(Device &device, Stream &stream) {
             std::to_string(max_error) + ")");
     }
     return max_error;
+}
+
+void test_luisa_classic_primitive_culling(Device &device, Stream &stream) {
+    constexpr std::uint32_t strand_count = 2u;
+    constexpr std::uint32_t cvs = 2u;
+    nanoxgen::ClassicDescription description{};
+    description.name = "luisaPrimitiveCulling";
+    description.objects.push_back({"SplinePrimitive", {
+        {"fxCVCount", "2", 1u},
+        {"width", "$id == 1 ? 0.0001 : 0.000099", 2u}}, 1u});
+    const nanoxgen::ClassicFloatRuntimePlan plan =
+        nanoxgen::compile_xgen_classic_float_runtime_plan(description);
+    if (!plan.lowering_complete()) {
+        throw std::runtime_error(
+            "Luisa Classic primitive-culling fixture did not lower");
+    }
+
+    const std::array<nanoxgen::RootSample, strand_count> root_samples{};
+    const std::array<std::uint32_t, strand_count * 2u> root_runtime{
+        1u, 0u, 2u, 0u};
+    const std::array<float, 1u> ptex_values{};
+    const std::array<luisa::float4, strand_count * cvs> source{
+        luisa::make_float4(0.0f, 0.0f, 0.0f, 0.1f),
+        luisa::make_float4(0.0f, 1.0f, 0.0f, 0.1f),
+        luisa::make_float4(1.0f, 0.0f, 0.0f, 0.1f),
+        luisa::make_float4(1.0f, 1.0f, 0.0f, 0.1f)};
+    std::array<luisa::float4, strand_count> states{};
+    auto roots = device.create_byte_buffer(
+        root_samples.size() * sizeof(nanoxgen::RootSample));
+    auto runtime = device.create_buffer<std::uint32_t>(root_runtime.size());
+    auto ptex = device.create_buffer<float>(ptex_values.size());
+    auto a = device.create_buffer<luisa::float4>(source.size());
+    auto b = device.create_buffer<luisa::float4>(source.size());
+    auto state_buffer = device.create_buffer<luisa::float4>(states.size());
+    auto primitive = device.compile(
+        nanoxgen::luisa_backend::make_classic_runtime_primitive_kernel(
+            plan, cvs));
+    stream << roots.copy_from(root_samples.data())
+           << runtime.copy_from(root_runtime.data())
+           << ptex.copy_from(ptex_values.data())
+           << a.copy_from(source.data())
+           << primitive(a, b, roots, runtime, ptex, state_buffer)
+                  .dispatch(strand_count)
+           << state_buffer.copy_to(luisa::span{states})
+           << synchronize();
+    if (states[0u].x < 0.0f || states[1u].x >= 0.0f ||
+        states[0u].y != 0.0001f || states[1u].y != 0.000099f) {
+        throw std::runtime_error(
+            "Luisa Classic primitive width culling does not match XGen");
+    }
 }
 
 float test_luisa_classic_effects(Device &device, Stream &stream) {
@@ -497,6 +548,7 @@ int main(int argc, char **argv) try {
 
     const float generation_max_absolute_error =
         test_luisa_generation(device, stream);
+    test_luisa_classic_primitive_culling(device, stream);
     const float classic_effects_max_absolute_error =
         test_luisa_classic_effects(device, stream);
 

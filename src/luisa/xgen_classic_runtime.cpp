@@ -338,10 +338,10 @@ ClassicRuntimePrimitiveKernel make_classic_runtime_primitive_kernel(
         const Float c_width = plan.width
             ? lower_classic_runtime_expression(*plan.width, length_context)
             : length_context.c_width;
-        const Float clamped_width = max(c_width, 0.0f);
+        const Bool live = (c_length >= 1.0e-4f) & (c_width >= 1.0e-4f);
         const auto width_context = make_context(
             plan, strand, roots, root_runtime, &ptex_values,
-            c_length, clamped_width, 0.0f);
+            c_length, c_width, 0.0f);
         Float taper{0.0f};
         if (plan.taper) {
             taper = lower_classic_runtime_expression(*plan.taper, width_context);
@@ -352,7 +352,7 @@ ClassicRuntimePrimitiveKernel make_classic_runtime_primitive_kernel(
                 *plan.taper_start, width_context);
         }
         states.write(strand, make_float4(
-            c_length, clamped_width, taper, taper_start));
+            ite(live, c_length, -1.0f), c_width, taper, taper_start));
         for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
             const Float4 source_point = source.read(first + cv);
             const Float3 position = root_point.xyz() +
@@ -382,6 +382,7 @@ ClassicRuntimeCutKernel make_classic_runtime_cut_kernel(
         const Float input_length = xgen_curve_length(
             source, first, cvs_per_strand);
         const Float4 state = states.read(strand);
+        const Bool live = state.x >= 0.0f;
         const auto context = make_context(
             plan, strand, roots, root_runtime, &ptex_values,
             input_length, state.y, 0.0f);
@@ -432,7 +433,7 @@ ClassicRuntimeCutKernel make_classic_runtime_cut_kernel(
         }
         const Float rebuilt_length = xgen_curve_length(rebuilt);
         states.write(strand, make_float4(
-            ite(cut_parameter < 1.0e-4f, -1.0f, rebuilt_length),
+            ite(live & (cut_parameter >= 1.0e-4f), rebuilt_length, -1.0f),
             state.y, state.z, state.w));
     }};
 }
@@ -475,6 +476,7 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
         const UInt guide_face = guide_runtime.read(runtime_first);
         const UInt guide_prefix = guide_runtime.read(runtime_first + 1u);
         const Float4 state = states.read(strand);
+        const Bool live = state.x >= 0.0f;
         const Float input_length = xgen_curve_length(
             source, first, cvs_per_strand);
         auto context = make_context(
@@ -483,7 +485,7 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
         const Float mask = clamp(
             lower_classic_runtime_expression(clump.mask, context),
             0.0f, 1.0f);
-        const Bool active = valid_guide & (mask > 0.0f);
+        const Bool active = live & valid_guide & (mask > 0.0f);
 
         const std::array<Expr<float>, 3u> guide_seed_arguments{
             static_cast<float>(plan.description_id),
@@ -699,7 +701,7 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
         }
         const Float output_length = xgen_curve_length(output);
         states.write(strand, make_float4(
-            ite(active, output_length, input_length),
+            ite(live, ite(active, output_length, input_length), -1.0f),
             state.y, state.z, state.w));
     }};
 }
@@ -731,6 +733,7 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
         const Float3 surface_normal = roots.read<float3>(
             root_offset + static_cast<uint>(offsetof(RootSample, normal)));
         const Float4 state = states.read(strand);
+        const Bool live = state.x >= 0.0f;
         const Float c_length = xgen_curve_length(
             source, first, cvs_per_strand);
         const Float original_length = polyline_length(
@@ -847,11 +850,13 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
         for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
             const Float3 output =
                 root + (displaced[cv] - root) * length_scale;
+            const Float3 selected = ite(
+                live, output, source.read(first + cv).xyz());
             destination.write(first + cv, make_float4(
-                output, source.read(first + cv).w));
+                selected, source.read(first + cv).w));
         }
         states.write(strand, make_float4(
-            ite(rescale, target_length, noisy_length),
+            ite(live, ite(rescale, target_length, noisy_length), -1.0f),
             state.y, state.z, state.w));
     }};
 }
