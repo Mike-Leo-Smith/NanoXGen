@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
+#include <future>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -293,35 +295,116 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
         guide = valid_to_runtime[guide];
     }
 
-    const XgenPtexMap map{ptex_path};
-    if (map.info().channel_count < 3u) {
+    const XgenPtexMap metadata_map{ptex_path};
+    if (metadata_map.info().channel_count < 3u) {
         fail("clump ID map needs at least three channels");
     }
-    XgenPtexSampleOptions options{};
-    options.filter = XgenPtexFilter::Point;
-    result.strand_guide_indices.reserve(strand_roots.roots.size());
-    for (const RootSample &root : strand_roots.roots) {
-        if (root.surface_face_id >= map.info().face_count) {
-            fail("clump ID map has fewer faces than the patch");
+    result.strand_guide_indices.resize(strand_roots.roots.size());
+    const auto bind_range = [&](const XgenPtexMap &map, std::size_t begin,
+                                std::size_t end) {
+        XgenPtexSampleOptions options{};
+        options.filter = XgenPtexFilter::Point;
+        for (std::size_t strand = begin; strand < end; ++strand) {
+            const RootSample &root = strand_roots.roots[strand];
+            if (root.surface_face_id >= map.info().face_count) {
+                fail("clump ID map has fewer faces than the patch");
+            }
+            std::array<std::uint32_t, 3u> channels{};
+            for (std::uint32_t channel = 0u; channel < channels.size();
+                 ++channel) {
+                channels[channel] = byte_channel(map.sample(
+                    root.surface_face_id, root.uv.x, root.uv.y,
+                    channel, options));
+            }
+            const std::uint32_t encoded = decode_rgb_id(channels);
+            if (encoded == 0u) {
+                result.strand_guide_indices[strand] = kInvalidIndex;
+                continue;
+            }
+            const std::uint32_t global = encoded - 1u;
+            if (global >= global_to_compact.size()) {
+                fail("clump ID map references a missing XPD guide");
+            }
+            result.strand_guide_indices[strand] = global_to_compact[global];
         }
-        std::array<std::uint32_t, 3u> channels{};
-        for (std::uint32_t channel = 0u; channel < channels.size(); ++channel) {
-            channels[channel] = byte_channel(map.sample(
-                root.surface_face_id, root.uv.x, root.uv.y,
-                channel, options));
+    };
+    constexpr std::size_t parallel_threshold = 65536u;
+    constexpr std::size_t chunk_size = 4096u;
+    if (strand_roots.roots.size() < parallel_threshold) {
+        bind_range(metadata_map, 0u, strand_roots.roots.size());
+    } else {
+        const std::size_t worker_count = std::min<std::size_t>(
+            8u, (strand_roots.roots.size() + parallel_threshold - 1u) /
+                    parallel_threshold);
+        std::atomic_size_t next_strand{};
+        std::vector<std::future<void>> workers;
+        workers.reserve(worker_count);
+        for (std::size_t worker = 0u; worker < worker_count; ++worker) {
+            workers.emplace_back(std::async(
+                std::launch::async,
+                [&] {
+                    const XgenPtexMap map{ptex_path};
+                    while (true) {
+                        const std::size_t begin = next_strand.fetch_add(
+                            chunk_size, std::memory_order_relaxed);
+                        if (begin >= strand_roots.roots.size()) { return; }
+                        bind_range(
+                            map, begin,
+                            std::min(
+                                begin + chunk_size,
+                                strand_roots.roots.size()));
+                    }
+                }));
         }
-        const std::uint32_t encoded = decode_rgb_id(channels);
-        if (encoded == 0u) {
-            result.strand_guide_indices.push_back(kInvalidIndex);
-            continue;
-        }
-        const std::uint32_t global = encoded - 1u;
-        if (global >= global_to_compact.size()) {
-            fail("clump ID map references a missing XPD guide");
-        }
-        result.strand_guide_indices.push_back(global_to_compact[global]);
+        for (std::future<void> &worker : workers) { worker.get(); }
     }
     prepare_xgen_classic_clump_runtime_data(result);
+    return result;
+}
+
+std::vector<ClassicClumpRuntimeData>
+build_xgen_classic_clump_runtime_data_parallel(
+    const ClassicDescription &description,
+    const ClassicAlembicAssetInput &surface,
+    const std::filesystem::path &description_directory,
+    const ClassicRootPlan &strand_roots,
+    const ClassicFloatRuntimePlan &runtime_plan,
+    std::uint32_t cvs_per_guide,
+    std::size_t max_workers) {
+    if (max_workers == 0u) {
+        throw std::invalid_argument(
+            "Classic ClumpingFX worker limit must be nonzero");
+    }
+    std::vector<ClassicClumpRuntimeData> result(runtime_plan.clumps.size());
+    if (result.empty()) { return result; }
+    const std::size_t worker_count =
+        std::min({result.size(), max_workers, std::size_t{8u}});
+    if (worker_count == 1u) {
+        for (std::size_t module = 0u; module < result.size(); ++module) {
+            result[module] = build_xgen_classic_clump_runtime_data(
+                description, surface, description_directory, strand_roots,
+                runtime_plan, module, cvs_per_guide);
+        }
+        return result;
+    }
+    std::atomic_size_t next_module{};
+    std::vector<std::future<void>> workers;
+    workers.reserve(worker_count);
+    for (std::size_t worker = 0u; worker < worker_count; ++worker) {
+        workers.emplace_back(std::async(
+            std::launch::async,
+            [&] {
+                while (true) {
+                    const std::size_t module =
+                        next_module.fetch_add(1u, std::memory_order_relaxed);
+                    if (module >= result.size()) { return; }
+                    result[module] = build_xgen_classic_clump_runtime_data(
+                        description, surface, description_directory,
+                        strand_roots, runtime_plan, module, cvs_per_guide);
+                }
+            }));
+    }
+    for (std::future<void> &worker : workers) { worker.get(); }
     return result;
 }
 

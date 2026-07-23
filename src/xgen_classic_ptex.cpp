@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <future>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -61,12 +63,21 @@ ClassicRuntimeInputData build_xgen_classic_runtime_input_data(
         std::numeric_limits<std::size_t>::max() / value_count) {
         throw std::overflow_error("Classic runtime input table is too large");
     }
-    std::vector<std::unique_ptr<XgenPtexMap>> maps;
-    maps.reserve(plan.ptex_paths.size());
+    std::vector<std::filesystem::path> map_paths;
+    map_paths.reserve(plan.ptex_paths.size());
     for (const std::string &path : plan.ptex_paths) {
-        maps.push_back(std::make_unique<XgenPtexMap>(
-            resolve_map(path, description_directory, patch_name)));
+        map_paths.push_back(
+            resolve_map(path, description_directory, patch_name));
     }
+    const auto open_maps = [&] {
+        std::vector<std::unique_ptr<XgenPtexMap>> maps;
+        maps.reserve(map_paths.size());
+        for (const std::filesystem::path &path : map_paths) {
+            maps.push_back(std::make_unique<XgenPtexMap>(path));
+        }
+        return maps;
+    };
+    std::vector<std::unique_ptr<XgenPtexMap>> maps = open_maps();
     if (!plan.custom_inputs.empty() &&
         (roots.primitive_ids.size() != roots.roots.size() ||
          roots.random_prefixes.size() != roots.roots.size())) {
@@ -90,48 +101,85 @@ ClassicRuntimeInputData build_xgen_classic_runtime_input_data(
             }
         }
     }
-    std::vector<float> custom_scratch(custom_scratch_size);
     result.values.resize(roots.roots.size() * value_count);
-    XgenPtexSampleOptions options{};
-    options.filter = XgenPtexFilter::Point;
-    for (std::size_t strand = 0u; strand < roots.roots.size(); ++strand) {
-        const RootSample &root = roots.roots[strand];
-        const std::uint32_t face = root.surface_face_id == kInvalidIndex
-            ? root.triangle_index : root.surface_face_id;
-        for (std::size_t map = 0u; map < maps.size(); ++map) {
-            if (face >= maps[map]->info().face_count) {
-                throw std::runtime_error(
-                    "Classic runtime PTEX map has fewer faces than the patch");
+    const auto sample_range = [&](
+        const std::vector<std::unique_ptr<XgenPtexMap>> &worker_maps,
+        std::size_t begin, std::size_t end) {
+        std::vector<float> custom_scratch(custom_scratch_size);
+        XgenPtexSampleOptions options{};
+        options.filter = XgenPtexFilter::Point;
+        for (std::size_t strand = begin; strand < end; ++strand) {
+            const RootSample &root = roots.roots[strand];
+            const std::uint32_t face = root.surface_face_id == kInvalidIndex
+                ? root.triangle_index : root.surface_face_id;
+            for (std::size_t map = 0u; map < worker_maps.size(); ++map) {
+                if (face >= worker_maps[map]->info().face_count) {
+                    throw std::runtime_error(
+                        "Classic runtime PTEX map has fewer faces than the patch");
+                }
+                result.values[strand * value_count + map] =
+                    worker_maps[map]->sample(
+                        face, root.uv.x, root.uv.y, 0u, options);
             }
-            result.values[strand * value_count + map] = maps[map]->sample(
-                face, root.uv.x, root.uv.y, 0u, options);
+            for (std::size_t custom = 0u;
+                 custom < plan.custom_inputs.size(); ++custom) {
+                const ClassicFloatCustomInput &input =
+                    plan.custom_inputs[custom];
+                const std::array<float, 1u> id{
+                    static_cast<float>(roots.primitive_ids[strand])};
+                const std::span<const float> values =
+                    input.program.inputs.empty()
+                    ? std::span<const float>{}
+                    : std::span<const float>{id};
+                result.values[
+                    strand * value_count + worker_maps.size() + custom] =
+                    evaluate_xgen_scalar_expression_float(
+                        input.program,
+                        {values, root.uv.x, root.uv.y,
+                         xgen_runtime_face_seed(
+                             plan.description_id, plan.description_name, face),
+                         0.0f, roots.random_prefixes[strand], true},
+                        custom_scratch);
+            }
+            for (std::size_t noise = 0u;
+                 noise < plan.pref_noise_inputs.size(); ++noise) {
+                const float frequency =
+                    plan.pref_noise_inputs[noise].frequency;
+                const Vec3 reference = roots.reference_positions[strand];
+                result.values[
+                    strand * value_count + worker_maps.size() +
+                    plan.custom_inputs.size() + noise] =
+                    xgen_classic_noise_float(reference * frequency);
+            }
         }
-        for (std::size_t custom = 0u;
-             custom < plan.custom_inputs.size(); ++custom) {
-            const ClassicFloatCustomInput &input = plan.custom_inputs[custom];
-            const std::array<float, 1u> id{
-                static_cast<float>(roots.primitive_ids[strand])};
-            const std::span<const float> values = input.program.inputs.empty()
-                ? std::span<const float>{}
-                : std::span<const float>{id};
-            result.values[strand * value_count + maps.size() + custom] =
-                evaluate_xgen_scalar_expression_float(
-                    input.program,
-                    {values, root.uv.x, root.uv.y,
-                     xgen_runtime_face_seed(
-                         plan.description_id, plan.description_name, face),
-                     0.0f, roots.random_prefixes[strand], true},
-                    custom_scratch);
+    };
+    constexpr std::size_t parallel_threshold = 65536u;
+    constexpr std::size_t chunk_size = 4096u;
+    if (roots.roots.size() < parallel_threshold) {
+        sample_range(maps, 0u, roots.roots.size());
+    } else {
+        const std::size_t worker_count = std::min<std::size_t>(
+            8u, (roots.roots.size() + parallel_threshold - 1u) /
+                    parallel_threshold);
+        std::atomic_size_t next_strand{};
+        std::vector<std::future<void>> workers;
+        workers.reserve(worker_count);
+        for (std::size_t worker = 0u; worker < worker_count; ++worker) {
+            workers.emplace_back(std::async(
+                std::launch::async,
+                [&] {
+                    const auto worker_maps = open_maps();
+                    while (true) {
+                        const std::size_t begin = next_strand.fetch_add(
+                            chunk_size, std::memory_order_relaxed);
+                        if (begin >= roots.roots.size()) { return; }
+                        sample_range(
+                            worker_maps, begin,
+                            std::min(begin + chunk_size, roots.roots.size()));
+                    }
+                }));
         }
-        for (std::size_t noise = 0u;
-             noise < plan.pref_noise_inputs.size(); ++noise) {
-            const float frequency = plan.pref_noise_inputs[noise].frequency;
-            const Vec3 reference = roots.reference_positions[strand];
-            result.values[
-                strand * value_count + maps.size() +
-                plan.custom_inputs.size() + noise] =
-                xgen_classic_noise_float(reference * frequency);
-        }
+        for (std::future<void> &worker : workers) { worker.get(); }
     }
     return result;
 }

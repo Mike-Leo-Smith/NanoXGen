@@ -357,6 +357,39 @@ void test_float_runtime_cut_culling() {
             "fully cut Classic strand was not culled");
 }
 
+void test_float_runtime_parallel_strands() {
+    ClassicDescription description{};
+    description.name = "parallelStrands";
+    description.objects.push_back({"SplinePrimitive", {
+        {"width", "0.1+0.001*$id", 1u}}, 1u});
+    const ClassicFloatRuntimePlan plan =
+        compile_xgen_classic_float_runtime_plan(description);
+    constexpr std::uint32_t strand_count = 16384u;
+    PackedGeneratedCurves curves{};
+    curves.strand_count = strand_count;
+    curves.cvs_per_strand = 2u;
+    curves.point_counts.assign(strand_count, 2u);
+    curves.points.resize(static_cast<std::size_t>(strand_count) * 2u);
+    curves.roots.resize(strand_count);
+    std::vector<std::uint32_t> primitive_ids(strand_count);
+    for (std::uint32_t strand = 0u; strand < strand_count; ++strand) {
+        curves.points[static_cast<std::size_t>(strand) * 2u + 1u].y = 1.0f;
+        primitive_ids[strand] = strand % 97u;
+    }
+    apply_xgen_classic_float_runtime_plan_cpu(
+        curves, plan, 1.0f, {}, {}, primitive_ids);
+    require(curves.strand_count == strand_count,
+            "parallel Classic runtime changed the strand count");
+    for (std::uint32_t strand = 0u; strand < strand_count; ++strand) {
+        const float expected =
+            0.5f * (0.1f + 0.001f * primitive_ids[strand]);
+        const std::size_t point = static_cast<std::size_t>(strand) * 2u;
+        require(curves.points[point].radius == expected &&
+                    curves.points[point + 1u].radius == expected,
+                "parallel Classic runtime produced a non-deterministic width");
+    }
+}
+
 void test_float_runtime_spline_length_binding() {
     ClassicDescription description{};
     description.name = "splineLength";
@@ -632,6 +665,7 @@ int main() try {
     test_float_runtime_plan();
     test_float_runtime_fallbacks_and_validation();
     test_float_runtime_cut_culling();
+    test_float_runtime_parallel_strands();
     test_float_runtime_spline_length_binding();
     test_float_runtime_clump();
     test_xpd3_reader();

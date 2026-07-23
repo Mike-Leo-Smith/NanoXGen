@@ -3,9 +3,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <charconv>
 #include <cmath>
+#include <future>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -1564,9 +1566,6 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             runtime_clump_data[module] = &prepared_clump_data.back();
         }
     }
-    std::vector<Vec3> cut_source;
-    std::vector<Vec3> resampled;
-    std::vector<Vec3> clump_noise_axis;
     std::vector<std::uint8_t> keep(curves.strand_count, 1u);
     std::size_t scratch_size = 0u;
     const auto include_scratch = [&](
@@ -1604,12 +1603,17 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                 scratch_size, expression->program.instructions.size());
         }
     }
-    std::vector<float> scratch(scratch_size);
-    const auto evaluate = [&](const ClassicFloatRuntimeExpression &expression,
-                              const ClassicFloatRuntimeContext &context) {
-        return evaluate_runtime_expression(expression, context, scratch);
-    };
-    for (std::uint32_t strand = 0u; strand < curves.strand_count; ++strand) {
+    const auto apply_range = [&](std::uint32_t begin, std::uint32_t end) {
+        std::vector<Vec3> cut_source;
+        std::vector<Vec3> resampled;
+        std::vector<Vec3> clump_noise_axis;
+        std::vector<float> scratch(scratch_size);
+        const auto evaluate = [&](
+            const ClassicFloatRuntimeExpression &expression,
+            const ClassicFloatRuntimeContext &context) {
+            return evaluate_runtime_expression(expression, context, scratch);
+        };
+        for (std::uint32_t strand = begin; strand < end; ++strand) {
         if (curves.point_counts[strand] != curves.cvs_per_strand) {
             throw std::invalid_argument(
                 "Classic runtime requires fixed point counts");
@@ -1850,6 +1854,37 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             points[cv].radius =
                 0.5f * std::max(raw_diameter, 0.0f) * radius_scale;
         }
+        }
+    };
+    constexpr std::uint32_t parallel_threshold = 16384u;
+    constexpr std::uint32_t chunk_size = 2048u;
+    if (curves.strand_count < parallel_threshold) {
+        apply_range(0u, curves.strand_count);
+    } else {
+        const std::size_t worker_count = std::min<std::size_t>(
+            8u, (static_cast<std::size_t>(curves.strand_count) +
+                 parallel_threshold - 1u) /
+                    parallel_threshold);
+        std::atomic_uint32_t next_strand{};
+        std::vector<std::future<void>> workers;
+        workers.reserve(worker_count);
+        for (std::size_t worker = 0u; worker < worker_count; ++worker) {
+            workers.emplace_back(std::async(
+                std::launch::async,
+                [&] {
+                    while (true) {
+                        const std::uint32_t begin =
+                            next_strand.fetch_add(
+                                chunk_size, std::memory_order_relaxed);
+                        if (begin >= curves.strand_count) { return; }
+                        apply_range(
+                            begin,
+                            std::min(
+                                begin + chunk_size, curves.strand_count));
+                    }
+                }));
+        }
+        for (std::future<void> &worker : workers) { worker.get(); }
     }
     std::uint32_t write = 0u;
     for (std::uint32_t read = 0u; read < curves.strand_count; ++read) {

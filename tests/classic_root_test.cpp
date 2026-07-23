@@ -164,6 +164,33 @@ void test_full_mask_and_generation() {
                         first.reference_positions[strand] * 2.0f),
                 "runtime $Prefg noise sample mismatch");
     }
+    constexpr std::size_t parallel_strands = 131072u;
+    nanoxgen::ClassicRootPlan repeated{};
+    repeated.roots.reserve(parallel_strands);
+    repeated.reference_positions.reserve(parallel_strands);
+    repeated.primitive_ids.reserve(parallel_strands);
+    repeated.random_prefixes.reserve(parallel_strands);
+    for (std::size_t strand = 0u; strand < parallel_strands; ++strand) {
+        const std::size_t source = strand % first.roots.size();
+        repeated.roots.push_back(first.roots[source]);
+        repeated.reference_positions.push_back(
+            first.reference_positions[source]);
+        repeated.primitive_ids.push_back(first.primitive_ids[source]);
+        repeated.random_prefixes.push_back(first.random_prefixes[source]);
+    }
+    const nanoxgen::ClassicRuntimeInputData parallel_runtime_data =
+        nanoxgen::build_xgen_classic_runtime_input_data(
+            runtime, fixture.path, "testPatch", repeated);
+    require(parallel_runtime_data.values.size() == parallel_strands * 3u,
+            "parallel runtime PTEX table dimensions mismatch");
+    for (std::size_t strand = 0u; strand < parallel_strands; ++strand) {
+        const std::size_t source = strand % first.roots.size();
+        require(std::memcmp(
+                    parallel_runtime_data.values.data() + strand * 3u,
+                    runtime_data.values.data() + source * 3u,
+                    3u * sizeof(float)) == 0,
+                "parallel runtime PTEX row differs from serial input");
+    }
 
     const nanoxgen::Asset asset = nanoxgen::build_asset(input.asset);
     nanoxgen::GenerationParams params{};
