@@ -1,5 +1,6 @@
 #include "nanoxgen/generate.h"
 #include "nanoxgen/luisa/generate.h"
+#include "nanoxgen/luisa/xgen_classic_collection.h"
 #include "nanoxgen/luisa/xgen_classic_runtime.h"
 #include "nanoxgen/luisa/xgen_expression.h"
 #include "nanoxgen/xgen_classic_runtime.h"
@@ -22,6 +23,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace luisa;
@@ -31,6 +33,101 @@ namespace {
 
 float milliseconds(std::chrono::steady_clock::duration duration) {
     return std::chrono::duration<float, std::milli>(duration).count();
+}
+
+void test_external_device_collection_compile(
+    Device &device, Stream &stream) {
+    std::array<nanoxgen::ClassicFloatRuntimePlan, 2u> plans;
+    for (std::size_t index = 0u; index < plans.size(); ++index) {
+        nanoxgen::ClassicDescription description{};
+        description.name = "collection_" + std::to_string(index);
+        description.objects.push_back({"SplinePrimitive", {
+            {"fxCVCount", "4", 1u},
+            {"width", index == 0u ? "0.1" : "0.2", 2u}}, 1u});
+        plans[index] =
+            nanoxgen::compile_xgen_classic_float_runtime_plan(description);
+    }
+    std::array<nanoxgen::luisa_backend::ClassicCollectionCompileInput, 2u>
+        inputs{{
+            {&plans[0], 4u, {}, true},
+            {&plans[1], 4u, {}, true},
+    }};
+    nanoxgen::luisa_backend::ClassicCollectionCompileOptions options{};
+    auto pipeline = nanoxgen::luisa_backend::compile_classic_collection(
+        device, inputs, options);
+    if (pipeline.description_count() != 2u ||
+        pipeline.description_name(0u) != "collection_0" ||
+        pipeline.description_name(1u) != "collection_1" ||
+        pipeline.compile_stats().kernel_count != 6u ||
+        pipeline.compile_stats().worker_limit !=
+            std::max<std::size_t>(
+                std::thread::hardware_concurrency(), 1u) ||
+        pipeline.output_is_points_a(0u)) {
+        throw std::runtime_error(
+            "external-device Classic collection pipeline is invalid");
+    }
+
+    const std::array<nanoxgen::RootSample, 1u> roots{{
+        {{0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.25f, 0.75f},
+         0u, {0.0f, 0.0f}, 0u},
+    }};
+    const std::array<std::uint32_t, 2u> offsets{{0u, 1u}};
+    const std::array<nanoxgen::ClassicGuideInfluence, 1u> influences{{
+        {0u, 1.0f},
+    }};
+    const std::array<luisa::float3, 4u> guides{{
+        {0.0f, 0.0f, 0.0f}, {0.0f, 0.5f, 0.0f},
+        {0.0f, 1.0f, 0.0f}, {0.0f, 1.5f, 0.0f},
+    }};
+    const std::array<std::uint32_t, 2u> root_runtime{{0u, 0u}};
+    const std::array<float, 1u> runtime_inputs{{0.0f}};
+    const std::array<luisa::float3, 1u> vector_inputs{{
+        {1.0f, 0.0f, 0.0f},
+    }};
+    auto root_buffer = device.create_byte_buffer(sizeof(roots));
+    auto offset_buffer =
+        device.create_buffer<std::uint32_t>(offsets.size());
+    auto influence_buffer = device.create_byte_buffer(sizeof(influences));
+    auto guide_buffer = device.create_buffer<luisa::float3>(guides.size());
+    auto root_runtime_buffer =
+        device.create_buffer<std::uint32_t>(root_runtime.size());
+    auto runtime_input_buffer =
+        device.create_buffer<float>(runtime_inputs.size());
+    auto tangent_buffer =
+        device.create_buffer<luisa::float3>(vector_inputs.size());
+    auto noise_domain_buffer =
+        device.create_buffer<luisa::float3>(vector_inputs.size());
+    auto points_a = device.create_buffer<luisa::float4>(4u);
+    auto points_b = device.create_buffer<luisa::float4>(4u);
+    auto states = device.create_buffer<luisa::float4>(1u);
+    const nanoxgen::luisa_backend::ClassicCollectionDispatchResources
+        resources{
+            root_buffer.view(), offset_buffer.view(),
+            influence_buffer.view(), guide_buffer.view(),
+            root_runtime_buffer.view(), runtime_input_buffer.view(),
+            tangent_buffer.view(), noise_domain_buffer.view(),
+            points_a.view(), points_b.view(), states.view(),
+            {}, {}, {}, {}};
+    std::array<luisa::float4, 4u> output{};
+    stream << root_buffer.copy_from(roots.data())
+           << offset_buffer.copy_from(offsets.data())
+           << influence_buffer.copy_from(influences.data())
+           << guide_buffer.copy_from(guides.data())
+           << root_runtime_buffer.copy_from(root_runtime.data())
+           << runtime_input_buffer.copy_from(runtime_inputs.data())
+           << tangent_buffer.copy_from(vector_inputs.data())
+           << noise_domain_buffer.copy_from(vector_inputs.data());
+    pipeline.encode(stream, 0u, resources, 1u);
+    stream << points_b.copy_to(luisa::span{output}) << synchronize();
+    for (std::size_t cv = 0u; cv < output.size(); ++cv) {
+        if (output[cv].x != 0.0f ||
+            output[cv].y != guides[cv].y ||
+            output[cv].z != 0.0f ||
+            output[cv].w != 0.05f) {
+            throw std::runtime_error(
+                "external-device Classic collection encode mismatch");
+        }
+    }
 }
 
 nanoxgen::Asset make_luisa_generation_asset() {
@@ -406,6 +503,8 @@ int main(int argc, char **argv) try {
     if (device.backend_name() != backend) {
         throw std::runtime_error("LuisaCompute loaded an unexpected backend");
     }
+    Stream stream = device.create_stream();
+    test_external_device_collection_compile(device, stream);
 
     constexpr std::uint32_t count = 65536u;
     std::vector<std::uint32_t> input(count);
@@ -438,7 +537,6 @@ int main(int argc, char **argv) try {
     const auto compile_start = std::chrono::steady_clock::now();
     auto shader = device.compile(evaluate);
     const auto compile_end = std::chrono::steady_clock::now();
-    Stream stream = device.create_stream();
     const auto dispatch_start = std::chrono::steady_clock::now();
     stream << input_buffer.copy_from(luisa::span{input})
            << shader(input_buffer, hash_buffer, width_buffer).dispatch(count)

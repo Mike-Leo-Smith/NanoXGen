@@ -216,6 +216,7 @@ if(NANOXGEN_ENABLE_LUISA)
   add_library(nanoxgen_luisa STATIC
     src/luisa/generate.cpp
     src/luisa/xgen_expression.cpp
+    src/luisa/xgen_classic_collection.cpp
     src/luisa/xgen_classic_runtime.cpp)
   add_library(NanoXGen::nanoxgen_luisa ALIAS nanoxgen_luisa)
   target_include_directories(
@@ -298,6 +299,7 @@ endif()
 
 if(NANOXGEN_ENABLE_ALEMBIC AND NANOXGEN_ENABLE_PTEX)
   add_library(nanoxgen_classic_native STATIC
+    src/xgen_classic_collection.cpp
     src/xgen_classic_clump.cpp
     src/xgen_classic_ptex.cpp
     src/xgen_classic_roots.cpp
