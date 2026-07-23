@@ -63,6 +63,7 @@ struct Options {
     std::optional<std::filesystem::path> reference_nxc;
     std::optional<std::filesystem::path> output_nxc;
     bool fast_math{true};
+    bool cpu_validation{true};
 };
 
 Options parse_options(int argc, char **argv) {
@@ -72,6 +73,7 @@ Options parse_options(int argc, char **argv) {
             "BACKEND COLLECTION.xgen PATCHES.abc DESCRIPTIONS_ROOT "
             "DESCRIPTION [--warmup N] [--repeats N] [--base-only] "
             "[--effect-count N] [--strict-math] "
+            "[--no-cpu-validation] "
             "[--reference-nxc FILE] [--output-nxc FILE]");
     }
     Options result{argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]};
@@ -83,6 +85,10 @@ Options parse_options(int argc, char **argv) {
         }
         if (argument == "--strict-math") {
             result.fast_math = false;
+            continue;
+        }
+        if (argument == "--no-cpu-validation") {
+            result.cpu_validation = false;
             continue;
         }
         if (argument != "--warmup" && argument != "--repeats" &&
@@ -596,25 +602,28 @@ int main(int argc, char **argv) try {
     }
 
     const Clock::time_point cpu_begin = Clock::now();
-    nanoxgen::PackedGeneratedCurves cpu =
-        nanoxgen::generate_xgen_classic_base_curves_cpu(
-            imported.asset, root_plan, cvs);
-    if (!options.base_only) {
-        nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
-            cpu, runtime, 1.0f, root_plan.surface_tangents,
-            root_plan.random_prefixes, root_plan.primitive_ids, clump_data,
-            runtime_inputs.values, root_plan.reference_positions);
+    std::optional<nanoxgen::PackedGeneratedCurves> cpu;
+    std::optional<ErrorStats> error;
+    if (options.cpu_validation) {
+        cpu.emplace(nanoxgen::generate_xgen_classic_base_curves_cpu(
+            imported.asset, root_plan, cvs));
+        if (!options.base_only) {
+            nanoxgen::apply_xgen_classic_float_runtime_plan_cpu(
+                *cpu, runtime, 1.0f, root_plan.surface_tangents,
+                root_plan.random_prefixes, root_plan.primitive_ids, clump_data,
+                runtime_inputs.values, root_plan.reference_positions);
+        }
+        nanoxgen::add_xgen_classic_renderer_endpoints(*cpu);
+        error = compare(gpu, *cpu);
     }
-    nanoxgen::add_xgen_classic_renderer_endpoints(cpu);
     const Clock::time_point cpu_end = Clock::now();
-    const ErrorStats error = compare(gpu, cpu);
     std::optional<ErrorStats> reference_error;
     std::optional<ErrorStats> cpu_reference_error;
     if (options.reference_nxc) {
         const nanoxgen::CurveCache reference =
             nanoxgen::load_curve_cache(*options.reference_nxc);
         reference_error = compare_cache(gpu, reference);
-        cpu_reference_error = compare_cache(cpu, reference);
+        if (cpu) { cpu_reference_error = compare_cache(*cpu, reference); }
     }
     if (options.output_nxc) {
         std::vector<std::uint32_t> face_ids(gpu.strand_count);
@@ -645,6 +654,8 @@ int main(int argc, char **argv) try {
               << (parallel_jit ? "true" : "false")
               << ",\"shader_cache\":false,\"fast_math\":"
               << (options.fast_math ? "true" : "false")
+              << ",\"cpu_validation\":"
+              << (options.cpu_validation ? "true" : "false")
               << ",\"includes_file_io\":true"
               << ",\"includes_autodesk_serialization\":false"
               << ",\"input_roots\":" << strand_count
@@ -667,10 +678,15 @@ int main(int argc, char **argv) try {
               << ",\"warm_p90_ms\":"
               << percentile(warm_samples, 0.9)
               << ",\"cpu_generation_only_ms\":"
-              << milliseconds(cpu_begin, cpu_end)
-              << ",\"max_position_error_vs_cpu\":" << error.position
-              << ",\"max_radius_error_vs_cpu\":" << error.radius
-              << ",\"bit_mismatches_vs_cpu\":" << error.bit_mismatches
+              << (options.cpu_validation
+                      ? milliseconds(cpu_begin, cpu_end) : -1.0)
+              << ",\"max_position_error_vs_cpu\":"
+              << (error ? error->position : -1.0f)
+              << ",\"max_radius_error_vs_cpu\":"
+              << (error ? error->radius : -1.0f)
+              << ",\"bit_mismatches_vs_cpu\":"
+              << (error
+                      ? static_cast<long long>(error->bit_mismatches) : -1ll)
               << ",\"max_position_error_vs_reference\":"
               << (reference_error ? reference_error->position : -1.0f)
               << ",\"max_radius_error_vs_reference\":"
