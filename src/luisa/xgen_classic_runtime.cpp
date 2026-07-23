@@ -221,12 +221,17 @@ Float3 safe_normalize(Expr<float3> value,
                value / sqrt(max(length_squared, 1.0e-20f)), fallback);
 }
 
-Float3 rotate_by(Expr<float3> value, Expr<float3> axis,
-                 Expr<float> angle) noexcept {
-    const Float cosine = cos(angle);
-    const Float sine = sin(angle);
-    return value * cosine + cross(axis, value) * sine +
-           axis * dot(axis, value) * (1.0f - cosine);
+Float3 transport_minimal(Expr<float3> value, Expr<float3> from,
+                         Expr<float3> to) noexcept {
+    const Float3 axis = cross(from, to);
+    const Float axis_length_squared = dot(axis, axis);
+    const Float cosine = clamp(dot(from, to), -1.0f, 1.0f);
+    const Float3 first_cross = cross(axis, value);
+    const Float3 rotated = value + first_cross +
+        cross(axis, first_cross) / max(1.0f + cosine, 1.0e-20f);
+    return ite((axis_length_squared > 1.0e-20f) &
+                   (cosine > -0.999999f),
+               safe_normalize(rotated, value), value);
 }
 
 } // namespace
@@ -535,18 +540,8 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
         Float3 current_tangent = safe_normalize(
             guide_axes.read(guide_first + 1u).xyz() - guide_root,
             surface_normal);
-        Float3 rotation_axis = cross(surface_normal, current_tangent);
-        Float rotation_axis_length_squared = dot(rotation_axis, rotation_axis);
-        Float3 normalized_axis = safe_normalize(
-            rotation_axis, make_float3(1.0f, 0.0f, 0.0f));
-        Float turn_angle = acos(clamp(
-            dot(surface_normal, current_tangent), -1.0f, 1.0f));
-        transported_u = ite(
-            rotation_axis_length_squared > 1.0e-20f,
-            safe_normalize(
-                rotate_by(transported_u, normalized_axis, turn_angle),
-                transported_u),
-            transported_u);
+        transported_u = transport_minimal(
+            transported_u, surface_normal, current_tangent);
         vector<Expr<float3>> noisy_axis;
         noisy_axis.reserve(cvs_per_strand);
         noisy_axis.emplace_back(guide_root);
@@ -562,32 +557,24 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
                 const Float3 next_tangent = safe_normalize(
                     guide_axes.read(guide_first + cv + 1u).xyz() - axis_point,
                     current_tangent);
-                rotation_axis = cross(current_tangent, next_tangent);
-                rotation_axis_length_squared = dot(rotation_axis, rotation_axis);
-                normalized_axis = safe_normalize(
-                    rotation_axis, make_float3(1.0f, 0.0f, 0.0f));
-                turn_angle = acos(clamp(
-                    dot(current_tangent, next_tangent), -1.0f, 1.0f));
-                const Bool turns = rotation_axis_length_squared > 1.0e-20f;
+                const Float3 rotation_axis =
+                    cross(current_tangent, next_tangent);
+                const Bool turns =
+                    dot(rotation_axis, rotation_axis) > 1.0e-20f;
+                const Float3 midpoint_tangent = safe_normalize(
+                    current_tangent + next_tangent, current_tangent);
                 sample_tangent = ite(
-                    turns,
-                    safe_normalize(
-                        rotate_by(current_tangent, normalized_axis,
-                                  0.5f * turn_angle),
-                        current_tangent),
+                    turns, midpoint_tangent,
                     next_tangent);
                 sample_u = ite(
                     turns,
-                    safe_normalize(
-                        rotate_by(transported_u, normalized_axis,
-                                  0.5f * turn_angle),
-                        transported_u),
+                    transport_minimal(
+                        transported_u, current_tangent, midpoint_tangent),
                     transported_u);
                 transported_u = ite(
                     turns,
-                    safe_normalize(
-                        rotate_by(transported_u, normalized_axis, turn_angle),
-                        transported_u),
+                    transport_minimal(
+                        transported_u, current_tangent, next_tangent),
                     transported_u);
                 current_tangent = next_tangent;
             }
@@ -794,21 +781,8 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
                     source.read(first + cv + 1u).xyz() - current_base;
                 next_tangent = safe_normalize(segment, prior_tangent);
             }
-            const Float3 rotation_axis = cross(prior_tangent, next_tangent);
-            const Float rotation_axis_length_squared =
-                dot(rotation_axis, rotation_axis);
-            const Float tangent_dot = clamp(
-                dot(prior_tangent, next_tangent), -1.0f, 1.0f);
-            const Float3 first_cross =
-                cross(rotation_axis, transported_normal);
-            const Float3 rotated = transported_normal + first_cross +
-                cross(rotation_axis, first_cross) /
-                    max(1.0f + tangent_dot, 1.0e-20f);
-            transported_normal = ite(
-                (rotation_axis_length_squared > 1.0e-20f) &
-                    (tangent_dot > -0.999999f),
-                safe_normalize(rotated, transported_normal),
-                transported_normal);
+            transported_normal = transport_minimal(
+                transported_normal, prior_tangent, next_tangent);
             const Float3 normal = transported_normal;
             const Float3 binormal = safe_normalize(
                 cross(normal, next_tangent), make_float3(0.0f));

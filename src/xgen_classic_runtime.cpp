@@ -1024,6 +1024,17 @@ void build_clump_noise_axis(
     } else {
         surface_tangent = normalize(surface_tangent);
     }
+    const auto transport = [](Vec3 value, Vec3 from, Vec3 to) {
+        const Vec3 axis = cross(from, to);
+        const float axis_length_squared = length_squared(axis);
+        const float cosine = std::clamp(dot(from, to), -1.0f, 1.0f);
+        if (!(axis_length_squared > 1.0e-20f) || cosine <= -0.999999f) {
+            return value;
+        }
+        const Vec3 first_cross = cross(axis, value);
+        return normalize(value + first_cross +
+                         cross(axis, first_cross) * (1.0f / (1.0f + cosine)));
+    };
     Vec3 transported_u = surface_tangent;
     Vec3 current_tangent = surface_normal;
     const Vec3 first_segment = axis[1u] - axis[0u];
@@ -1032,10 +1043,8 @@ void build_clump_noise_axis(
     }
     Vec3 rotation_axis = cross(surface_normal, current_tangent);
     if (length_squared(rotation_axis) > 1.0e-20f) {
-        const float angle = std::acos(std::clamp(
-            dot(surface_normal, current_tangent), -1.0f, 1.0f));
-        transported_u = normalize(rotate_by(
-            transported_u, normalize(rotation_axis), angle));
+        transported_u = transport(
+            transported_u, surface_normal, current_tangent);
     }
     float travelled = 0.0f;
     for (std::uint32_t cv = 1u; cv < axis.size(); ++cv) {
@@ -1044,20 +1053,16 @@ void build_clump_noise_axis(
         Vec3 sample_u = transported_u;
         bool advance_frame = false;
         Vec3 next_tangent = current_tangent;
-        float turn_angle = 0.0f;
         if (cv + 1u < axis.size()) {
             const Vec3 segment = axis[cv + 1u] - axis[cv];
             if (length_squared(segment) > 1.0e-20f) {
                 next_tangent = normalize(segment);
                 rotation_axis = cross(current_tangent, next_tangent);
                 if (length_squared(rotation_axis) > 1.0e-20f) {
-                    rotation_axis = normalize(rotation_axis);
-                    turn_angle = std::acos(std::clamp(
-                        dot(current_tangent, next_tangent), -1.0f, 1.0f));
-                    sample_tangent = normalize(rotate_by(
-                        current_tangent, rotation_axis, 0.5f * turn_angle));
-                    sample_u = normalize(rotate_by(
-                        transported_u, rotation_axis, 0.5f * turn_angle));
+                    sample_tangent = normalize(
+                        current_tangent + next_tangent);
+                    sample_u = transport(
+                        transported_u, current_tangent, sample_tangent);
                     advance_frame = true;
                 } else {
                     current_tangent = next_tangent;
@@ -1086,8 +1091,8 @@ void build_clump_noise_axis(
         output[cv] = output[cv] +
             (sample_u * first + transported_v * second) * magnitude;
         if (advance_frame) {
-            transported_u = normalize(rotate_by(
-                transported_u, rotation_axis, turn_angle));
+            transported_u = transport(
+                transported_u, current_tangent, next_tangent);
             current_tangent = next_tangent;
         }
     }
