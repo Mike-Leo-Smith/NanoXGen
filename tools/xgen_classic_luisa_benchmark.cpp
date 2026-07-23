@@ -39,6 +39,63 @@ double milliseconds(Clock::time_point begin, Clock::time_point end) {
     return std::chrono::duration<double, std::milli>(end - begin).count();
 }
 
+struct CompileTiming {
+    Clock::time_point begin;
+    Clock::time_point end;
+};
+
+template<typename Shader>
+struct TimedShader {
+    Shader shader;
+    CompileTiming timing;
+};
+
+template<typename Kernel>
+auto compile_timed(Device &device, Kernel kernel, ShaderOption option) {
+    const Clock::time_point begin = Clock::now();
+    auto shader = device.compile(kernel, option);
+    const Clock::time_point end = Clock::now();
+    return TimedShader<decltype(shader)>{
+        std::move(shader), {begin, end}};
+}
+
+double timing_union_milliseconds(
+    std::vector<CompileTiming> timings,
+    std::optional<Clock::time_point> clip_begin = std::nullopt,
+    std::optional<Clock::time_point> clip_end = std::nullopt) {
+    if (timings.empty()) { return 0.0; }
+    for (CompileTiming &timing : timings) {
+        if (clip_begin) { timing.begin = std::max(timing.begin, *clip_begin); }
+        if (clip_end) { timing.end = std::min(timing.end, *clip_end); }
+    }
+    timings.erase(
+        std::remove_if(
+            timings.begin(), timings.end(),
+            [](const CompileTiming &timing) {
+                return timing.end <= timing.begin;
+            }),
+        timings.end());
+    if (timings.empty()) { return 0.0; }
+    std::sort(
+        timings.begin(), timings.end(),
+        [](const CompileTiming &a, const CompileTiming &b) {
+            return a.begin < b.begin;
+        });
+    Clock::time_point begin = timings.front().begin;
+    Clock::time_point end = timings.front().end;
+    double result = 0.0;
+    for (std::size_t index = 1u; index < timings.size(); ++index) {
+        if (timings[index].begin <= end) {
+            end = std::max(end, timings[index].end);
+            continue;
+        }
+        result += milliseconds(begin, end);
+        begin = timings[index].begin;
+        end = timings[index].end;
+    }
+    return result + milliseconds(begin, end);
+}
+
 std::uint32_t parse_u32(std::string_view text, const char *label,
                         bool allow_zero = false) {
     std::size_t consumed{};
@@ -303,18 +360,12 @@ int main(int argc, char **argv) try {
 
     const nanoxgen::ClassicCollection collection =
         nanoxgen::load_xgen_classic_collection(options.collection);
+    const Clock::time_point collection_load_end = Clock::now();
     const nanoxgen::ClassicDescription *description =
         nanoxgen::find_classic_description(collection, options.description);
     if (description == nullptr) {
         throw std::runtime_error("Classic description was not found");
     }
-    const nanoxgen::ClassicAlembicAssetInput imported =
-        nanoxgen::build_xgen_classic_alembic_asset_input(
-            *description, options.archive);
-    const nanoxgen::ClassicRootPlan root_plan =
-        nanoxgen::build_xgen_classic_random_root_plan(
-            *description, imported,
-            options.descriptions_root / description->name);
     nanoxgen::ClassicFloatRuntimePlan runtime =
         nanoxgen::compile_xgen_classic_float_runtime_plan(
             *description, collection.palette_attributes);
@@ -322,6 +373,46 @@ int main(int argc, char **argv) try {
         throw std::runtime_error(
             "description needs fallback: " + runtime.fallback_reasons.front());
     }
+    const Clock::time_point runtime_plan_end = Clock::now();
+    const std::uint32_t cvs = runtime.fx_cv_count;
+    const std::size_t active_effect_count = std::min<std::size_t>(
+        options.effect_count, runtime.effects.size());
+
+    ShaderOption shader_option{};
+    shader_option.enable_cache = false;
+    shader_option.enable_fast_math = options.fast_math;
+    // HIP and Vulkan use independent external compiler invocations for these
+    // kernels and Luisa's device compilation path is safe to enter in
+    // parallel. Keep other backends sequential until they are validated: in
+    // particular, the fallback backend currently has process-global compiler
+    // state in the Luisa next branch.
+    const bool parallel_jit =
+        options.backend == "hip" || options.backend == "vk";
+    const std::launch jit_launch = parallel_jit
+        ? std::launch::async
+        : std::launch::deferred;
+    using NoiseShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
+        ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
+        Buffer<luisa::float3>, Buffer<luisa::float3>,
+        Buffer<luisa::float4>>;
+    using CutShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
+        ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
+        Buffer<luisa::float4>>;
+    using ClumpShader = Shader1D<
+        Buffer<luisa::float4>, Buffer<luisa::float4>, ByteBuffer,
+        Buffer<std::uint32_t>, Buffer<float>, Buffer<luisa::float4>,
+        Buffer<luisa::float4>, Buffer<luisa::float4>,
+        Buffer<std::uint32_t>, Buffer<std::uint32_t>>;
+
+    const nanoxgen::ClassicAlembicAssetInput imported =
+        nanoxgen::build_xgen_classic_alembic_asset_input(
+            *description, options.archive);
+    const Clock::time_point alembic_import_end = Clock::now();
+    const nanoxgen::ClassicRootPlan root_plan =
+        nanoxgen::build_xgen_classic_random_root_plan(
+            *description, imported,
+            options.descriptions_root / description->name);
+    const Clock::time_point root_plan_end = Clock::now();
     if (root_plan.roots.empty() || root_plan.influence_offsets.empty()) {
         throw std::runtime_error("Classic root plan has no guide associations");
     }
@@ -332,6 +423,7 @@ int main(int argc, char **argv) try {
         nanoxgen::build_xgen_classic_runtime_input_data(
             runtime, options.descriptions_root / description->name,
             description->patches.front().name, root_plan);
+    const Clock::time_point runtime_inputs_end = Clock::now();
     if (root_plan.primitive_ids.size() != root_plan.roots.size() ||
         root_plan.random_prefixes.size() != root_plan.roots.size() ||
         root_plan.surface_tangents.size() != root_plan.roots.size() ||
@@ -339,19 +431,13 @@ int main(int argc, char **argv) try {
         root_plan.influence_offsets.size() != root_plan.roots.size() + 1u) {
         throw std::runtime_error("Classic root plan metadata is inconsistent");
     }
-    const std::uint32_t cvs = runtime.fx_cv_count;
-    std::vector<nanoxgen::ClassicClumpRuntimeData> clump_data;
-    clump_data.reserve(runtime.clumps.size());
-    for (std::size_t module = 0u; module < runtime.clumps.size(); ++module) {
-        clump_data.push_back(
-            nanoxgen::build_xgen_classic_clump_runtime_data(
-                *description, imported,
-                options.descriptions_root / description->name,
-                root_plan, runtime, module, cvs));
-    }
-    if (options.effect_count < runtime.effects.size()) {
-        runtime.effects.resize(options.effect_count);
-    }
+    const std::vector<nanoxgen::ClassicClumpRuntimeData> clump_data =
+        nanoxgen::build_xgen_classic_clump_runtime_data_parallel(
+            *description, imported,
+            options.descriptions_root / description->name,
+            root_plan, runtime, cvs);
+    const Clock::time_point clump_data_end = Clock::now();
+    runtime.effects.resize(active_effect_count);
     const std::vector<nanoxgen::Vec3> rebuilt =
         nanoxgen::rebuild_xgen_classic_guides_for_device(imported.asset, cvs);
     std::vector<luisa::float3> rebuilt_gpu;
@@ -359,6 +445,7 @@ int main(int argc, char **argv) try {
     for (const nanoxgen::Vec3 value : rebuilt) {
         rebuilt_gpu.emplace_back(value.x, value.y, value.z);
     }
+    const Clock::time_point guide_rebuild_end = Clock::now();
     std::vector<luisa::float3> tangents;
     tangents.reserve(root_plan.surface_tangents.size());
     for (const nanoxgen::Vec3 value : root_plan.surface_tangents) {
@@ -435,6 +522,91 @@ int main(int argc, char **argv) try {
     }
     const Clock::time_point native_prepare_end = Clock::now();
 
+    auto base_kernel =
+        nanoxgen::luisa_backend::make_classic_base_generate_kernel(
+            cvs, 0.0f, 1.0f, true);
+    auto primitive_kernel =
+        nanoxgen::luisa_backend::make_classic_runtime_primitive_kernel(
+            runtime, cvs);
+    auto width_kernel =
+        nanoxgen::luisa_backend::make_classic_runtime_width_kernel(
+            runtime, cvs);
+    auto base_future = std::async(
+        jit_launch,
+        [&device, shader_option, kernel = std::move(base_kernel)]() mutable {
+            return compile_timed(
+                device, std::move(kernel), shader_option);
+        });
+    auto primitive_future = std::async(
+        jit_launch,
+        [&device, shader_option,
+         kernel = std::move(primitive_kernel)]() mutable {
+            return compile_timed(
+                device, std::move(kernel), shader_option);
+        });
+    auto width_future = std::async(
+        jit_launch,
+        [&device, shader_option, kernel = std::move(width_kernel)]() mutable {
+            return compile_timed(
+                device, std::move(kernel), shader_option);
+        });
+    std::vector<std::optional<NoiseShader>> noises(runtime.noises.size());
+    std::vector<std::optional<CutShader>> cuts(runtime.cuts.size());
+    std::vector<std::optional<ClumpShader>> clumps(runtime.clumps.size());
+    std::vector<std::optional<std::future<TimedShader<NoiseShader>>>>
+        noise_futures(runtime.noises.size());
+    std::vector<std::optional<std::future<TimedShader<CutShader>>>>
+        cut_futures(runtime.cuts.size());
+    std::vector<std::optional<std::future<TimedShader<ClumpShader>>>>
+        clump_futures(runtime.clumps.size());
+    for (const nanoxgen::ClassicFloatEffect effect : runtime.effects) {
+        if (effect.type == nanoxgen::ClassicFloatEffectType::Noise) {
+            auto &future = noise_futures.at(effect.module_index);
+            if (!future) {
+                auto kernel =
+                    nanoxgen::luisa_backend::make_classic_runtime_noise_kernel(
+                        runtime, runtime.noises[effect.module_index], cvs);
+                future.emplace(std::async(
+                    jit_launch,
+                    [&device, shader_option,
+                     kernel = std::move(kernel)]() mutable {
+                        return compile_timed(
+                            device, std::move(kernel), shader_option);
+                    }));
+            }
+        } else if (effect.type == nanoxgen::ClassicFloatEffectType::Cut) {
+            auto &future = cut_futures.at(effect.module_index);
+            if (!future) {
+                auto kernel =
+                    nanoxgen::luisa_backend::make_classic_runtime_cut_kernel(
+                        runtime, runtime.cuts[effect.module_index], cvs);
+                future.emplace(std::async(
+                    jit_launch,
+                    [&device, shader_option,
+                     kernel = std::move(kernel)]() mutable {
+                        return compile_timed(
+                            device, std::move(kernel), shader_option);
+                    }));
+            }
+        } else {
+            auto &future = clump_futures.at(effect.module_index);
+            if (!future) {
+                auto kernel =
+                    nanoxgen::luisa_backend::make_classic_runtime_clump_kernel(
+                        runtime, runtime.clumps[effect.module_index], cvs,
+                        clump_host[effect.module_index].guide_count, true);
+                future.emplace(std::async(
+                    jit_launch,
+                    [&device, shader_option,
+                     kernel = std::move(kernel)]() mutable {
+                        return compile_timed(
+                            device, std::move(kernel), shader_option);
+                    }));
+            }
+        }
+    }
+
+    const Clock::time_point device_buffer_allocate_begin = Clock::now();
     const std::size_t strand_count = root_plan.roots.size();
     const std::size_t point_count = strand_count * cvs;
     ByteBuffer roots = device.create_byte_buffer(
@@ -477,130 +649,54 @@ int main(int argc, char **argv) try {
         clump_strand_guides.emplace_back(
             device.create_buffer<std::uint32_t>(host.strand_guides.size()));
     }
+    const Clock::time_point device_buffer_allocate_end = Clock::now();
 
-    ShaderOption shader_option{};
-    shader_option.enable_cache = false;
-    shader_option.enable_fast_math = options.fast_math;
-    // HIP and Vulkan use independent external compiler invocations for these
-    // kernels and Luisa's device compilation path is safe to enter in
-    // parallel. Keep other backends sequential until they are validated: in
-    // particular, the fallback backend currently has process-global compiler
-    // state in the Luisa next branch.
-    const bool parallel_jit =
-        options.backend == "hip" || options.backend == "vk";
-    const std::launch jit_launch = parallel_jit
-        ? std::launch::async
-        : std::launch::deferred;
-    using NoiseShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
-        ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
-        Buffer<luisa::float3>,
-        Buffer<luisa::float3>,
-        Buffer<luisa::float4>>;
-    using CutShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
-        ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
-        Buffer<luisa::float4>>;
-    using ClumpShader = Shader1D<
-        Buffer<luisa::float4>, Buffer<luisa::float4>, ByteBuffer,
-        Buffer<std::uint32_t>, Buffer<float>, Buffer<luisa::float4>,
-        Buffer<luisa::float4>,
-        Buffer<luisa::float4>, Buffer<std::uint32_t>,
-        Buffer<std::uint32_t>>;
-    auto base_kernel =
-        nanoxgen::luisa_backend::make_classic_base_generate_kernel(
-            cvs, 0.0f, 1.0f, true);
-    auto primitive_kernel =
-        nanoxgen::luisa_backend::make_classic_runtime_primitive_kernel(
-            runtime, cvs);
-    auto width_kernel =
-        nanoxgen::luisa_backend::make_classic_runtime_width_kernel(
-            runtime, cvs);
-    auto base_future = std::async(
-        jit_launch,
-        [&device, shader_option, kernel = std::move(base_kernel)]() mutable {
-            return device.compile(kernel, shader_option);
-        });
-    auto primitive_future = std::async(
-        jit_launch,
-        [&device, shader_option,
-         kernel = std::move(primitive_kernel)]() mutable {
-            return device.compile(kernel, shader_option);
-        });
-    auto width_future = std::async(
-        jit_launch,
-        [&device, shader_option, kernel = std::move(width_kernel)]() mutable {
-            return device.compile(kernel, shader_option);
-        });
-    std::vector<std::optional<NoiseShader>> noises(runtime.noises.size());
-    std::vector<std::optional<CutShader>> cuts(runtime.cuts.size());
-    std::vector<std::optional<ClumpShader>> clumps(runtime.clumps.size());
-    std::vector<std::optional<std::future<NoiseShader>>> noise_futures(
-        runtime.noises.size());
-    std::vector<std::optional<std::future<CutShader>>> cut_futures(
-        runtime.cuts.size());
-    std::vector<std::optional<std::future<ClumpShader>>> clump_futures(
-        runtime.clumps.size());
-    for (const nanoxgen::ClassicFloatEffect effect : runtime.effects) {
-        if (effect.type == nanoxgen::ClassicFloatEffectType::Noise) {
-            auto &future = noise_futures.at(effect.module_index);
-            if (!future) {
-                auto kernel =
-                    nanoxgen::luisa_backend::make_classic_runtime_noise_kernel(
-                        runtime, runtime.noises[effect.module_index], cvs);
-                future.emplace(std::async(
-                    jit_launch,
-                    [&device, shader_option,
-                     kernel = std::move(kernel)]() mutable {
-                        return device.compile(kernel, shader_option);
-                    }));
-            }
-        } else if (effect.type == nanoxgen::ClassicFloatEffectType::Cut) {
-            auto &future = cut_futures.at(effect.module_index);
-            if (!future) {
-                auto kernel =
-                    nanoxgen::luisa_backend::make_classic_runtime_cut_kernel(
-                        runtime, runtime.cuts[effect.module_index], cvs);
-                future.emplace(std::async(
-                    jit_launch,
-                    [&device, shader_option,
-                     kernel = std::move(kernel)]() mutable {
-                        return device.compile(kernel, shader_option);
-                    }));
-            }
-        } else {
-            auto &future = clump_futures.at(effect.module_index);
-            if (!future) {
-                auto kernel =
-                    nanoxgen::luisa_backend::make_classic_runtime_clump_kernel(
-                        runtime, runtime.clumps[effect.module_index], cvs,
-                        clump_host[effect.module_index].guide_count, true);
-                future.emplace(std::async(
-                    jit_launch,
-                    [&device, shader_option,
-                     kernel = std::move(kernel)]() mutable {
-                        return device.compile(kernel, shader_option);
-                    }));
-            }
-        }
-    }
-    auto base = base_future.get();
-    auto primitive = primitive_future.get();
-    auto width = width_future.get();
+    const Clock::time_point jit_wait_begin = Clock::now();
+    std::vector<CompileTiming> compile_timings;
+    auto timed_base = base_future.get();
+    compile_timings.push_back(timed_base.timing);
+    auto base = std::move(timed_base.shader);
+    auto timed_primitive = primitive_future.get();
+    compile_timings.push_back(timed_primitive.timing);
+    auto primitive = std::move(timed_primitive.shader);
+    auto timed_width = width_future.get();
+    compile_timings.push_back(timed_width.timing);
+    auto width = std::move(timed_width.shader);
     for (std::size_t module = 0u; module < noise_futures.size(); ++module) {
         if (noise_futures[module]) {
-            noises[module].emplace(noise_futures[module]->get());
+            auto timed = noise_futures[module]->get();
+            compile_timings.push_back(timed.timing);
+            noises[module].emplace(std::move(timed.shader));
         }
     }
     for (std::size_t module = 0u; module < cut_futures.size(); ++module) {
         if (cut_futures[module]) {
-            cuts[module].emplace(cut_futures[module]->get());
+            auto timed = cut_futures[module]->get();
+            compile_timings.push_back(timed.timing);
+            cuts[module].emplace(std::move(timed.shader));
         }
     }
     for (std::size_t module = 0u; module < clump_futures.size(); ++module) {
         if (clump_futures[module]) {
-            clumps[module].emplace(clump_futures[module]->get());
+            auto timed = clump_futures[module]->get();
+            compile_timings.push_back(timed.timing);
+            clumps[module].emplace(std::move(timed.shader));
         }
     }
     const Clock::time_point compile_end = Clock::now();
+    double jit_compile_task_sum_ms = 0.0;
+    double jit_compile_task_max_ms = 0.0;
+    for (const CompileTiming timing : compile_timings) {
+        const double elapsed = milliseconds(timing.begin, timing.end);
+        jit_compile_task_sum_ms += elapsed;
+        jit_compile_task_max_ms =
+            std::max(jit_compile_task_max_ms, elapsed);
+    }
+    const double jit_compile_active_wall_ms =
+        timing_union_milliseconds(compile_timings);
+    const double jit_device_buffer_overlap_ms = timing_union_milliseconds(
+        compile_timings, device_buffer_allocate_begin,
+        device_buffer_allocate_end);
 
     stream << roots.copy_from(root_plan.roots.data())
            << offsets.copy_from(root_plan.influence_offsets.data())
@@ -667,9 +763,11 @@ int main(int argc, char **argv) try {
                       .dispatch(static_cast<std::uint32_t>(strand_count));
     };
 
+    const Clock::time_point host_output_allocate_begin = Clock::now();
     std::vector<luisa::float4> raw_points(point_count);
     std::vector<luisa::float4> raw_states(
         strand_count, luisa::make_float4(0.0f));
+    const Clock::time_point host_output_allocate_end = Clock::now();
     const Clock::time_point first_begin = Clock::now();
     dispatch();
     stream << (options.base_only ? a : (final_is_a ? a : b))
@@ -762,9 +860,43 @@ int main(int argc, char **argv) try {
               << milliseconds(process_begin, device_end)
               << ",\"native_parse_import_root_rebuild_ms\":"
               << milliseconds(device_end, native_prepare_end)
+              << ",\"collection_parse_ms\":"
+              << milliseconds(device_end, collection_load_end)
+              << ",\"runtime_plan_lower_ms\":"
+              << milliseconds(collection_load_end, runtime_plan_end)
+              << ",\"alembic_import_ms\":"
+              << milliseconds(runtime_plan_end, alembic_import_end)
+              << ",\"root_plan_ms\":"
+              << milliseconds(alembic_import_end, root_plan_end)
+              << ",\"runtime_inputs_ms\":"
+              << milliseconds(root_plan_end, runtime_inputs_end)
+              << ",\"clump_data_ms\":"
+              << milliseconds(runtime_inputs_end, clump_data_end)
+              << ",\"guide_rebuild_ms\":"
+              << milliseconds(clump_data_end, guide_rebuild_end)
+              << ",\"native_host_pack_ms\":"
+              << milliseconds(guide_rebuild_end, native_prepare_end)
               << ",\"jit_compile_allocate_ms\":"
               << milliseconds(native_prepare_end, compile_end)
+              << ",\"device_buffer_allocate_ms\":"
+              << milliseconds(
+                     device_buffer_allocate_begin,
+                     device_buffer_allocate_end)
+              << ",\"jit_wait_after_native_ms\":"
+              << milliseconds(jit_wait_begin, compile_end)
+              << ",\"jit_kernel_count\":" << compile_timings.size()
+              << ",\"jit_compile_active_wall_ms\":"
+              << jit_compile_active_wall_ms
+              << ",\"jit_compile_task_sum_ms\":"
+              << jit_compile_task_sum_ms
+              << ",\"jit_compile_task_max_ms\":"
+              << jit_compile_task_max_ms
+              << ",\"jit_device_buffer_overlap_ms\":"
+              << jit_device_buffer_overlap_ms
               << ",\"upload_ms\":" << milliseconds(compile_end, upload_end)
+              << ",\"host_output_allocate_ms\":"
+              << milliseconds(
+                     host_output_allocate_begin, host_output_allocate_end)
               << ",\"first_dispatch_download_pack_ms\":"
               << milliseconds(first_begin, first_output_end)
               << ",\"cold_end_to_end_ms\":"

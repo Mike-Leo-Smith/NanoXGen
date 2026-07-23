@@ -338,6 +338,7 @@ int main(int argc, char **argv) try {
         nanoxgen::ClassicFloatRuntimePlan runtime =
             nanoxgen::compile_xgen_classic_float_runtime_plan(
                 description, collection.palette_attributes);
+        const Clock::time_point runtime_plan_end = Clock::now();
         if (description.patches.empty()) {
             throw std::runtime_error(
                 "Classic runtime PTEX binding needs one patch");
@@ -346,17 +347,15 @@ int main(int argc, char **argv) try {
             nanoxgen::build_xgen_classic_runtime_input_data(
                 runtime, description_directory,
                 description.patches.front().name, roots);
-        std::vector<nanoxgen::ClassicClumpRuntimeData> clump_data;
-        clump_data.reserve(runtime.clumps.size());
+        const Clock::time_point runtime_inputs_end = Clock::now();
         const std::uint32_t runtime_cvs = options.cvs != 0u
             ? options.cvs
             : (runtime.fx_cv_count >= 2u ? runtime.fx_cv_count : 8u);
-        for (std::size_t module = 0u; module < runtime.clumps.size(); ++module) {
-            clump_data.push_back(
-                nanoxgen::build_xgen_classic_clump_runtime_data(
-                    description, imported, description_directory, roots,
-                    runtime, module, runtime_cvs));
-        }
+        const std::vector<nanoxgen::ClassicClumpRuntimeData> clump_data =
+            nanoxgen::build_xgen_classic_clump_runtime_data_parallel(
+                description, imported, description_directory, roots,
+                runtime, runtime_cvs);
+        const Clock::time_point clump_data_end = Clock::now();
         if (options.effect_count) {
             if (*options.effect_count > runtime.effects.size()) {
                 throw std::runtime_error(
@@ -652,6 +651,14 @@ int main(int argc, char **argv) try {
                   << milliseconds(roots_end, asset_end)
                   << ",\"runtime_compile_ms\":"
                   << milliseconds(asset_end, compile_end)
+                  << ",\"runtime_plan_lower_ms\":"
+                  << milliseconds(asset_end, runtime_plan_end)
+                  << ",\"runtime_inputs_ms\":"
+                  << milliseconds(runtime_plan_end, runtime_inputs_end)
+                  << ",\"clump_data_ms\":"
+                  << milliseconds(runtime_inputs_end, clump_data_end)
+                  << ",\"runtime_misc_ms\":"
+                  << milliseconds(clump_data_end, compile_end)
                   << ",\"generate_apply_checksum_ms\":"
                   << milliseconds(compile_end, generate_end)
                   << ",\"checksum\":" << output_checksum << "}\n";
