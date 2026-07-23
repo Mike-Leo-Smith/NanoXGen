@@ -5,6 +5,7 @@
 
 #include <luisa/core/stl/vector.h>
 #include <luisa/dsl/constant.h>
+#include <luisa/dsl/sugar.h>
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,7 @@ using ::operator-;
 using ::operator*;
 using ::operator/;
 using ::operator==;
+using ::operator!=;
 
 namespace {
 
@@ -92,12 +94,12 @@ Float polyline_length(const BufferFloat4 &points, Expr<uint> first,
                       std::uint32_t cvs_per_strand) noexcept {
     Float length{0.0f};
     Float3 previous = points.read(first).xyz();
-    for (std::uint32_t cv = 1u; cv < cvs_per_strand; ++cv) {
+    $for (cv, 1u, cvs_per_strand) {
         const Float3 current = points.read(first + cv).xyz();
         const Float3 delta = current - previous;
         length += sqrt(dot(delta, delta));
         previous = current;
-    }
+    };
     return length;
 }
 
@@ -116,14 +118,17 @@ Float xgen_curve_length(const BufferFloat4 &points, Expr<uint> first,
     const float step = 1.0f / static_cast<float>(interval_count);
     Float3 previous = points.read(first).xyz();
     Float length{0.0f};
-    for (std::uint32_t sample = 1u; sample < interval_count; ++sample) {
+    // Device loops keep the retained kernels compact enough for uncached
+    // startup. The previous host-unrolled form generated O(CV) AST copies in
+    // every FX module and dominated HIP/Vulkan JIT time on production grooms.
+    $for (sample, 1u, interval_count) {
         const Float3 current = xgen_curve_eval(
-            points, first, step * static_cast<float>(sample),
+            points, first, step * cast<float>(sample),
             cvs_per_strand);
         const Float3 delta = current - previous;
         length += sqrt(dot(delta, delta));
         previous = current;
-    }
+    };
     const Float3 delta =
         points.read(first + cvs_per_strand - 1u).xyz() - previous;
     return length + sqrt(dot(delta, delta));
@@ -358,13 +363,13 @@ ClassicRuntimePrimitiveKernel make_classic_runtime_primitive_kernel(
         }
         states.write(strand, make_float4(
             ite(live, c_length, -1.0f), c_width, taper, taper_start));
-        for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
+        $for (cv, 0u, cvs_per_strand) {
             const Float4 source_point = source.read(first + cv);
             const Float3 position = root_point.xyz() +
                 (source_point.xyz() - root_point.xyz()) * length_scale;
             destination.write(first + cv,
                               make_float4(position, source_point.w));
-        }
+        };
     }};
 }
 
@@ -400,8 +405,7 @@ ClassicRuntimeCutKernel make_classic_runtime_cut_kernel(
         Float3 previous = source.read(first + cvs_per_strand - 1u).xyz();
         Float accumulated{0.0f};
         Bool finished = cut_amount < 1.0e-10f;
-        for (std::uint32_t iteration = 0u;
-             iteration < 2u * cvs_per_strand + 5u; ++iteration) {
+        $for (iteration, 0u, 2u * cvs_per_strand + 5u) {
             const Float parameter = max(previous_parameter - search_step, 0.0f);
             const Float3 current = xgen_curve_eval(
                 source, first, parameter, cvs_per_strand);
@@ -423,20 +427,18 @@ ClassicRuntimeCutKernel make_classic_runtime_cut_kernel(
             accumulated = ite(was_finished, accumulated, next_accumulated);
             previous_parameter = ite(was_finished, previous_parameter, parameter);
             previous = ite(was_finished, previous, current);
-        }
-        vector<Expr<float3>> rebuilt;
-        rebuilt.reserve(cvs_per_strand);
-        for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
+        };
+        $for (cv, 0u, cvs_per_strand) {
             const Float parameter = cut_parameter *
-                (static_cast<float>(cv) /
+                (cast<float>(cv) /
                  static_cast<float>(cvs_per_strand - 1u));
             const Float3 sampled = xgen_curve_eval(
                 source, first, parameter, cvs_per_strand);
-            rebuilt.emplace_back(sampled);
             destination.write(first + cv,
                               make_float4(sampled, source.read(first + cv).w));
-        }
-        const Float rebuilt_length = xgen_curve_length(rebuilt);
+        };
+        const Float rebuilt_length = xgen_curve_length(
+            destination, first, cvs_per_strand);
         states.write(strand, make_float4(
             ite(live & (cut_parameter >= 1.0e-4f), rebuilt_length, -1.0f),
             state.y, state.z, state.w));
@@ -766,21 +768,19 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
             surface_tangents.read(strand), fallback_tangent);
         Float3 prior_tangent = normalized_surface_normal;
         Float travelled{0.0f};
-        vector<Expr<float3>> displaced;
-        displaced.reserve(cvs_per_strand);
         Float3 previous_base = root;
-        for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
+        $for (cv, 0u, cvs_per_strand) {
             const Float3 current_base = source.read(first + cv).xyz();
-            if (cv != 0u) {
+            $if (cv != 0u) {
                 const Float3 travelled_delta = current_base - previous_base;
                 travelled += sqrt(dot(travelled_delta, travelled_delta));
-            }
+            };
             Float3 next_tangent = prior_tangent;
-            if (cv + 1u < cvs_per_strand) {
+            $if (cv + 1u < cvs_per_strand) {
                 const Float3 segment =
                     source.read(first + cv + 1u).xyz() - current_base;
                 next_tangent = safe_normalize(segment, prior_tangent);
-            }
+            };
             transported_normal = transport_minimal(
                 transported_normal, prior_tangent, next_tangent);
             const Float3 normal = transported_normal;
@@ -790,7 +790,7 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
             const auto cv_context = make_context(
                 plan, strand, roots, root_runtime, &ptex_values,
                 c_length, state.y,
-                static_cast<float>(cv) /
+                cast<float>(cv) /
                     static_cast<float>(cvs_per_strand - 1u));
             const Float magnitude = max(
                 lower_classic_runtime_expression(
@@ -800,7 +800,7 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
                     noise.magnitude_scale, cv_context),
                 0.0f) * mask;
             Float3 output = current_base;
-            if (cv != 0u) {
+            $if (cv != 0u) {
                 const Float distance = travelled * effective_frequency;
                 const Float3 local = make_float3(
                     xgen_noise(gradients, make_float3(
@@ -812,26 +812,30 @@ ClassicRuntimeNoiseKernel make_classic_runtime_noise_kernel(
                     magnitude;
                 output = current_base + normal * local.x +
                          binormal * local.y + tangent * local.z;
-            }
-            displaced.emplace_back(ite(mask > 1.0e-6f, output, current_base));
+            };
+            destination.write(first + cv, make_float4(
+                ite(mask > 1.0e-6f, output, current_base),
+                source.read(first + cv).w));
             prior_tangent = next_tangent;
             previous_base = current_base;
-        }
-        const Float noisy_length = polyline_length(displaced);
+        };
+        const Float noisy_length = polyline_length(
+            destination, first, cvs_per_strand);
         const Float target_length = original_length * preserve +
                                     noisy_length * (1.0f - preserve);
         const Bool rescale = (preserve > 0.001f) & (noisy_length > 0.0f) &
                              (abs(noisy_length - target_length) >= 0.0001f);
         const Float length_scale = ite(
             rescale, target_length / max(noisy_length, 1.0e-20f), 1.0f);
-        for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
+        $for (cv, 0u, cvs_per_strand) {
+            const Float4 displaced = destination.read(first + cv);
             const Float3 output =
-                root + (displaced[cv] - root) * length_scale;
+                root + (displaced.xyz() - root) * length_scale;
             const Float3 selected = ite(
                 live, output, source.read(first + cv).xyz());
             destination.write(first + cv, make_float4(
                 selected, source.read(first + cv).w));
-        }
+        };
         states.write(strand, make_float4(
             ite(live, ite(rescale, target_length, noisy_length), -1.0f),
             state.y, state.z, state.w));
@@ -856,10 +860,9 @@ ClassicRuntimeWidthKernel make_classic_runtime_width_kernel(
         const Float c_length = xgen_curve_length(
             points, first, cvs_per_strand);
         const Float4 state = states.read(strand);
-        for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
-            const float t_constant = static_cast<float>(cv) /
-                                     static_cast<float>(cvs_per_strand - 1u);
-            const Float t = t_constant;
+        $for (cv, 0u, cvs_per_strand) {
+            const Float t = cast<float>(cv) /
+                            static_cast<float>(cvs_per_strand - 1u);
             Float scale{1.0f};
             scale *= ite((t > state.w) & (state.w < 1.0f),
                          1.0f - state.z * ((t - state.w) /
@@ -875,7 +878,7 @@ ClassicRuntimeWidthKernel make_classic_runtime_width_kernel(
             const Float4 point = points.read(first + cv);
             points.write(first + cv, make_float4(
                 point.xyz(), 0.5f * max(state.y * scale, 0.0f) * radius_scale));
-        }
+        };
     }};
 }
 

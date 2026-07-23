@@ -215,7 +215,10 @@ ClassicBaseGenerateKernel make_classic_base_generate_kernel(
             influence += 1u;
         };
         const float radius = 0.5f * diameter * radius_scale;
-        for (std::uint32_t cv = 0u; cv < cvs_per_strand; ++cv) {
+        // Keep the CV loop in device control flow. Host-side unrolling makes
+        // first-use compilation scale with the authored CV count, while the
+        // extra loop branch is negligible next to guide interpolation.
+        $for (cv, 0u, cvs_per_strand) {
             Float3 offset = make_float3(0.0f);
             influence = begin;
             $while (influence < end) {
@@ -232,7 +235,7 @@ ClassicBaseGenerateKernel make_classic_base_generate_kernel(
                 offset / max(weight_sum, 1.0e-20f);
             points.write(strand * cvs_per_strand + cv,
                          make_float4(position, radius));
-        }
+        };
     }};
 }
 
