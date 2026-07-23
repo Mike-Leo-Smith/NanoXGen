@@ -63,13 +63,24 @@ not take a backend name and never creates a second device:
 
 ```cpp
 #include <nanoxgen/luisa/xgen_classic_collection.h>
+#include <nanoxgen/xgen_classic_collection.h>
 
 using namespace nanoxgen::luisa_backend;
 
+// Keep one CPU execution context across host preparation and JIT. The default
+// owns an affinity-aware pool; NanoXGenContext{renderer_executor} borrows an
+// existing renderer scheduler instead.
+nanoxgen::NanoXGenContext nanoxgen_context;
+
+nanoxgen::ClassicCollectionExecutionOptions host_options{};
+host_options.context = &nanoxgen_context;
+auto plan = nanoxgen::build_xgen_classic_collection_execution_plan(
+    collection, collection_path, archive_path, descriptions_root,
+    host_options);
+
 std::vector<ClassicCollectionCompileInput> inputs = make_compile_inputs(plan);
 ClassicCollectionCompileOptions options{};
-// Zero is the default: use std::thread::hardware_concurrency().
-options.max_parallel_compiles = 0;
+options.context = &nanoxgen_context;
 
 ClassicCollectionPipeline pipeline =
     compile_classic_collection(renderer_device, inputs, options);
@@ -88,10 +99,15 @@ must outlive their recorded work, and the Device must outlive the pipeline.
 `ClassicCollectionExecutionPlan` is the backend-neutral host representation
 for one master Classic `.xgen`; it carries all descriptions rather than asking
 the renderer to reopen the main file per description.
-Its default `max_description_workers == 0` divides the machine's logical
-threads by the per-description `max_host_workers` budget, so nested PTEX/clump
-work does not multiply into unbounded oversubscription. A renderer can set
-either limit explicitly when sharing a host scheduler.
+Descriptions, PTEX sampling, clump binding, guide-runtime evaluation, and JIT
+all submit work to the context's single dynamic queue. There is no fixed
+description-by-inner-worker product and no nested thread creation. Work size
+controls how many tasks are exposed, while physical concurrency never exceeds
+the context executor's worker count. If no context is supplied, each top-level
+API creates an affinity-aware context for that call and releases it on return.
+Large LLVM compile batches use an adaptive lane limit of roughly 75% for
+contexts above four workers; this avoids cold-JIT allocator/memory-bandwidth
+contention while host preparation can still consume the full context.
 
 The Classic cold benchmark exercises this complete boundary directly from the
 authoring collection and Alembic patch. Omitting DESCRIPTION selects the
@@ -102,7 +118,7 @@ collection-wide, one-Device path:
   /external/LuisaCompute-next/build/bin hip \
   /external/rabbit/collection.xgen /external/rabbit/patches.abc \
   /external/rabbit/xgen/collections/collection \
-  --warmup 0 --repeats 1
+  --threads 0 --warmup 0 --repeats 1
 ```
 
 The reported cold interval includes file input, native root/guide planning,

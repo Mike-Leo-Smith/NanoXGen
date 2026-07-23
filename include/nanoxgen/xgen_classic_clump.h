@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nanoxgen/context.h"
 #include "nanoxgen/xgen_classic_roots.h"
 #include "nanoxgen/xgen_classic_runtime.h"
 
@@ -18,11 +19,12 @@ namespace nanoxgen {
     const ClassicRootPlan &strand_roots,
     const ClassicFloatRuntimePlan &runtime_plan,
     std::size_t module_index,
-    std::uint32_t cvs_per_guide);
+    std::uint32_t cvs_per_guide,
+    NanoXGenContext *context = nullptr);
 
-// Bind independent top-level ClumpingFX modules with a bounded worker pool.
-// Results retain authored module order; recursive upstream evaluation inside
-// each module remains deterministic.
+// Bind independent top-level ClumpingFX modules using the same optional
+// executor as description/PTEX preparation. Results retain authored module
+// order; recursive upstream evaluation inside each module remains deterministic.
 [[nodiscard]] std::vector<ClassicClumpRuntimeData>
 build_xgen_classic_clump_runtime_data_parallel(
     const ClassicDescription &description,
@@ -31,6 +33,6 @@ build_xgen_classic_clump_runtime_data_parallel(
     const ClassicRootPlan &strand_roots,
     const ClassicFloatRuntimePlan &runtime_plan,
     std::uint32_t cvs_per_guide,
-    std::size_t max_workers = 8u);
+    NanoXGenContext *context = nullptr);
 
 } // namespace nanoxgen

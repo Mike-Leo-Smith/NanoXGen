@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nanoxgen/context.h"
 #include "nanoxgen/xgen_classic.h"
 #include "nanoxgen/xgen_classic_alembic.h"
 #include "nanoxgen/xgen_classic_ptex.h"
@@ -16,13 +17,10 @@ namespace nanoxgen {
 struct ClassicCollectionExecutionOptions {
     std::uint32_t effect_count{
         std::numeric_limits<std::uint32_t>::max()};
-    // Descriptions are independent after the master file is parsed. Zero
-    // partitions the machine's logical threads across max_host_workers;
-    // positive values explicitly bound collection-wide concurrency.
-    std::size_t max_description_workers{};
-    // Per-description ClumpingFX module concurrency. This is separate from
-    // max_description_workers because PTEX binding also has internal workers.
-    std::size_t max_host_workers{8u};
+    // Optional context shared by description, PTEX, clump, and later JIT work.
+    // A null context creates an affinity-aware pool for this call and releases
+    // it on return. A supplied context must outlive this call.
+    NanoXGenContext *context{};
 };
 
 struct ClassicCollectionExecutionDescription {
@@ -42,7 +40,7 @@ struct ClassicCollectionExecutionPlan {
     std::filesystem::path collection_path;
     std::filesystem::path archive_path;
     std::filesystem::path descriptions_root;
-    std::size_t description_worker_count{};
+    std::size_t context_worker_count{1u};
     std::vector<ClassicCollectionExecutionDescription> descriptions;
 };
 

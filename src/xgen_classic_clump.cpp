@@ -9,8 +9,8 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
-#include <future>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -110,7 +110,8 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
     const ClassicRootPlan &strand_roots,
     const ClassicFloatRuntimePlan &runtime_plan,
     std::size_t module_index,
-    std::uint32_t cvs_per_guide) {
+    std::uint32_t cvs_per_guide,
+    NanoXGenContext *context) {
     if (module_index >= runtime_plan.clumps.size()) {
         fail("runtime module index is out of range");
     }
@@ -190,6 +191,12 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
         }
     }
     if (valid_samples.empty()) { fail("clump point file has no valid guides"); }
+    std::unique_ptr<NanoXGenContext> owned_context;
+    if (!context) {
+        owned_context = std::make_unique<NanoXGenContext>();
+        context = owned_context.get();
+    }
+    TaskExecutor &tasks = context->executor();
     const ClassicRootPlan guide_roots = build_xgen_classic_explicit_root_plan(
         description, surface, patch.name, valid_samples);
     PackedGeneratedCurves axes = generate_xgen_classic_base_curves_cpu(
@@ -225,15 +232,17 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
     for (std::size_t previous = 0u; previous < module_index; ++previous) {
         upstream.push_back(build_xgen_classic_clump_runtime_data(
             description, surface, description_directory, guide_roots,
-            runtime_plan, previous, cvs_per_guide));
+            runtime_plan, previous, cvs_per_guide, context));
     }
     const ClassicRuntimeInputData guide_inputs =
         build_xgen_classic_runtime_input_data(
-            prefix, description_directory, patch.name, guide_roots);
+            prefix, description_directory, patch.name, guide_roots,
+            context);
     apply_xgen_classic_float_runtime_plan_cpu(
         axes, prefix, 1.0f, guide_roots.surface_tangents,
         guide_roots.random_prefixes, guide_roots.primitive_ids, upstream,
-        guide_inputs.values, guide_roots.reference_positions, true);
+        guide_inputs.values, guide_roots.reference_positions, true,
+        context);
     std::vector<Vec3> local_axes;
     local_axes.reserve(axes.points.size());
     for (const PackedCurvePoint &point : axes.points) {
@@ -328,35 +337,30 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data(
             result.strand_guide_indices[strand] = global_to_compact[global];
         }
     };
-    constexpr std::size_t parallel_threshold = 65536u;
+    constexpr std::size_t minimum_strands_per_task = 16384u;
     constexpr std::size_t chunk_size = 4096u;
-    if (strand_roots.roots.size() < parallel_threshold) {
+    const std::size_t useful_tasks = std::max<std::size_t>(
+        1u, (strand_roots.roots.size() + minimum_strands_per_task - 1u) /
+                minimum_strands_per_task);
+    const std::size_t task_count =
+        std::min(tasks.worker_count(), useful_tasks);
+    if (task_count <= 1u) {
         bind_range(metadata_map, 0u, strand_roots.roots.size());
     } else {
-        const std::size_t worker_count = std::min<std::size_t>(
-            8u, (strand_roots.roots.size() + parallel_threshold - 1u) /
-                    parallel_threshold);
         std::atomic_size_t next_strand{};
-        std::vector<std::future<void>> workers;
-        workers.reserve(worker_count);
-        for (std::size_t worker = 0u; worker < worker_count; ++worker) {
-            workers.emplace_back(std::async(
-                std::launch::async,
-                [&] {
-                    const XgenPtexMap map{ptex_path};
-                    while (true) {
-                        const std::size_t begin = next_strand.fetch_add(
-                            chunk_size, std::memory_order_relaxed);
-                        if (begin >= strand_roots.roots.size()) { return; }
-                        bind_range(
-                            map, begin,
-                            std::min(
-                                begin + chunk_size,
-                                strand_roots.roots.size()));
-                    }
-                }));
-        }
-        for (std::future<void> &worker : workers) { worker.get(); }
+        tasks.parallel_for(task_count, [&](std::size_t) {
+            const XgenPtexMap map{ptex_path};
+            while (true) {
+                const std::size_t begin = next_strand.fetch_add(
+                    chunk_size, std::memory_order_relaxed);
+                if (begin >= strand_roots.roots.size()) { return; }
+                bind_range(
+                    map, begin,
+                    std::min(
+                        begin + chunk_size,
+                        strand_roots.roots.size()));
+            }
+        });
     }
     prepare_xgen_classic_clump_runtime_data(result);
     return result;
@@ -370,41 +374,28 @@ build_xgen_classic_clump_runtime_data_parallel(
     const ClassicRootPlan &strand_roots,
     const ClassicFloatRuntimePlan &runtime_plan,
     std::uint32_t cvs_per_guide,
-    std::size_t max_workers) {
-    if (max_workers == 0u) {
-        throw std::invalid_argument(
-            "Classic ClumpingFX worker limit must be nonzero");
-    }
+    NanoXGenContext *context) {
     std::vector<ClassicClumpRuntimeData> result(runtime_plan.clumps.size());
     if (result.empty()) { return result; }
-    const std::size_t worker_count =
-        std::min({result.size(), max_workers, std::size_t{8u}});
-    if (worker_count == 1u) {
+    std::unique_ptr<NanoXGenContext> owned_context;
+    if (!context) {
+        owned_context = std::make_unique<NanoXGenContext>();
+        context = owned_context.get();
+    }
+    TaskExecutor &tasks = context->executor();
+    if (tasks.worker_count() <= 1u || result.size() == 1u) {
         for (std::size_t module = 0u; module < result.size(); ++module) {
             result[module] = build_xgen_classic_clump_runtime_data(
                 description, surface, description_directory, strand_roots,
-                runtime_plan, module, cvs_per_guide);
+                runtime_plan, module, cvs_per_guide, context);
         }
         return result;
     }
-    std::atomic_size_t next_module{};
-    std::vector<std::future<void>> workers;
-    workers.reserve(worker_count);
-    for (std::size_t worker = 0u; worker < worker_count; ++worker) {
-        workers.emplace_back(std::async(
-            std::launch::async,
-            [&] {
-                while (true) {
-                    const std::size_t module =
-                        next_module.fetch_add(1u, std::memory_order_relaxed);
-                    if (module >= result.size()) { return; }
-                    result[module] = build_xgen_classic_clump_runtime_data(
-                        description, surface, description_directory,
-                        strand_roots, runtime_plan, module, cvs_per_guide);
-                }
-            }));
-    }
-    for (std::future<void> &worker : workers) { worker.get(); }
+    tasks.parallel_for(result.size(), [&](std::size_t module) {
+        result[module] = build_xgen_classic_clump_runtime_data(
+            description, surface, description_directory,
+            strand_roots, runtime_plan, module, cvs_per_guide, context);
+    });
     return result;
 }
 

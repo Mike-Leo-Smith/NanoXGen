@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nanoxgen/context.h"
 #include "nanoxgen/xgen_classic_roots.h"
 #include "nanoxgen/xgen_classic_runtime.h"
 
@@ -24,6 +25,7 @@ struct ClassicRuntimeInputData {
     const ClassicFloatRuntimePlan &plan,
     const std::filesystem::path &description_directory,
     std::string_view patch_name,
-    const ClassicRootPlan &roots);
+    const ClassicRootPlan &roots,
+    NanoXGenContext *context = nullptr);
 
 } // namespace nanoxgen

@@ -6,14 +6,13 @@
 #include <luisa/runtime/shader.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
-#include <future>
-#include <limits>
-#include <mutex>
+#include <functional>
+#include <memory>
 #include <optional>
-#include <semaphore>
 #include <stdexcept>
-#include <thread>
+#include <type_traits>
 #include <utility>
 
 namespace nanoxgen::luisa_backend {
@@ -248,47 +247,36 @@ ClassicCollectionPipeline compile_classic_collection(
         output.clumps.resize(input.runtime->clumps.size());
     }
 
-    const std::size_t hardware_workers = std::max<std::size_t>(
-        std::thread::hardware_concurrency(), 1u);
-    const std::size_t worker_limit = options.max_parallel_compiles == 0u
-        ? hardware_workers
-        : options.max_parallel_compiles;
-    if (worker_limit == 0u ||
-        worker_limit > static_cast<std::size_t>(
-            std::numeric_limits<std::ptrdiff_t>::max())) {
-        throw std::invalid_argument(
-            "Classic collection compile worker limit is invalid");
+    std::unique_ptr<NanoXGenContext> owned_context;
+    NanoXGenContext *context = options.context;
+    if (!context) {
+        owned_context = std::make_unique<NanoXGenContext>();
+        context = owned_context.get();
     }
-    std::counting_semaphore<> slots(
-        static_cast<std::ptrdiff_t>(worker_limit));
-    impl->stats.worker_limit = worker_limit;
-    std::mutex timing_mutex;
+    TaskExecutor &executor = context->executor();
+    impl->stats.context_worker_count = context->worker_count();
     std::vector<TaskTiming> timings;
-    std::vector<std::future<void>> tasks;
+    std::vector<std::function<void()>> tasks;
     ShaderOption shader_option{};
     shader_option.enable_cache = options.enable_cache;
     shader_option.enable_fast_math = options.fast_math;
     const Clock::time_point compile_begin = Clock::now();
 
     const auto launch = [&](auto kernel, auto &shader_slot) {
-        tasks.emplace_back(std::async(
-            std::launch::async,
-            [&, kernel = std::move(kernel),
-             slot = &shader_slot]() mutable {
-                slots.acquire();
+        using Kernel = std::decay_t<decltype(kernel)>;
+        const std::size_t timing_index = timings.size();
+        timings.emplace_back();
+        auto kernel_state =
+            std::make_shared<Kernel>(std::move(kernel));
+        tasks.emplace_back(
+            [&, kernel_state = std::move(kernel_state),
+             slot = &shader_slot, timing_index]() mutable {
                 const Clock::time_point begin = Clock::now();
-                try {
-                    slot->emplace(device.compile(
-                        std::move(kernel), shader_option));
-                } catch (...) {
-                    slots.release();
-                    throw;
-                }
+                slot->emplace(device.compile(
+                    std::move(*kernel_state), shader_option));
                 const Clock::time_point end = Clock::now();
-                slots.release();
-                std::scoped_lock lock{timing_mutex};
-                timings.push_back({begin, end});
-            }));
+                timings[timing_index] = {begin, end};
+            });
     };
 
     for (std::size_t index = 0u; index < descriptions.size(); ++index) {
@@ -346,7 +334,31 @@ ClassicCollectionPipeline compile_classic_collection(
             }
         }
     }
-    for (std::future<void> &task : tasks) { task.get(); }
+    // LLVM/HIP compilation is allocator and memory-bandwidth intensive. Full
+    // logical-CPU occupancy regresses cold JIT on SMT hosts; retain all lanes
+    // for small contexts, otherwise expose roughly three quarters. This
+    // scales with renderer capacity and the actual kernel count instead of
+    // encoding a calibration-machine worker number.
+    const std::size_t context_workers = context->worker_count();
+    const std::size_t recommended_workers = context_workers <= 4u
+        ? context_workers
+        : context_workers - context_workers / 4u;
+    const std::size_t worker_limit =
+        std::min(tasks.size(), recommended_workers);
+    impl->stats.worker_limit = worker_limit;
+    if (tasks.size() <= 1u || worker_limit <= 1u) {
+        for (auto &task : tasks) { task(); }
+    } else {
+        std::atomic_size_t next_task{};
+        executor.parallel_for(worker_limit, [&](std::size_t) {
+            while (true) {
+                const std::size_t index = next_task.fetch_add(
+                    1u, std::memory_order_relaxed);
+                if (index >= tasks.size()) { return; }
+                tasks[index]();
+            }
+        });
+    }
     const Clock::time_point compile_end = Clock::now();
     impl->stats.kernel_count = timings.size();
     impl->stats.wall_ms = milliseconds(compile_begin, compile_end);

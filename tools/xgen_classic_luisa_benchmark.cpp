@@ -124,8 +124,7 @@ struct Options {
     std::optional<std::filesystem::path> output_nxc;
     bool fast_math{true};
     bool cpu_validation{true};
-    std::uint32_t jit_workers{};
-    std::uint32_t host_workers{};
+    std::uint32_t threads{};
 };
 
 Options parse_options(int argc, char **argv) {
@@ -134,7 +133,7 @@ Options parse_options(int argc, char **argv) {
             "usage: nanoxgen_xgen_classic_luisa_benchmark RUNTIME_DIR "
             "BACKEND COLLECTION.xgen PATCHES.abc DESCRIPTIONS_ROOT "
             "[DESCRIPTION] [--warmup N] [--repeats N] [--base-only] "
-            "[--effect-count N] [--host-workers N] [--jit-workers N] "
+            "[--effect-count N] [--threads N] "
             "[--strict-math] "
             "[--no-cpu-validation] "
             "[--reference-nxc FILE] [--output-nxc FILE]\n"
@@ -163,8 +162,7 @@ Options parse_options(int argc, char **argv) {
         }
         if (argument != "--warmup" && argument != "--repeats" &&
             argument != "--effect-count" && argument != "--reference-nxc" &&
-            argument != "--output-nxc" && argument != "--jit-workers" &&
-            argument != "--host-workers") {
+            argument != "--output-nxc" && argument != "--threads") {
             throw std::invalid_argument(
                 "unknown argument: " + std::string{argument});
         }
@@ -180,11 +178,8 @@ Options parse_options(int argc, char **argv) {
             result.warmup = parse_u32(argv[index], "warmup", true);
         } else if (argument == "--effect-count") {
             result.effect_count = parse_u32(argv[index], "effect count", true);
-        } else if (argument == "--jit-workers") {
-            result.jit_workers = parse_u32(argv[index], "JIT workers");
-        } else if (argument == "--host-workers") {
-            result.host_workers =
-                parse_u32(argv[index], "host workers", true);
+        } else if (argument == "--threads") {
+            result.threads = parse_u32(argv[index], "threads", true);
         } else {
             result.repeats = parse_u32(argv[index], "repeats");
         }
@@ -533,15 +528,19 @@ int run_collection_mode(
     Clock::time_point device_end,
     Clock::time_point collection_load_end) {
     const Clock::time_point native_begin = Clock::now();
+    nanoxgen::NanoXGenContext context{
+        options.threads == 0u
+            ? nanoxgen::available_worker_count()
+            : static_cast<std::size_t>(options.threads)};
     nanoxgen::ClassicCollectionExecutionOptions host_options{};
     host_options.effect_count = options.effect_count;
-    host_options.max_description_workers = options.host_workers;
+    host_options.context = &context;
     nanoxgen::ClassicCollectionExecutionPlan host_plan =
         nanoxgen::build_xgen_classic_collection_execution_plan(
             collection, options.collection, options.archive,
             options.descriptions_root, host_options);
     const std::size_t host_worker_count =
-        host_plan.description_worker_count;
+        host_plan.context_worker_count;
     std::vector<PreparedCollectionDescription> prepared;
     prepared.reserve(host_plan.descriptions.size());
     for (std::size_t index = 0u;
@@ -568,7 +567,7 @@ int run_collection_mode(
     nanoxgen::luisa_backend::ClassicCollectionCompileOptions compile_options{};
     compile_options.fast_math = options.fast_math;
     compile_options.enable_cache = false;
-    compile_options.max_parallel_compiles = options.jit_workers;
+    compile_options.context = &context;
     auto pipeline = nanoxgen::luisa_backend::compile_classic_collection(
         device, compile_inputs, compile_options);
     const Clock::time_point compile_end = Clock::now();
@@ -775,9 +774,9 @@ int run_collection_mode(
               << ",\"native_prepare_ms\":"
               << milliseconds(native_begin, native_end)
               << ",\"jit_compile_wall_ms\":" << compile_stats.wall_ms
+              << ",\"context_workers\":" << context.worker_count()
               << ",\"host_workers\":" << host_worker_count
-              << ",\"jit_workers\":"
-              << compile_stats.worker_limit
+              << ",\"jit_workers\":" << compile_stats.worker_limit
               << ",\"jit_kernel_count\":" << compile_stats.kernel_count
               << ",\"jit_task_sum_ms\":" << compile_stats.task_sum_ms
               << ",\"jit_task_max_ms\":" << compile_stats.task_max_ms

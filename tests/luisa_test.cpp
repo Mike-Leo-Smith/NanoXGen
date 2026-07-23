@@ -23,7 +23,6 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
-#include <thread>
 #include <vector>
 
 using namespace luisa;
@@ -52,16 +51,17 @@ void test_external_device_collection_compile(
             {&plans[0], 4u, {}, true},
             {&plans[1], 4u, {}, true},
     }};
+    nanoxgen::NanoXGenContext context{3u};
     nanoxgen::luisa_backend::ClassicCollectionCompileOptions options{};
+    options.context = &context;
     auto pipeline = nanoxgen::luisa_backend::compile_classic_collection(
         device, inputs, options);
     if (pipeline.description_count() != 2u ||
         pipeline.description_name(0u) != "collection_0" ||
         pipeline.description_name(1u) != "collection_1" ||
         pipeline.compile_stats().kernel_count != 6u ||
-        pipeline.compile_stats().worker_limit !=
-            std::max<std::size_t>(
-                std::thread::hardware_concurrency(), 1u) ||
+        pipeline.compile_stats().context_worker_count != 3u ||
+        pipeline.compile_stats().worker_limit != 3u ||
         pipeline.output_is_points_a(0u)) {
         throw std::runtime_error(
             "external-device Classic collection pipeline is invalid");

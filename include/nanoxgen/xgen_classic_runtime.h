@@ -1,6 +1,7 @@
 #pragma once
 
 #include "nanoxgen/asset.h"
+#include "nanoxgen/context.h"
 #include "nanoxgen/xgen_classic.h"
 #include "nanoxgen/xgen_expression.h"
 
@@ -199,7 +200,8 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     // When true, curve CVs are offsets from their RootSample position.
     // Clump guide goals are translated into the same local frame; noise
     // domains remain in authored reference space.
-    bool root_relative = false);
+    bool root_relative = false,
+    NanoXGenContext *context = nullptr);
 
 // Match the Classic renderer cache convention by adding one extrapolated
 // endpoint before and after every fixed-CV spline. Call after all FX modules

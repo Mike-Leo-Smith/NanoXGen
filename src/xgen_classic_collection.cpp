@@ -5,10 +5,8 @@
 #include "nanoxgen/xgen_classic_roots.h"
 
 #include <algorithm>
-#include <atomic>
-#include <future>
+#include <memory>
 #include <stdexcept>
-#include <thread>
 
 namespace nanoxgen {
 
@@ -32,10 +30,17 @@ build_xgen_classic_collection_execution_plan(
     const std::filesystem::path &archive_path,
     const std::filesystem::path &descriptions_root,
     const ClassicCollectionExecutionOptions &options) {
-    if (options.max_host_workers == 0u) {
-        throw std::invalid_argument(
-            "Classic collection host worker limit must be nonzero");
+    if (collection.descriptions.empty()) {
+        throw std::runtime_error(
+            "Classic collection main file has no descriptions");
     }
+    std::unique_ptr<NanoXGenContext> owned_context;
+    NanoXGenContext *context = options.context;
+    if (!context) {
+        owned_context = std::make_unique<NanoXGenContext>();
+        context = owned_context.get();
+    }
+    TaskExecutor &executor = context->executor();
     ClassicCollectionExecutionPlan result{};
     result.collection_path = collection_path;
     result.archive_path = archive_path;
@@ -73,56 +78,28 @@ build_xgen_classic_collection_execution_plan(
         }
         output.runtime_inputs = build_xgen_classic_runtime_input_data(
             output.runtime, descriptions_root / description.name,
-            description.patches.front().name, output.roots);
+            description.patches.front().name, output.roots,
+            context);
         output.clumps = build_xgen_classic_clump_runtime_data_parallel(
             description, output.surface,
             descriptions_root / description.name, output.roots,
-            output.runtime, cvs, options.max_host_workers);
+            output.runtime, cvs, context);
         output.runtime.effects.resize(std::min<std::size_t>(
             options.effect_count, output.runtime.effects.size()));
         output.rebuilt_guides = rebuild_xgen_classic_guides_for_device(
             output.surface.asset, cvs);
         result.descriptions[index] = std::move(output);
     };
-    const std::size_t hardware_workers = std::max<std::size_t>(
-        std::thread::hardware_concurrency(), 1u);
-    const std::size_t description_limit =
-        options.max_description_workers == 0u
-        ? std::max<std::size_t>(
-            hardware_workers / options.max_host_workers, 1u)
-        : options.max_description_workers;
-    const std::size_t worker_count = std::min(
-        description_limit, collection.descriptions.size());
-    result.description_worker_count = worker_count;
-    if (worker_count <= 1u) {
+    result.context_worker_count = executor.worker_count();
+    if (collection.descriptions.size() <= 1u ||
+        executor.worker_count() <= 1u) {
         for (std::size_t index = 0u;
              index < collection.descriptions.size(); ++index) {
             prepare_description(index);
         }
     } else {
-        std::atomic_size_t next_description{};
-        std::vector<std::future<void>> workers;
-        workers.reserve(worker_count);
-        for (std::size_t worker = 0u; worker < worker_count; ++worker) {
-            workers.emplace_back(std::async(
-                std::launch::async,
-                [&] {
-                    while (true) {
-                        const std::size_t index =
-                            next_description.fetch_add(
-                                1u, std::memory_order_relaxed);
-                        if (index >= collection.descriptions.size()) {
-                            return;
-                        }
-                        prepare_description(index);
-                    }
-                }));
-        }
-        for (std::future<void> &worker : workers) { worker.get(); }
-    }
-    if (result.descriptions.empty()) {
-        throw std::runtime_error(
-            "Classic collection main file has no descriptions");
+        executor.parallel_for(
+            collection.descriptions.size(), prepare_description);
     }
     return result;
 }

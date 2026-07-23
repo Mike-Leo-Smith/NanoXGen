@@ -160,22 +160,40 @@ python scripts/run_xgen_classic_collection_benchmark.py \
   --archive /external/rabbit/patches.abc \
   --descriptions-root /external/rabbit/xgen/collections/collection \
   --single-device-collection \
+  --threads 0 \
   --rounds 5 --gpu-warmup 0 --gpu-repeats 1 --no-outer-warmup
 ```
 
-The benchmark executable also accepts `--jit-workers N`. Omitting it, or
-leaving the API's `max_parallel_compiles` at zero, selects
-`std::thread::hardware_concurrency()`. Use a positive limit only to model CPU
-sharing with a renderer; backend selection does not silently change the worker
-count.
+`--threads 0` creates one `NanoXGenContext` sized from the process CPU affinity;
+a positive value selects an explicit pool size. The benchmark reuses that
+context across host preparation and JIT. Applications can instead construct
+the context around a renderer-owned `TaskExecutor`.
 
-Host preparation has two bounded levels. Zero `max_description_workers`
-partitions `hardware_concurrency()` across the per-description
-`max_host_workers` budget. On this 32-logical-thread machine the default
-8-thread PTEX/clump budget therefore prepares four independent descriptions at
-once. The benchmark's `--host-workers N` overrides only that outer limit; zero
-keeps automatic partitioning. Results are written back in authored description
-order regardless of completion order.
+Descriptions, PTEX sampling, clump binding, guide-runtime evaluation, and
+kernel compilation submit work to a single recursive-safe dynamic queue.
+Strand counts determine how many chunks are exposed, while physical concurrency
+never exceeds the context size. This replaces the calibration-host-specific
+four-description/eight-inner-worker split. Results are still written back in
+authored description order regardless of completion order.
+
+LLVM/HIP JIT is a separate resource profile from PTEX and clump work. For
+contexts larger than four workers, a large compile batch defaults to roughly
+75% as many simultaneous `Device::compile` lanes; the remaining workers are
+not another pool. On the 32-worker Rabbit host, a fresh-process sweep measured
+6.255 s at 8 workers, 5.365 s at 16, 5.185 s at 24, and 5.269 s at 32.
+The host phase was effectively flat at 24–32 workers; the difference came from
+LLVM allocator and memory-bandwidth contention during JIT.
+
+After integrating the shared context, five fresh HIP processes using a
+32-worker context and the adaptive 24-lane JIT policy measured 5.280 s median
+and 5.309 s p90. Median host preparation was 2.719 s and median JIT was
+1.965 s; all five collection checksums were
+`10147028508645780229`. This is a different Luisa 0.9 `next` revision
+(`ccef52f`) from the historical table below. Compared with that table's
+four-by-eight host policy, host work improved by about 5.6%, while the newer
+Luisa/HIP JIT regressed enough that total cold time is 1.6% slower. These
+revision-separated figures are reported explicitly rather than attributing the
+JIT change to NanoXGen scheduling.
 
 ### Complete collection result
 
@@ -220,9 +238,8 @@ backend-name special case and using the native 32-worker JIT default first
 reduced cold time to 10.283 s; collection-wide host preparation then reduced it
 to the 6.564 s median above. The complete change is 3.77x end to end, with the
 same stable collection checksum in every round. The public pipeline does not
-receive a backend name. Zero `max_parallel_compiles` means
-`std::thread::hardware_concurrency()` for the caller-supplied Device; a renderer
-may set an explicit lower limit only when it needs to share CPU capacity.
+receive a backend name. CPU concurrency now comes from the supplied
+`NanoXGenContext`, independently of the caller-supplied Device and backend.
 Warm-dispatch numbers are recorded by the benchmark but are deliberately not
 substituted for the requested cold result.
 

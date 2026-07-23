@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <future>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -43,7 +42,8 @@ ClassicRuntimeInputData build_xgen_classic_runtime_input_data(
     const ClassicFloatRuntimePlan &plan,
     const std::filesystem::path &description_directory,
     std::string_view patch_name,
-    const ClassicRootPlan &roots) {
+    const ClassicRootPlan &roots,
+    NanoXGenContext *context) {
     const std::size_t value_count =
         plan.ptex_paths.size() + plan.custom_inputs.size() +
         plan.pref_noise_inputs.size();
@@ -77,7 +77,6 @@ ClassicRuntimeInputData build_xgen_classic_runtime_input_data(
         }
         return maps;
     };
-    std::vector<std::unique_ptr<XgenPtexMap>> maps = open_maps();
     if (!plan.custom_inputs.empty() &&
         (roots.primitive_ids.size() != roots.roots.size() ||
          roots.random_prefixes.size() != roots.roots.size())) {
@@ -153,33 +152,36 @@ ClassicRuntimeInputData build_xgen_classic_runtime_input_data(
             }
         }
     };
-    constexpr std::size_t parallel_threshold = 65536u;
+    constexpr std::size_t minimum_strands_per_task = 16384u;
     constexpr std::size_t chunk_size = 4096u;
-    if (roots.roots.size() < parallel_threshold) {
+    const std::size_t useful_tasks = std::max<std::size_t>(
+        1u, (roots.roots.size() + minimum_strands_per_task - 1u) /
+                minimum_strands_per_task);
+    const std::size_t capacity =
+        context ? context->worker_count() : available_worker_count();
+    const std::size_t task_count =
+        std::min(capacity, useful_tasks);
+    if (task_count <= 1u) {
+        const auto maps = open_maps();
         sample_range(maps, 0u, roots.roots.size());
     } else {
-        const std::size_t worker_count = std::min<std::size_t>(
-            8u, (roots.roots.size() + parallel_threshold - 1u) /
-                    parallel_threshold);
-        std::atomic_size_t next_strand{};
-        std::vector<std::future<void>> workers;
-        workers.reserve(worker_count);
-        for (std::size_t worker = 0u; worker < worker_count; ++worker) {
-            workers.emplace_back(std::async(
-                std::launch::async,
-                [&] {
-                    const auto worker_maps = open_maps();
-                    while (true) {
-                        const std::size_t begin = next_strand.fetch_add(
-                            chunk_size, std::memory_order_relaxed);
-                        if (begin >= roots.roots.size()) { return; }
-                        sample_range(
-                            worker_maps, begin,
-                            std::min(begin + chunk_size, roots.roots.size()));
-                    }
-                }));
+        std::unique_ptr<NanoXGenContext> owned_context;
+        if (!context) {
+            owned_context = std::make_unique<NanoXGenContext>(capacity);
+            context = owned_context.get();
         }
-        for (std::future<void> &worker : workers) { worker.get(); }
+        std::atomic_size_t next_strand{};
+        context->executor().parallel_for(task_count, [&](std::size_t) {
+            const auto worker_maps = open_maps();
+            while (true) {
+                const std::size_t begin = next_strand.fetch_add(
+                    chunk_size, std::memory_order_relaxed);
+                if (begin >= roots.roots.size()) { return; }
+                sample_range(
+                    worker_maps, begin,
+                    std::min(begin + chunk_size, roots.roots.size()));
+            }
+        });
     }
     return result;
 }

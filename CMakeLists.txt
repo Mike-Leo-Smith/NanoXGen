@@ -90,8 +90,10 @@ endif()
 
 add_library(nanoxgen STATIC
   src/asset.cpp
+  src/context.cpp
   src/curve_cache.cpp
   src/curve_payload.cpp
+  src/task_executor.cpp
   src/xgen.cpp
   src/xgen_classic.cpp
   src/xgen_classic_runtime.cpp

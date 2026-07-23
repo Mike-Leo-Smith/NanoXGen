@@ -158,18 +158,19 @@ package loader avoid reopening the main file.
 The optional Luisa layer then receives those description plans as one batch:
 `compile_classic_collection(renderer_device, inputs)` specializes all required
 kernels on the renderer's existing `Device`. It does not take a backend name or
-create a context/device. Its `encode` method records into a caller-owned
-`Stream` using caller-owned buffer views and performs no hidden allocation,
-upload, synchronization, or readback. The Device must outlive the compiled
-pipeline.
+create a Luisa GPU `Context` or `Device`. Its `encode` method records into a
+caller-owned `Stream` using caller-owned buffer views and performs no hidden
+allocation, upload, synchronization, or readback. The Device must outlive the
+compiled pipeline.
 
-Cold JIT uses `std::thread::hardware_concurrency()` when
-`max_parallel_compiles` is zero, uniformly for HIP, Vulkan, and Luisa fallback.
-An explicit positive value is a renderer-controlled resource limit, not a
-backend compatibility switch. Host preparation separately partitions the same
-machine thread count across independent descriptions and their internal
-PTEX/clump workers; on the 32-thread calibration host this is four concurrent
-descriptions with an eight-worker internal budget. Authored order is preserved.
+`NanoXGenContext` is separate from Luisa's GPU context. It owns an
+affinity-aware CPU pool or borrows a renderer executor, and the same instance
+can be passed to both collection host preparation and
+`compile_classic_collection`. Descriptions, PTEX, clump, guide-runtime, and JIT
+tasks share one dynamic queue; there is no fixed four-description/eight-inner
+worker heuristic and physical concurrency cannot exceed the executor size.
+Omitting the context creates a scoped internal pool for that top-level call.
+Authored order is preserved.
 See `docs/renderer-integration.md` for the API contract and
 `docs/luisa-compute.md` for the five-round Rabbit measurements.
 

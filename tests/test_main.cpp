@@ -1,4 +1,5 @@
 #include "nanoxgen/asset.h"
+#include "nanoxgen/context.h"
 #include "nanoxgen/curve_cache.h"
 #include "nanoxgen/curve_payload.h"
 #include "nanoxgen/xgen.h"
@@ -7,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -165,6 +167,61 @@ void test_cpu_persistent_work_queue() {
     require(std::memcmp(serial.widths.data(), parallel.widths.data(),
                         serial.widths.size() * sizeof(float)) == 0,
             "persistent CPU scheduling must preserve deterministic widths");
+}
+
+void test_context_thread_pool() {
+    require(available_worker_count() >= 1u,
+            "available worker count must never be zero");
+
+    ThreadPool pool{4u};
+    NanoXGenContext borrowed{pool};
+    require(borrowed.worker_count() == 4u && !borrowed.owns_executor(),
+            "context must expose a borrowed renderer executor");
+    std::atomic_size_t visits{};
+    std::atomic_size_t sum{};
+    pool.parallel_for(257u, [&](std::size_t index) {
+        visits.fetch_add(1u, std::memory_order_relaxed);
+        sum.fetch_add(index, std::memory_order_relaxed);
+    });
+    require(visits.load() == 257u &&
+                sum.load() == (256u * 257u) / 2u,
+            "thread pool must execute every task exactly once");
+
+    std::atomic_size_t nested_visits{};
+    pool.parallel_for(7u, [&](std::size_t) {
+        pool.parallel_for(13u, [&](std::size_t) {
+            nested_visits.fetch_add(1u, std::memory_order_relaxed);
+        });
+    });
+    require(nested_visits.load() == 91u,
+            "thread pool must support recursive parallel work");
+
+    ThreadPool one_worker{1u};
+    std::atomic_size_t one_worker_visits{};
+    one_worker.parallel_for(2u, [&](std::size_t) {
+        one_worker.parallel_for(3u, [&](std::size_t) {
+            one_worker_visits.fetch_add(1u, std::memory_order_relaxed);
+        });
+    });
+    require(one_worker_visits.load() == 6u,
+            "single-worker nested scheduling must not deadlock");
+
+    bool propagated = false;
+    try {
+        pool.parallel_for(8u, [](std::size_t index) {
+            if (index == 3u) {
+                throw std::runtime_error("expected task failure");
+            }
+        });
+    } catch (const std::runtime_error &) {
+        propagated = true;
+    }
+    require(propagated,
+            "thread pool must propagate task exceptions to the caller");
+
+    NanoXGenContext owned{2u};
+    require(owned.worker_count() == 2u && owned.owns_executor(),
+            "context must own an explicitly sized fallback pool");
 }
 
 void test_xgen_noise_math_and_length_preservation() {
@@ -1013,6 +1070,7 @@ int main() try {
     test_guide_interpolation();
     test_deformed_geometry_generation();
     test_cpu_persistent_work_queue();
+    test_context_thread_pool();
     test_xgen_noise_math_and_length_preservation();
     test_area_weighted_sampling();
     test_linear_compatibility_generation();

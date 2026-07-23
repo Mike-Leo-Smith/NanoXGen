@@ -20,7 +20,7 @@ ifneq ($(SIMD_WIDTH),)
 CXXFLAGS += -mprefer-vector-width=$(SIMD_WIDTH)
 endif
 
-CORE := src/asset.cpp src/curve_cache.cpp src/curve_payload.cpp src/xgen.cpp src/xgen_classic.cpp src/xgen_classic_runtime.cpp src/xgen_expression.cpp src/xgen_package.cpp src/xpd.cpp
+CORE := src/asset.cpp src/context.cpp src/curve_cache.cpp src/curve_payload.cpp src/task_executor.cpp src/xgen.cpp src/xgen_classic.cpp src/xgen_classic_runtime.cpp src/xgen_expression.cpp src/xgen_package.cpp src/xpd.cpp
 HEADERS := $(wildcard include/nanoxgen/*.h)
 
 .PHONY: all test fast-math-check clean

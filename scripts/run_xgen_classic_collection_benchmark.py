@@ -214,8 +214,8 @@ def summarize_gpu_single_device(args: argparse.Namespace) -> dict[str, Any]:
         str(args.gpu_warmup),
         "--repeats",
         str(args.gpu_repeats),
-        "--host-workers",
-        str(args.host_workers),
+        "--threads",
+        str(args.threads),
         "--no-cpu-validation",
     ]
     environment = os.environ.copy()
@@ -262,8 +262,7 @@ def summarize_gpu_single_device(args: argparse.Namespace) -> dict[str, Any]:
         "strands": rounds[0]["strands"],
         "points": rounds[0]["points"],
         "checksum": rounds[0]["checksum"],
-        "host_workers": rounds[0]["host_workers"],
-        "jit_workers": rounds[0]["jit_workers"],
+        "context_workers": rounds[0]["context_workers"],
         "jit_kernel_count": rounds[0]["jit_kernel_count"],
         "cold_samples_ms": samples,
         "cold_median_ms": statistics.median(samples),
@@ -404,7 +403,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--gpu-warmup", type=int, default=3)
     parser.add_argument("--gpu-repeats", type=int, default=11)
-    parser.add_argument("--host-workers", type=int, default=0)
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=0,
+        help="NanoXGenContext pool size; zero uses process CPU affinity",
+    )
     parser.add_argument("--single-device-collection", action="store_true")
     parser.add_argument("--no-outer-warmup", action="store_true")
     parser.add_argument("--result-json", type=Path)
@@ -419,8 +423,8 @@ def parse_args() -> argparse.Namespace:
             "select exactly one of --cpu-tool, --luisa-tool, or --maya-tool")
     if args.luisa_tool and not args.luisa_runtime:
         parser.error("--luisa-runtime is required with --luisa-tool")
-    if args.host_workers < 0:
-        parser.error("--host-workers must be non-negative")
+    if args.threads < 0:
+        parser.error("--threads must be non-negative")
     if ((args.maya_tool or
          (args.luisa_tool and not args.single_device_collection)) and
             not args.descriptions):

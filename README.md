@@ -98,11 +98,13 @@ fallback with no Autodesk fallback: 2,456,139 curves and 47,421,673 points.
 The collection path accepts the one master `.xgen`, compiles all descriptions
 on one renderer-owned Luisa `Device`, and records work into renderer-owned
 streams and buffers. No backend name is part of that public API; the caller
-chooses the Device. No handwritten CUDA/HIP path remains. Cold JIT defaults to
-the machine's logical-thread count for HIP, Vulkan, and fallback, with an
-explicit limit available to applications that need to share CPU capacity.
-Host preparation uses the same machine-derived budget across independent
-descriptions and their nested PTEX/clump work while preserving authored order.
+chooses the Device. No handwritten CUDA/HIP path remains. A
+`NanoXGenContext` owns or borrows one CPU task executor shared by host
+preparation and cold JIT. Description, PTEX, clump, guide-runtime, and kernel
+compile tasks use one dynamic queue, so concurrency never multiplies into a
+fixed outer-by-inner worker grid. A default context honors process CPU
+affinity; a renderer can instead wrap its own scheduler. Authored order is
+preserved regardless of task completion order.
 Canonical topology and `(faceId, faceUV, patchUV)` identities exactly match
 fresh Maya typed-RenderAPI caches for every description. The ordered runtime
 covers RandomGenerator, spline interpolation, PTEX-bound expressions, palette

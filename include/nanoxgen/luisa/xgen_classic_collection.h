@@ -1,5 +1,6 @@
 #pragma once
 
+#include "nanoxgen/context.h"
 #include "nanoxgen/xgen_classic_runtime.h"
 
 #include <luisa/runtime/buffer.h>
@@ -29,13 +30,17 @@ struct ClassicCollectionCompileInput {
 struct ClassicCollectionCompileOptions {
     bool fast_math{true};
     bool enable_cache{};
-    // Device::compile is entered concurrently only when this is greater than
-    // one. Zero selects the machine's native logical-thread count for every
-    // backend; callers may set a lower limit to share CPU capacity.
-    std::size_t max_parallel_compiles{};
+    // Optional CPU context. A null context creates an affinity-aware pool for
+    // this compile call and releases it on return. A supplied context can be
+    // reused for host preparation and later JIT batches.
+    NanoXGenContext *context{};
 };
 
 struct ClassicCollectionCompileStats {
+    std::size_t context_worker_count{};
+    // Actual simultaneous Device::compile lanes. Large LLVM compile batches
+    // deliberately leave some context workers idle to avoid allocator and
+    // memory-bandwidth contention.
     std::size_t worker_limit{};
     std::size_t kernel_count{};
     double wall_ms{};

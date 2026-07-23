@@ -7,8 +7,8 @@
 #include <bit>
 #include <charconv>
 #include <cmath>
-#include <future>
 #include <limits>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -1426,7 +1426,8 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     std::span<const ClassicClumpRuntimeData> clump_data,
     std::span<const float> runtime_inputs,
     std::span<const Vec3> noise_domain_positions,
-    bool root_relative) {
+    bool root_relative,
+    NanoXGenContext *context) {
     if (curves.strand_count == 0u || curves.cvs_per_strand < 2u ||
         curves.point_counts.size() != curves.strand_count ||
         curves.roots.size() != curves.strand_count ||
@@ -1856,35 +1857,37 @@ void apply_xgen_classic_float_runtime_plan_cpu(
         }
         }
     };
-    constexpr std::uint32_t parallel_threshold = 16384u;
+    constexpr std::uint32_t minimum_strands_per_task = 4096u;
     constexpr std::uint32_t chunk_size = 2048u;
-    if (curves.strand_count < parallel_threshold) {
+    const std::size_t useful_tasks = std::max<std::size_t>(
+        1u, (static_cast<std::size_t>(curves.strand_count) +
+             minimum_strands_per_task - 1u) /
+                minimum_strands_per_task);
+    const std::size_t capacity =
+        context ? context->worker_count() : available_worker_count();
+    const std::size_t task_count =
+        std::min(capacity, useful_tasks);
+    if (task_count <= 1u) {
         apply_range(0u, curves.strand_count);
     } else {
-        const std::size_t worker_count = std::min<std::size_t>(
-            8u, (static_cast<std::size_t>(curves.strand_count) +
-                 parallel_threshold - 1u) /
-                    parallel_threshold);
-        std::atomic_uint32_t next_strand{};
-        std::vector<std::future<void>> workers;
-        workers.reserve(worker_count);
-        for (std::size_t worker = 0u; worker < worker_count; ++worker) {
-            workers.emplace_back(std::async(
-                std::launch::async,
-                [&] {
-                    while (true) {
-                        const std::uint32_t begin =
-                            next_strand.fetch_add(
-                                chunk_size, std::memory_order_relaxed);
-                        if (begin >= curves.strand_count) { return; }
-                        apply_range(
-                            begin,
-                            std::min(
-                                begin + chunk_size, curves.strand_count));
-                    }
-                }));
+        std::unique_ptr<NanoXGenContext> owned_context;
+        if (!context) {
+            owned_context = std::make_unique<NanoXGenContext>(capacity);
+            context = owned_context.get();
         }
-        for (std::future<void> &worker : workers) { worker.get(); }
+        std::atomic_uint32_t next_strand{};
+        context->executor().parallel_for(task_count, [&](std::size_t) {
+            while (true) {
+                const std::uint32_t begin =
+                    next_strand.fetch_add(
+                        chunk_size, std::memory_order_relaxed);
+                if (begin >= curves.strand_count) { return; }
+                apply_range(
+                    begin,
+                    std::min(
+                        begin + chunk_size, curves.strand_count));
+            }
+        });
     }
     std::uint32_t write = 0u;
     for (std::uint32_t read = 0u; read < curves.strand_count; ++read) {
