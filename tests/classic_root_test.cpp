@@ -201,6 +201,26 @@ void test_partial_mask_and_limit() {
     throw std::runtime_error("root candidate limit was ignored");
 }
 
+void test_patch_authored_primitive_cull() {
+    const TemporaryDescription fixture{1.0f};
+    const nanoxgen::ClassicAlembicAssetInput input = surface();
+    nanoxgen::ClassicDescription culled = description();
+    culled.patches.front().culled_primitives.push_back(
+        {0u, {1u, 29u, 64u}});
+    const nanoxgen::ClassicRootPlan roots =
+        nanoxgen::build_xgen_classic_random_root_plan(
+            culled, input, fixture.path);
+    require(roots.candidate_count == 64u && roots.roots.size() == 61u &&
+                roots.patch_culled_count == 3u &&
+                roots.mask_rejected_count == 0u &&
+                roots.guide_rejected_count == 0u,
+            "patch-authored primitive cull count mismatch");
+    require(roots.primitive_ids.front() == 2u &&
+                roots.primitive_ids[27u] == 30u &&
+                roots.primitive_ids.back() == 63u,
+            "patch-authored primitive cull did not retain ID gaps");
+}
+
 void test_face_umbrella_guide_prefilter() {
     const TemporaryDescription fixture{1.0f};
     nanoxgen::ClassicAlembicAssetInput input = surface();
@@ -261,6 +281,7 @@ void test_directional_guide_weight() {
 int main() try {
     test_full_mask_and_generation();
     test_partial_mask_and_limit();
+    test_patch_authored_primitive_cull();
     test_face_umbrella_guide_prefilter();
     test_maya_2027_sample_pattern();
     test_directional_guide_weight();

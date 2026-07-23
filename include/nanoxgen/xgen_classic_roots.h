@@ -53,6 +53,7 @@ struct ClassicRootPlan {
     std::vector<ClassicRootFaceStats> face_stats;
     std::uint64_t candidate_count{};
     std::uint64_t mask_rejected_count{};
+    std::uint64_t patch_culled_count{};
     std::uint64_t guide_rejected_count{};
 };
 

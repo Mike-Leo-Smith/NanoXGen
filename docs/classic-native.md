@@ -93,8 +93,10 @@ never silently replaced by zero.
 
 The root planner reproduces RandomGenerator face counts, the fixed XGen sample
 table, surface compensation, mask ramp, current/reference OpenSubdiv samples,
-per-face primitive IDs, exact SeExpr random prefixes, and directional guide
-association. Classic guide CVs are interpreted in XGen's local
+per-face primitive IDs, Patch-authored `culledPrims`, exact SeExpr random
+prefixes, and directional guide association. Patch exclusions are applied at
+the same post-mask, pre-interpolation point as `XgPatch::isCulled`, preserving
+the observable gaps in `$id`. Classic guide CVs are interpreted in XGen's local
 `(tangent, normal, binormal)` patch frame and uniformly rebuilt before blending.
 
 On the local Rabbit `eyelash` description this produces 1519 roots and, after

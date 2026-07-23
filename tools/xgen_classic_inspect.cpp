@@ -206,6 +206,7 @@ int main(int argc, char **argv) try {
         if (output_index++ != 0u) { std::cout << ','; }
         std::map<std::string, std::size_t> object_counts;
         std::size_t face_ids = 0u;
+        std::size_t culled_primitives = 0u;
         std::size_t guides = 0u;
         std::size_t guide_cvs = 0u;
         for (const ClassicObject &object : description.objects) {
@@ -213,6 +214,10 @@ int main(int argc, char **argv) try {
         }
         for (const ClassicPatch &patch : description.patches) {
             face_ids += patch.face_ids.size();
+            for (const ClassicCulledPrimitiveFace &face :
+                 patch.culled_primitives) {
+                culled_primitives += face.primitive_ids.size();
+            }
             guides += patch.guides.size();
             guide_cvs += patch.guide_cvs.size();
         }
@@ -232,6 +237,7 @@ int main(int argc, char **argv) try {
         std::cout << "},\"binding_count\":" << description.bindings.size()
                   << ",\"patch_count\":" << description.patches.size()
                   << ",\"face_id_count\":" << face_ids
+                  << ",\"culled_primitive_count\":" << culled_primitives
                   << ",\"guide_count\":" << guides
                   << ",\"guide_cv_count\":" << guide_cvs
                   << ",\"expression_analysis\":[";

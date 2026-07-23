@@ -513,7 +513,8 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
     if (description.patches.size() != 1u) {
         fail("multi-patch RandomGenerator planning is not implemented");
     }
-    const std::string &patch_name = description.patches.front().name;
+    const ClassicPatch &patch = description.patches.front();
+    const std::string &patch_name = patch.name;
     BoundMapExpression mask = bind_maps(
         mask_source, description_directory, patch_name);
     ClassicRootPlan result{};
@@ -561,6 +562,16 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
         result.candidate_count += candidate_count;
         result.face_stats.push_back({face.face_id, candidate_count, 0u, 0u});
         ClassicRootFaceStats &face_stats = result.face_stats.back();
+        const auto culled_face = std::lower_bound(
+            patch.culled_primitives.begin(), patch.culled_primitives.end(),
+            face.face_id,
+            [](const ClassicCulledPrimitiveFace &entry,
+               std::uint32_t face_id) { return entry.face_id < face_id; });
+        const std::span<const std::uint32_t> culled_primitives =
+            culled_face != patch.culled_primitives.end() &&
+                    culled_face->face_id == face.face_id
+                ? std::span<const std::uint32_t>{culled_face->primitive_ids}
+                : std::span<const std::uint32_t>{};
         double surface_compensation = 1.0;
         if (surface_compensation_enabled && face.center_u_length > 0.0) {
             surface_compensation = std::clamp(
@@ -631,6 +642,14 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
                 continue;
             }
             ++face_stats.mask_accepted_count;
+            // XgGenerator::cullPreGeometry consults authored Patch exclusions
+            // after the density mask and before guide interpolation.
+            if (std::binary_search(culled_primitives.begin(),
+                                   culled_primitives.end(),
+                                   accepted_candidate)) {
+                ++result.patch_culled_count;
+                continue;
+            }
             const std::uint32_t resolution = face.uv_resolution;
             const float scaled_u = uv.x * static_cast<float>(resolution);
             const float scaled_v = uv.y * static_cast<float>(resolution);

@@ -206,6 +206,82 @@ std::vector<std::uint32_t> parse_face_ids(
     return result;
 }
 
+std::vector<ClassicCulledPrimitiveFace> parse_culled_primitives(
+    const ClassicAttribute &attribute,
+    const std::unordered_set<std::uint32_t> &patch_faces,
+    const ClassicParseLimits &limits,
+    std::size_t &global_culled_primitives) {
+    const std::vector<std::string_view> values = tokens(attribute.value);
+    if (values.empty()) {
+        fail(attribute.source_line, "empty culledPrims attribute");
+    }
+    const std::size_t face_count = parse_integer<std::size_t>(
+        values.front(), attribute.source_line, "culledPrims face count");
+    if (face_count > patch_faces.size()) {
+        fail(attribute.source_line,
+             "culledPrims face count exceeds declared patch faces");
+    }
+    std::size_t cursor = 1u;
+    std::vector<ClassicCulledPrimitiveFace> result;
+    result.reserve(face_count);
+    std::unordered_set<std::uint32_t> unique_faces;
+    unique_faces.reserve(face_count);
+    for (std::size_t face_index = 0u; face_index < face_count; ++face_index) {
+        if (cursor + 2u > values.size()) {
+            fail(attribute.source_line, "truncated culledPrims face header");
+        }
+        ClassicCulledPrimitiveFace face{};
+        face.face_id = parse_integer<std::uint32_t>(
+            values[cursor++], attribute.source_line, "culledPrims face ID");
+        if (!patch_faces.contains(face.face_id)) {
+            fail(attribute.source_line,
+                 "culledPrims face ID is not declared by its patch");
+        }
+        if (!unique_faces.insert(face.face_id).second) {
+            fail(attribute.source_line, "duplicate culledPrims face ID");
+        }
+        const std::size_t primitive_count = parse_integer<std::size_t>(
+            values[cursor++], attribute.source_line,
+            "culledPrims primitive count");
+        if (primitive_count > values.size() - cursor) {
+            fail(attribute.source_line, "truncated culledPrims primitive IDs");
+        }
+        if (primitive_count >
+            limits.max_culled_primitives - global_culled_primitives) {
+            fail(attribute.source_line, "culled primitive limit exceeded");
+        }
+        global_culled_primitives += primitive_count;
+        face.primitive_ids.reserve(primitive_count);
+        for (std::size_t primitive = 0u; primitive < primitive_count;
+             ++primitive) {
+            const std::uint32_t primitive_id = parse_integer<std::uint32_t>(
+                values[cursor++], attribute.source_line,
+                "culled primitive ID");
+            if (primitive_id == 0u) {
+                fail(attribute.source_line,
+                     "culled primitive ID must be one-based");
+            }
+            face.primitive_ids.push_back(primitive_id);
+        }
+        std::sort(face.primitive_ids.begin(), face.primitive_ids.end());
+        if (std::adjacent_find(face.primitive_ids.begin(),
+                               face.primitive_ids.end()) !=
+            face.primitive_ids.end()) {
+            fail(attribute.source_line, "duplicate culled primitive ID");
+        }
+        result.push_back(std::move(face));
+    }
+    if (cursor != values.size()) {
+        fail(attribute.source_line, "culledPrims count does not match payload");
+    }
+    std::sort(result.begin(), result.end(),
+              [](const ClassicCulledPrimitiveFace &a,
+                 const ClassicCulledPrimitiveFace &b) {
+                  return a.face_id < b.face_id;
+              });
+    return result;
+}
+
 std::vector<double> parse_interpolation(std::string_view value,
                                         std::size_t line) {
     std::vector<double> result;
@@ -254,6 +330,7 @@ ClassicPatch parse_patch(BoundedLineReader &reader, std::string_view header,
                          const ClassicParseLimits &limits,
                          std::size_t &attribute_count,
                          std::size_t &global_face_ids,
+                         std::size_t &global_culled_primitives,
                          std::size_t &global_guides,
                          std::size_t &global_cvs,
                          std::size_t &global_interpolation) {
@@ -295,6 +372,21 @@ ClassicPatch parse_patch(BoundedLineReader &reader, std::string_view header,
     const ClassicAttribute &face_ids = required_unique_attribute(
         patch.attributes, "faceIds", patch.source_line);
     patch.face_ids = parse_face_ids(face_ids, limits, global_face_ids);
+    std::unordered_set<std::uint32_t> patch_faces(
+        patch.face_ids.begin(), patch.face_ids.end());
+    const ClassicAttribute *culled_primitives = nullptr;
+    for (const ClassicAttribute &attribute : patch.attributes) {
+        if (attribute.name != "culledPrims") { continue; }
+        if (culled_primitives != nullptr) {
+            fail(attribute.source_line, "duplicate 'culledPrims' attribute");
+        }
+        culled_primitives = &attribute;
+    }
+    if (culled_primitives != nullptr) {
+        patch.culled_primitives = parse_culled_primitives(
+            *culled_primitives, patch_faces, limits,
+            global_culled_primitives);
+    }
     if (declared_guides > limits.max_guides - global_guides) {
         fail(reader.line_number(), "guide limit exceeded");
     }
@@ -302,9 +394,6 @@ ClassicPatch parse_patch(BoundedLineReader &reader, std::string_view header,
     patch.guides.reserve(declared_guides);
     std::unordered_set<std::uint64_t> guide_ids;
     guide_ids.reserve(declared_guides);
-    std::unordered_set<std::uint32_t> patch_faces(
-        patch.face_ids.begin(), patch.face_ids.end());
-
     for (std::size_t guide_index = 0u; guide_index < declared_guides;
          ++guide_index) {
         const ClassicAttribute id = next_named_attribute(reader, line, "id");
@@ -382,6 +471,7 @@ void parse_patches(BoundedLineReader &reader, std::string_view header,
                    std::size_t &attribute_count,
                    std::size_t &patch_count,
                    std::size_t &global_face_ids,
+                   std::size_t &global_culled_primitives,
                    std::size_t &global_guides,
                    std::size_t &global_cvs,
                    std::size_t &global_interpolation) {
@@ -418,7 +508,8 @@ void parse_patches(BoundedLineReader &reader, std::string_view header,
                     reader.line_number(), "patch");
         ClassicPatch patch = parse_patch(
             reader, value, limits, attribute_count, global_face_ids,
-            global_guides, global_cvs, global_interpolation);
+            global_culled_primitives, global_guides, global_cvs,
+            global_interpolation);
         if (!patch_names.insert(patch.name).second) {
             fail(patch.source_line, "duplicate patch name in description");
         }
@@ -459,6 +550,7 @@ ClassicCollection parse_xgen_classic_collection(
     std::size_t object_count = 0u;
     std::size_t patch_count = 0u;
     std::size_t global_face_ids = 0u;
+    std::size_t global_culled_primitives = 0u;
     std::size_t global_guides = 0u;
     std::size_t global_cvs = 0u;
     std::size_t global_interpolation = 0u;
@@ -558,8 +650,8 @@ ClassicCollection parse_xgen_classic_collection(
             patch_phase = true;
             parse_patches(
                 reader, value, collection, limits, attribute_count, patch_count,
-                global_face_ids, global_guides, global_cvs,
-                global_interpolation);
+                global_face_ids, global_culled_primitives, global_guides,
+                global_cvs, global_interpolation);
         } else {
             if (header.size() != 1u || collection.descriptions.empty() || patch_phase) {
                 fail(reader.line_number(), "unexpected top-level object");

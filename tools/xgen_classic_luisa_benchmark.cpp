@@ -582,6 +582,7 @@ int main(int argc, char **argv) try {
               << ",\"includes_file_io\":true"
               << ",\"includes_autodesk_serialization\":false"
               << ",\"input_roots\":" << strand_count
+              << ",\"patch_culled\":" << root_plan.patch_culled_count
               << ",\"output_strands\":" << gpu.strand_count
               << ",\"output_points\":" << gpu.points.size()
               << ",\"device_create_ms\":"

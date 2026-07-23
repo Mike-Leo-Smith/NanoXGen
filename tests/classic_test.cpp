@@ -72,6 +72,7 @@ std::string fixture(std::string id = "42", std::string loc = ".25 .75 7",
         "Patch Subd\n"
         "\tname\tpatchShape\n"
         "\tfaceIds\t1 7\n"
+        "\tculledPrims\t1 7 2 3 9\n"
         "\tunknown\tpreserved\n"
         "Guides Spline 1\n"
         "\tid\t" + id + "\n"
@@ -105,6 +106,11 @@ void test_typed_parse() {
             "patch identity mismatch");
     require(patch.face_ids.size() == 1u && patch.face_ids[0] == 7u,
             "face IDs mismatch");
+    require(patch.culled_primitives.size() == 1u &&
+                patch.culled_primitives[0].face_id == 7u &&
+                patch.culled_primitives[0].primitive_ids ==
+                    std::vector<std::uint32_t>({3u, 9u}),
+            "culled primitive IDs mismatch");
     require(find_classic_attribute(patch.attributes, "unknown") != nullptr,
             "unknown patch attribute was not preserved");
     require(patch.guides.size() == 1u, "guide count mismatch");
@@ -154,6 +160,24 @@ void test_validation() {
                            std::string("Patches fur 1").size(),
                            "Patches fur 2");
     require_fails(count_mismatch, "Patches guide count does not match");
+
+    std::string bad_culled_face = fixture();
+    bad_culled_face.replace(bad_culled_face.find("1 7 2 3 9"),
+                            std::string("1 7 2 3 9").size(),
+                            "1 8 2 3 9");
+    require_fails(bad_culled_face,
+                  "culledPrims face ID is not declared");
+    std::string duplicate_culled_id = fixture();
+    duplicate_culled_id.replace(
+        duplicate_culled_id.find("1 7 2 3 9"),
+        std::string("1 7 2 3 9").size(), "1 7 2 3 3");
+    require_fails(duplicate_culled_id, "duplicate culled primitive ID");
+    std::string truncated_culled = fixture();
+    truncated_culled.replace(truncated_culled.find("1 7 2 3 9"),
+                             std::string("1 7 2 3 9").size(),
+                             "1 7 3 3 9");
+    require_fails(truncated_culled,
+                  "truncated culledPrims primitive IDs");
 }
 
 void test_limits() {
@@ -166,6 +190,9 @@ void test_limits() {
     limits = {};
     limits.max_source_bytes = 32u;
     require_fails(fixture(), "source byte limit exceeded", limits);
+    limits = {};
+    limits.max_culled_primitives = 1u;
+    require_fails(fixture(), "culled primitive limit exceeded", limits);
 }
 
 void test_float_runtime_plan() {

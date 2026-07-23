@@ -537,6 +537,7 @@ int main(int argc, char **argv) try {
                   << ",\"roots\":" << roots.roots.size()
                   << ",\"strands\":" << output_strand_count
                   << ",\"mask_rejected\":" << roots.mask_rejected_count
+                  << ",\"patch_culled\":" << roots.patch_culled_count
                   << ",\"guide_rejected\":" << roots.guide_rejected_count
                   << ",\"vertices\":" << imported.asset.positions.size()
                   << ",\"triangles\":" << imported.asset.triangles.size()

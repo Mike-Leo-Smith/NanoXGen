@@ -50,11 +50,18 @@ struct ClassicGuide {
     std::size_t source_line{};
 };
 
+// Patch-authored exclusions use one-based, face-local RandomGenerator IDs.
+struct ClassicCulledPrimitiveFace {
+    std::uint32_t face_id{};
+    std::vector<std::uint32_t> primitive_ids;
+};
+
 struct ClassicPatch {
     std::string type;
     std::string name;
     std::vector<ClassicAttribute> attributes;
     std::vector<std::uint32_t> face_ids;
+    std::vector<ClassicCulledPrimitiveFace> culled_primitives;
     std::vector<ClassicGuide> guides;
     std::vector<double> guide_interpolation;
     std::vector<ClassicFloat3> guide_cvs;
@@ -84,6 +91,7 @@ struct ClassicParseLimits {
     std::size_t max_attributes{1000000u};
     std::size_t max_patches{65536u};
     std::size_t max_face_ids{10000000u};
+    std::size_t max_culled_primitives{10000000u};
     std::size_t max_guides{10000000u};
     std::size_t max_guide_cvs{100000000u};
     std::size_t max_cvs_per_guide{1000000u};
