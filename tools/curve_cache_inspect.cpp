@@ -123,6 +123,23 @@ int main(int argc, char **argv) try {
         const bool identity_comparison =
             view.face_ids() && view.face_uvs() &&
             other.face_ids() && other.face_uvs();
+        bool source_order_identity_matches = identity_comparison &&
+            header.strand_count == other.header().strand_count;
+        if (source_order_identity_matches) {
+            for (std::uint32_t strand = 0u;
+                 strand < header.strand_count; ++strand) {
+                const nanoxgen::Vec2 a = view.face_uvs()[strand];
+                const nanoxgen::Vec2 b = other.face_uvs()[strand];
+                if (view.face_ids()[strand] != other.face_ids()[strand] ||
+                    std::bit_cast<std::uint32_t>(a.x) !=
+                        std::bit_cast<std::uint32_t>(b.x) ||
+                    std::bit_cast<std::uint32_t>(a.y) !=
+                        std::bit_cast<std::uint32_t>(b.y)) {
+                    source_order_identity_matches = false;
+                    break;
+                }
+            }
+        }
         if (!topology_matches || identity_comparison) {
             std::set<Identity> other_identities;
             using CurveRange = std::pair<std::uint64_t, std::uint32_t>;
@@ -175,6 +192,12 @@ int main(int argc, char **argv) try {
             double common_radius_squared_error{};
             float common_max_position_error{};
             float common_max_radius_error{};
+            Identity common_max_position_identity{};
+            std::uint32_t common_max_position_cv{};
+            std::uint32_t common_max_position_axis{};
+            std::uint64_t common_points_over_1e3{};
+            std::uint64_t common_points_over_1e2{};
+            std::uint64_t common_points_over_1e1{};
             for (const auto &[identity, input_range] : input_ranges) {
                 const auto found = compare_ranges.find(identity);
                 if (found == compare_ranges.end()) { continue; }
@@ -193,12 +216,22 @@ int main(int argc, char **argv) try {
                     const float position_errors[]{
                         std::abs(a.x - b.x), std::abs(a.y - b.y),
                         std::abs(a.z - b.z)};
-                    for (const float error : position_errors) {
+                    float point_error{};
+                    for (std::uint32_t axis = 0u; axis < 3u; ++axis) {
+                        const float error = position_errors[axis];
                         common_position_squared_error +=
                             static_cast<double>(error) * error;
-                        common_max_position_error = std::max(
-                            common_max_position_error, error);
+                        point_error = std::max(point_error, error);
+                        if (error > common_max_position_error) {
+                            common_max_position_error = error;
+                            common_max_position_identity = identity;
+                            common_max_position_cv = cv;
+                            common_max_position_axis = axis;
+                        }
                     }
+                    common_points_over_1e3 += point_error > 1.0e-3f;
+                    common_points_over_1e2 += point_error > 1.0e-2f;
+                    common_points_over_1e1 += point_error > 1.0e-1f;
                     const float radius_error =
                         std::abs(a.radius - b.radius);
                     common_radius_squared_error +=
@@ -260,6 +293,8 @@ int main(int argc, char **argv) try {
                       << (canonical_topology_matches ? "true" : "false")
                       << ",\"source_order_topology_matches\":"
                       << (topology_matches ? "true" : "false")
+                      << ",\"source_order_identity_matches\":"
+                      << (source_order_identity_matches ? "true" : "false")
                       << ",\"comparison_order\":\""
                       << (identity_comparison
                               ? "canonical-face-uv" : "unmatched") << '"'
@@ -271,6 +306,20 @@ int main(int argc, char **argv) try {
                       << common_point_count_mismatches
                       << ",\"common_max_position_error\":"
                       << common_max_position_error
+                      << ",\"common_max_position_identity\":["
+                      << std::get<0>(common_max_position_identity) << ','
+                      << std::get<1>(common_max_position_identity) << ','
+                      << std::get<2>(common_max_position_identity) << ']'
+                      << ",\"common_max_position_cv\":"
+                      << common_max_position_cv
+                      << ",\"common_max_position_axis\":"
+                      << common_max_position_axis
+                      << ",\"common_points_over_1e3\":"
+                      << common_points_over_1e3
+                      << ",\"common_points_over_1e2\":"
+                      << common_points_over_1e2
+                      << ",\"common_points_over_1e1\":"
+                      << common_points_over_1e1
                       << ",\"common_position_rms_error\":"
                       << common_position_rms
                       << ",\"common_max_radius_error\":"
