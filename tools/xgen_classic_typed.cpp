@@ -13,6 +13,7 @@
 #error "Autodesk XgRenderAPI.h was not found"
 #endif
 
+#include <algorithm>
 #include <chrono>
 #include <bit>
 #include <cstddef>
@@ -59,10 +60,14 @@ private:
 class TypedCallbacks final : public api::ProceduralCallbacks {
 public:
     TypedCallbacks(std::string cache_dir, bool dump_surface_frame,
-                   std::optional<std::uint32_t> dump_primitive_face)
+                   std::optional<std::uint32_t> dump_primitive_face,
+                   std::vector<float> shutter_samples,
+                   float shutter_offset)
         : _cache_dir(std::move(cache_dir)),
           _dump_surface_frame(dump_surface_frame),
-          _dump_primitive_face(dump_primitive_face) {}
+          _dump_primitive_face(dump_primitive_face),
+          _shutter_samples(std::move(shutter_samples)),
+          _shutter_offset(shutter_offset) {}
 
     void flush(const char *, api::PrimitiveCache *cache) override {
         if (!_error.empty()) { return; }
@@ -74,14 +79,21 @@ public:
             }
             const unsigned int sample_count =
                 cache->get(api::PrimitiveCache::NumMotionSamples);
-            if (sample_count != 1u) {
+            if (sample_count == 0u || sample_count > 20u) {
                 throw std::runtime_error(
-                    "Classic typed bridge currently requires one motion sample");
+                    "Classic typed bridge requires 1-20 motion samples");
             }
             if (cache->getSize(api::PrimitiveCache::Points) != sample_count ||
                 cache->getSize(api::PrimitiveCache::NumVertices) != sample_count) {
                 throw std::runtime_error(
                     "Classic Points/NumVertices motion sample counts disagree");
+            }
+            if (_motion_sample_count == 0u) {
+                _motion_sample_count = sample_count;
+                _curves.motion_positions.resize(sample_count - 1u);
+            } else if (_motion_sample_count != sample_count) {
+                throw std::runtime_error(
+                    "Classic motion sample count changes between batches");
             }
 
             const unsigned int primitive_count =
@@ -179,6 +191,9 @@ public:
             if (width_count == 0u) {
                 constant_width = cache->get(api::PrimitiveCache::ConstantWidth);
             }
+            const std::size_t primitive_offset =
+                _curves.point_counts.size();
+            const std::size_t point_offset = _curves.points.size();
             classic::append_batch(
                 std::span<const int>{num_vertices, primitive_count},
                 std::span<const api::vec3>{points, point_count},
@@ -186,6 +201,31 @@ public:
                 std::span<const float>{u, u_count},
                 std::span<const float>{v, v_count},
                 std::span<const int>{face_ids, face_id_count}, _curves);
+            for (unsigned int sample = 1u;
+                 sample < sample_count; ++sample) {
+                const unsigned int sample_primitive_count =
+                    cache->getSize2(
+                        api::PrimitiveCache::NumVertices, sample);
+                const unsigned int sample_point_count =
+                    cache->getSize2(api::PrimitiveCache::Points, sample);
+                const int *sample_num_vertices =
+                    cache->get(
+                        api::PrimitiveCache::NumVertices, sample);
+                const api::vec3 *sample_points =
+                    cache->get(api::PrimitiveCache::Points, sample);
+                if ((sample_primitive_count != 0u &&
+                     !sample_num_vertices) ||
+                    (sample_point_count != 0u && !sample_points)) {
+                    throw std::runtime_error(
+                        "Classic motion PrimitiveCache returned a null channel");
+                }
+                classic::append_motion_batch(
+                    std::span<const int>{
+                        sample_num_vertices, sample_primitive_count},
+                    std::span<const api::vec3>{
+                        sample_points, sample_point_count},
+                    primitive_offset, point_offset, sample, _curves);
+            }
             ++_flush_count;
         } catch (const std::exception &error) {
             _error = error.what();
@@ -200,7 +240,9 @@ public:
 
     bool get(EBoolAttribute) const override { return false; }
 
-    float get(EFloatAttribute) const override { return 0.0f; }
+    float get(EFloatAttribute attribute) const override {
+        return attribute == ShutterOffset ? _shutter_offset : 0.0f;
+    }
 
     const char *get(EStringAttribute attribute) const override {
         switch (attribute) {
@@ -222,8 +264,14 @@ public:
         return "";
     }
 
-    const float *get(EFloatArrayAttribute) const override { return nullptr; }
-    unsigned int getSize(EFloatArrayAttribute) const override { return 0u; }
+    const float *get(EFloatArrayAttribute attribute) const override {
+        return attribute == Shutter && !_shutter_samples.empty()
+            ? _shutter_samples.data() : nullptr;
+    }
+    unsigned int getSize(EFloatArrayAttribute attribute) const override {
+        return attribute == Shutter
+            ? static_cast<unsigned int>(_shutter_samples.size()) : 0u;
+    }
     const char *getOverride(const char *) const override { return ""; }
 
     void getTransform(float, api::mat44 &matrix) const override {
@@ -241,14 +289,26 @@ public:
     [[nodiscard]] const classic::Curves &curves() const noexcept { return _curves; }
     [[nodiscard]] const std::string &error() const noexcept { return _error; }
     [[nodiscard]] std::size_t flush_count() const noexcept { return _flush_count; }
+    [[nodiscard]] std::size_t motion_sample_count() const noexcept {
+        return _motion_sample_count;
+    }
+    [[nodiscard]] std::size_t shutter_sample_count() const noexcept {
+        return _shutter_samples.size();
+    }
+    [[nodiscard]] std::span<const float> shutter_samples() const noexcept {
+        return _shutter_samples;
+    }
 
 private:
     std::string _cache_dir;
     bool _dump_surface_frame{};
     std::optional<std::uint32_t> _dump_primitive_face;
+    std::vector<float> _shutter_samples;
+    float _shutter_offset{};
     classic::Curves _curves;
     std::string _error;
     std::size_t _flush_count{};
+    std::size_t _motion_sample_count{};
 };
 
 std::string escape_json(const std::string &value) {
@@ -297,6 +357,8 @@ int main(int argc, char **argv) try {
     std::optional<std::filesystem::path> output_path;
     bool dump_surface_frame = false;
     std::optional<std::uint32_t> dump_primitive_face;
+    std::vector<float> shutter_samples;
+    float shutter_offset{};
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if (argument == "--xgen-args" && index + 1 < argc) {
@@ -324,6 +386,24 @@ int main(int argc, char **argv) try {
                 std::stoul(argv[++index]));
         } else if (argument == "--nxc" && index + 1 < argc) {
             output_path = argv[++index];
+        } else if (argument == "--shutter-sample" && index + 1 < argc) {
+            std::size_t consumed{};
+            const std::string value = argv[++index];
+            const float sample = std::stof(value, &consumed);
+            if (consumed != value.size() || !std::isfinite(sample)) {
+                throw std::invalid_argument(
+                    "--shutter-sample must be finite");
+            }
+            shutter_samples.push_back(sample);
+        } else if (argument == "--shutter-offset" && index + 1 < argc) {
+            std::size_t consumed{};
+            const std::string value = argv[++index];
+            shutter_offset = std::stof(value, &consumed);
+            if (consumed != value.size() ||
+                !std::isfinite(shutter_offset)) {
+                throw std::invalid_argument(
+                    "--shutter-offset must be finite");
+            }
         } else if (argument == "--help") {
             std::cout
                 << "usage: nanoxgen_xgen_classic_typed --xgen-args <render-args> "
@@ -331,6 +411,8 @@ int main(int argc, char **argv) try {
                    "[--description <name> [--generator-mask <expression>] "
                    "[--fx-count <count>] "
                    "[--module-attr <module> <attribute> <type> <value> ...]] "
+                   "[--shutter-sample <placement> ...] "
+                   "[--shutter-offset <value>] "
                    "[--dump-surface-frame] [--dump-primitive-ids <face>]\n";
             return 0;
         } else {
@@ -348,7 +430,8 @@ int main(int argc, char **argv) try {
     }
 
     TypedCallbacks callbacks{
-        std::move(cache_dir), dump_surface_frame, dump_primitive_face};
+        std::move(cache_dir), dump_surface_frame, dump_primitive_face,
+        shutter_samples, shutter_offset};
     const auto evaluation_begin = std::chrono::steady_clock::now();
     {
         CleanupOnce cleanup;
@@ -447,14 +530,65 @@ int main(int argc, char **argv) try {
     if (curves.point_counts.empty() || curves.points.empty()) {
         throw std::runtime_error("Classic evaluation produced zero curves");
     }
+    if (callbacks.shutter_sample_count() != 0u &&
+        callbacks.shutter_sample_count() !=
+            callbacks.motion_sample_count()) {
+        throw std::runtime_error(
+            "XGen motion sample count does not match renderer shutter table");
+    }
+    for (const auto &sample : curves.motion_positions) {
+        if (sample.size() != curves.points.size()) {
+            throw std::runtime_error(
+                "Classic evaluation produced incomplete motion samples");
+        }
+    }
+    std::uint64_t moving_points{};
+    float maximum_motion_position_delta{};
+    for (const auto &sample : curves.motion_positions) {
+        for (std::size_t point = 0u;
+             point < sample.size(); ++point) {
+            const PackedCurvePoint &base = curves.points[point];
+            const Vec3 motion = sample[point];
+            maximum_motion_position_delta = std::max({
+                maximum_motion_position_delta,
+                std::abs(base.x - motion.x),
+                std::abs(base.y - motion.y),
+                std::abs(base.z - motion.z)});
+            moving_points +=
+                std::bit_cast<std::uint32_t>(base.x) !=
+                    std::bit_cast<std::uint32_t>(motion.x) ||
+                std::bit_cast<std::uint32_t>(base.y) !=
+                    std::bit_cast<std::uint32_t>(motion.y) ||
+                std::bit_cast<std::uint32_t>(base.z) !=
+                    std::bit_cast<std::uint32_t>(motion.z);
+        }
+    }
 
     double cache_ms = 0.0;
     std::uint64_t cache_bytes = 0u;
     if (output_path) {
+        std::vector<float> motion_times;
+        std::vector<Vec3> motion_points;
+        if (!curves.motion_positions.empty()) {
+            if (callbacks.shutter_sample_count() !=
+                curves.motion_positions.size() + 1u) {
+                throw std::runtime_error(
+                    "writing a motion .nxc needs one placement per sample");
+            }
+            const std::span<const float> placements =
+                callbacks.shutter_samples();
+            motion_times.assign(placements.begin() + 1u, placements.end());
+            motion_points.reserve(
+                curves.motion_positions.size() * curves.points.size());
+            for (const auto &sample : curves.motion_positions) {
+                motion_points.insert(
+                    motion_points.end(), sample.begin(), sample.end());
+            }
+        }
         const auto cache_begin = std::chrono::steady_clock::now();
         const CurveCache cache = build_curve_cache(
             {curves.point_counts, curves.points, {}, {}, curves.face_uvs,
-             curves.face_ids, {}, {}});
+             curves.face_ids, motion_times, motion_points});
         save_curve_cache(cache, *output_path);
         cache_bytes = cache.bytes().size();
         const auto cache_end = std::chrono::steady_clock::now();
@@ -467,6 +601,10 @@ int main(int argc, char **argv) try {
         checksum, std::span<const std::uint32_t>{curves.point_counts});
     checksum = hash_values(
         checksum, std::span<const PackedCurvePoint>{curves.points});
+    for (const auto &sample : curves.motion_positions) {
+        checksum = hash_values(
+            checksum, std::span<const Vec3>{sample});
+    }
     checksum = hash_values(checksum, std::span<const Vec2>{curves.face_uvs});
     checksum = hash_values(
         checksum, std::span<const std::uint32_t>{curves.face_ids});
@@ -476,6 +614,11 @@ int main(int argc, char **argv) try {
               << "{\"curves\":" << curves.point_counts.size()
               << ",\"points\":" << curves.points.size()
               << ",\"flushes\":" << callbacks.flush_count()
+              << ",\"motion_samples\":"
+              << callbacks.motion_sample_count()
+              << ",\"moving_points\":" << moving_points
+              << ",\"max_motion_position_delta\":"
+              << maximum_motion_position_delta
               << ",\"evaluation_ms\":" << evaluation_ms
               << ",\"nxc_ms\":" << cache_ms
               << ",\"nxc_bytes\":" << cache_bytes

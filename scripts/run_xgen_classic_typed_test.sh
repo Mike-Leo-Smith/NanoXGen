@@ -13,7 +13,8 @@ BUILD_DIR="${NANOXGEN_AUTODESK_BUILD_DIR:-${ROOT}/build/autodesk-bridge-release}
 
 usage() {
   echo "usage: $0 --xgen-file FILE --palette NAME --geom FILE --patch NAME \
---description NAME [--output FILE] [--frame NUMBER]" >&2
+--description NAME [--output FILE] [--frame NUMBER] [--fps NUMBER] \
+[--motion-sample LOOKUP PLACEMENT]... [--shutter-offset NUMBER]" >&2
 }
 
 XGEN_FILE=""
@@ -23,6 +24,10 @@ PATCH=""
 DESCRIPTION=""
 OUTPUT="${ROOT}/build/xgen-classic-real/classic.nxc"
 FRAME="1"
+FPS="24"
+SHUTTER_OFFSET="0"
+LOOKUPS=()
+PLACEMENTS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --xgen-file) XGEN_FILE="${2:-}"; shift 2 ;;
@@ -32,6 +37,13 @@ while [[ $# -gt 0 ]]; do
     --description) DESCRIPTION="${2:-}"; shift 2 ;;
     --output) OUTPUT="${2:-}"; shift 2 ;;
     --frame) FRAME="${2:-}"; shift 2 ;;
+    --fps) FPS="${2:-}"; shift 2 ;;
+    --shutter-offset) SHUTTER_OFFSET="${2:-}"; shift 2 ;;
+    --motion-sample)
+      LOOKUPS+=("${2:-}")
+      PLACEMENTS+=("${3:-}")
+      shift 3
+      ;;
     --help) usage; exit 0 ;;
     *) usage; echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -68,19 +80,31 @@ if env LD_LIBRARY_PATH="${RUNTIME_LIBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" 
   exit 1
 fi
 
-RENDER_ARGS="-debug 0 -warning 1 -stats 0 -frame ${FRAME} -shutter 0.0 \
+RENDER_ARGS="-debug 0 -warning 1 -stats 0 -frame ${FRAME} -fps ${FPS} -shutter 0.0 \
 -file ${XGEN_FILE} -palette ${PALETTE} -geom ${GEOMETRY} -patch ${PATCH} \
 -description ${DESCRIPTION} -world 1;0;0;0;0;1;0;0;0;0;1;0;0;0;0;1"
+BRIDGE_MOTION_ARGS=()
+if [[ ${#LOOKUPS[@]} -ne 0 ]]; then
+  RENDER_ARGS+=" -interpolation linear -motionSamplesLookup"
+  for value in "${LOOKUPS[@]}"; do RENDER_ARGS+=" ${value}"; done
+  RENDER_ARGS+=" -motionSamplesPlacement"
+  for value in "${PLACEMENTS[@]}"; do
+    RENDER_ARGS+=" ${value}"
+    BRIDGE_MOTION_ARGS+=(--shutter-sample "${value}")
+  done
+  BRIDGE_MOTION_ARGS+=(--shutter-offset "${SHUTTER_OFFSET}")
+fi
 env \
   MAYA_LOCATION="${MAYA_LOCATION}" \
   XGEN_LOCATION="${XGEN_ROOT}/" \
   LD_LIBRARY_PATH="${RUNTIME_LIBS}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
-  "${BRIDGE}" --xgen-args "${RENDER_ARGS}" --nxc "${OUTPUT}"
+  "${BRIDGE}" --xgen-args "${RENDER_ARGS}" --nxc "${OUTPUT}" \
+    "${BRIDGE_MOTION_ARGS[@]}"
 "${ROOT}/build/release/nanoxgen_cache_benchmark" --repeats 11 "${OUTPUT}"
 
 ERROR_DIR="${ROOT}/build/xgen-classic-real"
 mkdir -p "${ERROR_DIR}"
-MISSING_ARGS="-debug 0 -warning 1 -stats 0 -frame ${FRAME} -shutter 0.0 \
+MISSING_ARGS="-debug 0 -warning 1 -stats 0 -frame ${FRAME} -fps ${FPS} -shutter 0.0 \
 -file ${XGEN_FILE} -palette ${PALETTE} -geom ${GEOMETRY} \
 -patch __nanoxgen_missing_patch__ -description ${DESCRIPTION} \
 -world 1;0;0;0;0;1;0;0;0;0;1;0;0;0;0;1"

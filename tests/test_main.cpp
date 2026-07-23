@@ -1032,6 +1032,31 @@ void test_classic_typed_batch_validation() {
             "Classic typed conversion must reject inconsistent U cardinality");
     require(rejects(counts, positions, {}, -0.1f, u, v, face_ids),
             "Classic typed conversion must reject a negative constant width");
+
+    curves.motion_positions.resize(2u);
+    std::vector<Position> motion_positions = positions;
+    for (Position &position : motion_positions) { position.x += 2.0f; }
+    classic_typed::append_motion_batch<Position>(
+        counts, motion_positions, 0u, 0u, 1u, curves);
+    for (Position &position : motion_positions) { position.y += 3.0f; }
+    classic_typed::append_motion_batch<Position>(
+        counts, motion_positions, 0u, 0u, 2u, curves);
+    require(
+        curves.motion_positions[0u].size() == positions.size() &&
+            curves.motion_positions[0u][1u].x == 2.0f &&
+            curves.motion_positions[1u][1u].y == 4.0f,
+        "Classic typed conversion lost sample-major motion positions");
+    bool rejected_motion = false;
+    try {
+        classic_typed::append_motion_batch<Position>(
+            std::vector<int>{2, 2}, motion_positions,
+            0u, 0u, 1u, curves);
+    } catch (const std::runtime_error &) {
+        rejected_motion = true;
+    }
+    require(
+        rejected_motion,
+        "Classic typed conversion accepted changing motion topology");
 }
 
 void test_maya_xgen_cache_identity_validation() {

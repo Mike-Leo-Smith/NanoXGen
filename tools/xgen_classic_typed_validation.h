@@ -17,6 +17,9 @@ namespace nanoxgen::classic_typed {
 struct Curves {
     std::vector<std::uint32_t> point_counts;
     std::vector<PackedCurvePoint> points;
+    // Renderer motion samples after sample zero, stored sample-major. Width
+    // is sample-invariant and remains in points; these arrays carry xyz only.
+    std::vector<std::vector<Vec3>> motion_positions;
     std::vector<Vec2> face_uvs;
     std::vector<std::uint32_t> face_ids;
 };
@@ -148,6 +151,70 @@ void append_batch(
         }
         point_offset += count;
         width_offset += varying_count;
+    }
+}
+
+template<typename Position>
+void append_motion_batch(
+    std::span<const int> point_counts,
+    std::span<const Position> positions,
+    std::size_t primitive_offset,
+    std::size_t point_offset,
+    std::size_t motion_sample,
+    Curves &output) {
+    if (motion_sample == 0u ||
+        motion_sample > output.motion_positions.size()) {
+        throw std::runtime_error(
+            "Classic motion sample index is inconsistent");
+    }
+    if (primitive_offset > output.point_counts.size() ||
+        point_counts.size() >
+            output.point_counts.size() - primitive_offset) {
+        throw std::runtime_error(
+            "Classic motion primitive range is inconsistent");
+    }
+    std::size_t point_total{};
+    for (std::size_t primitive = 0u;
+         primitive < point_counts.size(); ++primitive) {
+        const int count = point_counts[primitive];
+        if (count < 2 ||
+            static_cast<std::uint32_t>(count) !=
+                output.point_counts[primitive_offset + primitive]) {
+            throw std::runtime_error(
+                "Classic motion NumVertices topology changes across samples");
+        }
+        const std::size_t size = static_cast<std::size_t>(count);
+        if (size > std::numeric_limits<std::size_t>::max() - point_total) {
+            throw std::runtime_error(
+                "Classic motion point count overflows size_t");
+        }
+        point_total += size;
+    }
+    if (positions.size() != point_total ||
+        point_offset > output.points.size() ||
+        point_total > output.points.size() - point_offset) {
+        throw std::runtime_error(
+            "Classic motion Points topology changes across samples");
+    }
+    auto &destination = output.motion_positions[motion_sample - 1u];
+    if (destination.size() != point_offset) {
+        throw std::runtime_error(
+            "Classic motion batches arrived in inconsistent order");
+    }
+    if (point_total >
+        std::numeric_limits<std::size_t>::max() - destination.size()) {
+        throw std::runtime_error(
+            "Classic motion output size overflows size_t");
+    }
+    destination.reserve(destination.size() + point_total);
+    for (const Position &position : positions) {
+        if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+            !std::isfinite(position.z)) {
+            throw std::runtime_error(
+                "Classic motion primitive contains a non-finite position");
+        }
+        destination.push_back(
+            {position.x, position.y, position.z});
     }
 }
 
