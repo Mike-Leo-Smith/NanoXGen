@@ -93,8 +93,14 @@ subdivision, PTEX binding, and modifier parity boundary.
 The combined Luisa/Classic preset builds a no-shader-cache cold benchmark from
 the authoring collection, Alembic patch, PTEX density, exact roots and guide
 associations through final renderer points. All nine descriptions in the local
-Rabbit collection now completes on native CPU and Luisa HIP, Vulkan, and
+Rabbit collection now complete on native CPU and Luisa HIP, Vulkan, and
 fallback with no Autodesk fallback: 2,456,139 curves and 47,421,673 points.
+The collection path accepts the one master `.xgen`, compiles all descriptions
+on one renderer-owned Luisa `Device`, and records work into renderer-owned
+streams and buffers. No backend name is part of that public API; the caller
+chooses the Device. No handwritten CUDA/HIP path remains. Cold JIT defaults to
+the machine's logical-thread count for HIP, Vulkan, and fallback, with an
+explicit limit available to applications that need to share CPU capacity.
 Canonical
 topology and `(faceId, faceUV, patchUV)` identities exactly match fresh Maya
 typed-RenderAPI caches for every description. The ordered runtime covers

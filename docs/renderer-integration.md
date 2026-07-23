@@ -56,15 +56,48 @@ identity, CSR guide associations and rebuilt float guides, then writes final
 strand-major `float4(position, radius)` buffers. There is no handwritten
 CUDA/HIP API and the portable CPU library has no Luisa dependency.
 
+The renderer owns Luisa's `Context`, `Device`, `Stream`, and every buffer. It
+passes its existing `Device` directly to NanoXGen; the renderer-facing API does
+not take a backend name and never creates a second device:
+
+```cpp
+#include <nanoxgen/luisa/xgen_classic_collection.h>
+
+using namespace nanoxgen::luisa_backend;
+
+std::vector<ClassicCollectionCompileInput> inputs = make_compile_inputs(plan);
+ClassicCollectionCompileOptions options{};
+// Zero is the default: use std::thread::hardware_concurrency().
+options.max_parallel_compiles = 0;
+
+ClassicCollectionPipeline pipeline =
+    compile_classic_collection(renderer_device, inputs, options);
+
+ClassicCollectionDispatchResources resources =
+    make_views_of_renderer_owned_buffers(description);
+pipeline.encode(
+    renderer_stream, description_index, resources, strand_count);
+// The renderer decides when to submit, synchronize, or read the buffers.
+```
+
+`compile_classic_collection` specializes all descriptions as one batch and
+owns the resulting shaders. `encode` only records commands: it performs no
+allocation, upload, synchronization, or download. Buffer views and the Device
+must outlive their recorded work, and the Device must outlive the pipeline.
+`ClassicCollectionExecutionPlan` is the backend-neutral host representation
+for one master Classic `.xgen`; it carries all descriptions rather than asking
+the renderer to reopen the main file per description.
+
 The Classic cold benchmark exercises this complete boundary directly from the
-authoring collection and Alembic patch:
+authoring collection and Alembic patch. Omitting DESCRIPTION selects the
+collection-wide, one-Device path:
 
 ```bash
 ./build/luisa-classic-hip-release/nanoxgen_xgen_classic_luisa_benchmark \
   /external/LuisaCompute-next/build/bin hip \
   /external/rabbit/collection.xgen /external/rabbit/patches.abc \
-  /external/rabbit/xgen/collections/collection eyelash \
-  --warmup 3 --repeats 11 --reference-nxc /external/oracle/eyelash.nxc
+  /external/rabbit/xgen/collections/collection \
+  --warmup 0 --repeats 1
 ```
 
 The reported cold interval includes file input, native root/guide planning,

@@ -137,10 +137,13 @@ fallback until their CPU oracle and Luisa differential tests pass.
 `nanoxgen_xgen_classic_luisa_benchmark` starts from an external Classic
 collection, Alembic patch, XPD guides, and PTEX maps. It disables the Luisa
 shader cache and reports device creation, native parse/import/root/rebuild,
-allocation/JIT, upload, first dispatch/download/packing, total cold time,
-warm dispatch statistics, and a checksum separately. The collection driver
-runs every description in an isolated process and aggregates identical rounds.
-No asset, cache, shader artifact, or benchmark JSON is committed:
+allocation, JIT, upload, first dispatch/download/packing, total cold time,
+warm dispatch statistics, and a checksum separately. Collection mode accepts
+the one authored master `.xgen`, prepares all descriptions, compiles every
+specialized kernel concurrently on one Device, and executes all descriptions
+on that same Device and Stream. Each measured round is still a fresh process,
+so it includes a real no-cache device/JIT cold start. No asset, cache, shader
+artifact, or benchmark JSON is committed:
 
 ```bash
 export LUISA_COMPUTE_SOURCE_DIR=/external/LuisaCompute-next
@@ -156,8 +159,8 @@ python scripts/run_xgen_classic_collection_benchmark.py \
   --collection /external/rabbit/collection.xgen \
   --archive /external/rabbit/patches.abc \
   --descriptions-root /external/rabbit/xgen/collections/collection \
-  --descriptions mm erduo body eyelash head nose sizhi weiba head_A \
-  --rounds 5 --gpu-warmup 3 --gpu-repeats 11 --no-outer-warmup
+  --single-device-collection \
+  --rounds 5 --gpu-warmup 0 --gpu-repeats 1 --no-outer-warmup
 ```
 
 ### Complete collection result
@@ -165,39 +168,48 @@ python scripts/run_xgen_classic_collection_benchmark.py \
 On 2026-07-23, the RX 9070 XT (`gfx1201`) processed all nine Rabbit
 descriptions without Autodesk fallback. Every path produced 2,456,139 curves
 and 47,421,673 renderer points with exact per-description canonical identities.
-The GPU executable and runtime plug-ins came from the same LuisaCompute
-revision, `c07bc0824aebb97784cdaff6e2c34b77acab20a8`.
+The HIP executable and plug-in came from LuisaCompute revision
+`c07bc0824aebb97784cdaff6e2c34b77acab20a8`; fallback ABI and Vulkan were
+retested against `90bbb3b3155f9167dc2d332d95d7a7ffc0032014`.
 
-Each row below contains five fresh process-isolated samples with no outer
-warm-up. Times include collection and sidecar file I/O and all native
-preparation. GPU times also include device creation, upload, JIT, first
-dispatch, download, and packing with the shader cache disabled. They exclude
-cache writes and Autodesk serialization. Maya uses the direct typed
+Each row below contains five fresh-process samples with no outer warm-up.
+Within a GPU sample all nine descriptions share one Device; 80 specialized
+kernels compile as one collection-wide batch using the machine's 32 logical
+threads. Times include collection and sidecar file I/O and all native
+preparation. GPU times also include device creation, allocation, upload, JIT,
+first dispatch, download, and packing with the shader cache disabled. They
+exclude cache writes and Autodesk serialization. Maya uses the direct typed
 `PrimitiveCache` bridge, with no intermediate XGen BLOB; its process-wall
 median was 158.590 s, while the comparable typed evaluation/copy interval
 shown below was 156.225 s.
 
 | path | first sample | median | p90 | speed vs Maya |
 | --- | ---: | ---: | ---: | ---: |
-| portable CPU Release | 37.416 s | 37.246 s | 37.416 s | 4.19x |
-| native CPU + LTO | 37.699 s | 36.826 s | 37.774 s | 4.24x |
-| Luisa HIP, no shader cache | 17.822 s | 17.658 s | 17.850 s | 8.85x |
-| Luisa Vulkan, no shader cache | 20.996 s | 20.958 s | 20.996 s | 7.45x |
-| Luisa fallback, no shader cache | 28.470 s | 28.460 s | 28.512 s | 5.49x |
+| portable CPU Release | 11.519 s | 11.522 s | 11.558 s | 13.56x |
+| native CPU + LTO | 11.370 s | 11.351 s | 11.403 s | 13.76x |
+| Luisa HIP, one Device, no shader cache | 8.855 s | 8.857 s | 8.876 s | 17.64x |
+| Luisa Vulkan, one Device, no shader cache | 10.187 s | 10.240 s | 10.322 s | 15.26x |
+| Luisa fallback, one Device, no shader cache | 10.242 s | 10.283 s | 10.294 s | 15.19x |
 | Maya 2027.1 typed evaluation/copy | 156.225 s | 156.225 s | 156.436 s | 1.00x |
 
-HIP is 2.09x faster than native+LTO CPU, and Vulkan is 1.76x faster, for this
-cold no-cache workload. Fallback is 1.29x faster than native+LTO CPU;
-HIP is 1.61x faster than fallback, and Vulkan is 1.36x faster than fallback.
-The median HIP breakdown is 10.513 s native
-parse/import/root/rebuild, 6.316 s JIT/allocation, 0.413 s device creation,
-0.069 s upload, and 0.340 s first dispatch/download/packing. Vulkan spends
-10.517 s in native preparation and 9.685 s in JIT/allocation, which explains
-most of its gap to HIP. Fallback spends 10.489 s in native preparation,
-16.642 s in JIT/allocation, 0.042 s in device creation, 0.086 s in upload, and
-1.141 s in first dispatch/download/packing. Warm-dispatch numbers are recorded
-by the benchmark but are deliberately not substituted for the requested cold
-result.
+HIP is 1.28x faster than native+LTO CPU, Vulkan is 1.11x faster, and fallback
+is 1.10x faster for this cold no-cache workload. The median HIP breakdown is
+6.507 s native preparation, 1.826 s JIT, 0.045 s device creation, 0.086 s
+collection parsing, 0.035 s buffer allocation, 0.089 s upload, and 0.320 s
+first dispatch/download/packing. Vulkan spends 6.533 s in native preparation
+and 3.061 s in JIT. Fallback spends 6.527 s in native preparation, 2.432 s in
+JIT, and 1.116 s in first dispatch/download/packing.
+
+Fallback was also measured with an earlier conservative one-worker JIT limit:
+its cold time was 24.776 s and JIT alone took 16.874 s. Removing that
+backend-name special case and using the native 32-worker default produced the
+10.283 s median above: 2.41x faster end to end and about 6.94x faster in JIT,
+with the same stable collection checksum in every round. The public pipeline
+does not receive a backend name. Zero `max_parallel_compiles` means
+`std::thread::hardware_concurrency()` for the caller-supplied Device; a renderer
+may set an explicit lower limit only when it needs to share CPU capacity.
+Warm-dispatch numbers are recorded by the benchmark but are deliberately not
+substituted for the requested cold result.
 
 The Luisa kernels use `float`, integer identities, and integer hashes. No
 handwritten CUDA/HIP path remains and no device-side `double` is used; the
