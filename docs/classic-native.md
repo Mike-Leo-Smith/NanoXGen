@@ -168,15 +168,19 @@ expanding `${DESC}` to
 can use `resolve_xgen_classic_descriptions_root` for the same behavior.
 
 PTEX and clump sidecars share one description-path resolver. `${DESC}` and
-plain relative paths are resolved against the concrete description directory;
-both slash styles and case-insensitive `.PTX`, `.XUV`, and `.XPD` suffixes are
-accepted. Ambiguous drive- and root-relative paths are rejected. If a
+plain relative paths are resolved against the concrete description directory.
+For a native absolute path, the complete patch-specific file is tested first;
+only a missing file enables relocated-description fallback, so an existing
+external absolute file always wins while a stale directory cannot block a
+valid relocated sidecar. Mixed Windows/Unix separators and case-insensitive
+`.PTX`, `.XUV`, and `.XPD` suffixes are accepted. Ambiguous drive- and
+root-relative paths are rejected. If a
 relocated package retains a stale absolute Windows, UNC, or Unix path, the
 resolver may rebase only the suffix following a matching description-directory
-component, and only when that local candidate exists. A still-valid intentional
-external absolute path is preserved. Description names must be single safe
-path components, so a malformed collection cannot use a name such as `../fur`
-to escape the selected data root.
+component, and only when that complete local file exists. A still-valid
+intentional external absolute path is preserved. Description names must be
+single safe path components, so a malformed collection cannot use a name such
+as `../fur` to escape the selected data root.
 
 `build_xgen_classic_collection_motion_execution_plan` consumes the renderer's
 `-motionSamplesLookup`/placement table. It evaluates Alembic at

@@ -116,8 +116,10 @@ The description-data argument may be either the resolved
 separators are resolved before `${DESC}` PTEX and clump paths are opened.
 Description sidecars also accept plain relative paths and stale absolute paths
 that can be unambiguously rebased to an existing suffix under the selected
-description; ambiguous drive- or root-relative Windows paths are rejected and
-new assets should prefer `${DESC}`.
+description. A native absolute path wins when its complete patch-specific file
+exists; relocation fallback is searched only when that file is missing.
+Ambiguous drive- or root-relative Windows paths are rejected and new assets
+should prefer `${DESC}`.
 Canonical topology and `(faceId, faceUV, patchUV)` identities exactly match
 fresh Maya typed-RenderAPI caches for every description. The ordered runtime
 covers RandomGenerator, spline interpolation, PTEX-bound expressions, palette

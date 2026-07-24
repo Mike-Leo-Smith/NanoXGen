@@ -131,22 +131,44 @@ classic_suffix_after_component(
     return result;
 }
 
-// Resolve data paths embedded in Classic expressions and module attributes.
-// ${DESC} is always relative to the concrete description directory. When a
-// relocated package retains a stale absolute path, rebase the suffix following
-// the matching description directory component, but only when that candidate
-// exists. This handles Windows-authored paths on Unix without interpreting
-// "E:" as a Unix relative directory and leaves intentional external paths
-// untouched when they are still valid.
-inline std::filesystem::path resolve_classic_description_path(
+inline std::filesystem::path classic_description_file_candidate(
+    const std::filesystem::path &path,
+    std::string_view fallback_filename,
+    std::string_view extension) {
+    if (classic_extension_equals(path, extension)) { return path; }
+    return path / std::string{fallback_filename};
+}
+
+inline bool classic_regular_file(
+    const std::filesystem::path &path) noexcept {
+    std::error_code error;
+    return std::filesystem::is_regular_file(path, error) && !error;
+}
+
+// Resolve final sidecar files embedded in Classic expressions and module
+// attributes. ${DESC} is always relative to the concrete description
+// directory. For a concrete native absolute path, test the complete target
+// file before attempting relocation; checking only the parent directory can
+// prematurely select a stale tree whose patch-specific file is absent. When
+// the exact file is unavailable, rebase the suffix following the matching
+// description directory component. Foreign Windows roots on Unix are never
+// interpreted relative to the process CWD.
+inline std::filesystem::path resolve_classic_description_file(
     std::string_view value,
-    const std::filesystem::path &description_directory) {
+    const std::filesystem::path &description_directory,
+    std::string_view fallback_filename,
+    std::string_view extension) {
+    const auto candidate = [&](const std::filesystem::path &path) {
+        return classic_description_file_candidate(
+            path, fallback_filename, extension);
+    };
     constexpr std::string_view desc_token{"${DESC}"};
     if (value.starts_with(desc_token)) {
         value.remove_prefix(desc_token.size());
-        return (description_directory /
-                classic_path(strip_classic_root_separators(value)))
-            .lexically_normal();
+        return candidate(
+            (description_directory /
+             classic_path(strip_classic_root_separators(value)))
+                .lexically_normal());
     }
     if (classic_windows_drive_relative(value)) {
         throw std::invalid_argument(
@@ -156,11 +178,10 @@ inline std::filesystem::path resolve_classic_description_path(
 
     const std::filesystem::path authored =
         classic_path(value).lexically_normal();
-    std::error_code error;
     if (!classic_absolute(value)) {
         const std::filesystem::path relative_to_description =
             (description_directory / authored).lexically_normal();
-        return relative_to_description;
+        return candidate(relative_to_description);
     }
 #if defined(_WIN32)
     const bool foreign_windows_path =
@@ -170,9 +191,9 @@ inline std::filesystem::path resolve_classic_description_path(
         classic_windows_absolute(value) || classic_unc_absolute(value) ||
         classic_windows_root_relative(value);
 #endif
-    if (!foreign_windows_path &&
-        std::filesystem::exists(authored, error) && !error) {
-        return authored;
+    const std::filesystem::path authored_file = candidate(authored);
+    if (!foreign_windows_path && classic_regular_file(authored_file)) {
+        return authored_file;
     }
 
     const std::string description_name =
@@ -182,9 +203,9 @@ inline std::filesystem::path resolve_classic_description_path(
         const std::filesystem::path relocated =
             (description_directory / classic_path(*suffix))
                 .lexically_normal();
-        error.clear();
-        if (std::filesystem::exists(relocated, error) && !error) {
-            return relocated;
+        const std::filesystem::path relocated_file = candidate(relocated);
+        if (classic_regular_file(relocated_file)) {
+            return relocated_file;
         }
     }
 #if !defined(_WIN32)
@@ -199,7 +220,7 @@ inline std::filesystem::path resolve_classic_description_path(
             "Classic sidecar path is root-relative and ambiguous: " +
             std::string{value});
     }
-    return authored;
+    return authored_file;
 }
 
 } // namespace nanoxgen::detail

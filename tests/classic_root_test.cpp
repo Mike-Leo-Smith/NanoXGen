@@ -218,6 +218,42 @@ void test_relocated_description_data_paths() {
         "E:\\old\\show\\" + fixture.path.filename().string();
 
     nanoxgen::ClassicDescription relocated = description();
+    const std::filesystem::path authored_root =
+        fixture.path.parent_path() /
+        (fixture.path.filename().string() + "-authored");
+    struct CleanupAuthoredRoot {
+        std::filesystem::path path;
+        ~CleanupAuthoredRoot() {
+            std::error_code error;
+            std::filesystem::remove_all(path, error);
+        }
+    } cleanup_authored_root{authored_root};
+    const std::filesystem::path authored_directory =
+        authored_root / fixture.path.filename() /
+        "paintmaps" / "density";
+    const std::filesystem::path authored_file =
+        authored_directory / "testPatch.ptx";
+    std::filesystem::create_directories(authored_directory);
+    std::filesystem::copy_file(
+        fixture.path / "paintmaps" / "density" / "testPatch.ptx",
+        authored_file);
+    relocated.objects.front().attributes[1u].value =
+        "map('" + authored_directory.string() + "')";
+    const nanoxgen::ClassicRootPlan exact_absolute_map =
+        nanoxgen::build_xgen_classic_random_root_plan(
+            relocated, input, fixture.path);
+    require(exact_absolute_map.ptex_maps.front() == authored_file,
+            "existing absolute PTEX file did not take priority");
+
+    std::filesystem::remove(authored_file);
+    const nanoxgen::ClassicRootPlan missing_absolute_map =
+        nanoxgen::build_xgen_classic_random_root_plan(
+            relocated, input, fixture.path);
+    require(missing_absolute_map.ptex_maps.front() ==
+                fixture.path / "paintmaps" / "density" /
+                    "testPatch.ptx",
+            "missing absolute PTEX file prevented description fallback");
+
     relocated.objects.front().attributes[1u].value =
         "map('" + stale_prefix + "\\paintmaps\\density')";
     const nanoxgen::ClassicRootPlan directory_map =

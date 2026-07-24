@@ -21,12 +21,11 @@ std::filesystem::path resolve_map(
         throw std::runtime_error(
             "Classic runtime patch name is not a safe path component");
     }
-    std::filesystem::path result =
-        detail::resolve_classic_description_path(
-            value, description_directory);
-    if (!detail::classic_extension_equals(result, ".ptx")) {
-        result /= std::string{patch_name} + ".ptx";
-    }
+    const std::string fallback_filename =
+        std::string{patch_name} + ".ptx";
+    const std::filesystem::path result =
+        detail::resolve_classic_description_file(
+            value, description_directory, fallback_filename, ".ptx");
     if (!std::filesystem::is_regular_file(result)) {
         throw std::runtime_error(
             "Classic runtime PTEX map does not exist: " + result.string());

@@ -65,12 +65,11 @@ std::filesystem::path module_file(
     }
     std::string value = replace_all(
         attribute->value, "${FXMODULE}", module_name);
-    std::filesystem::path path =
-        detail::resolve_classic_description_path(
-            value, description_directory);
-    if (!detail::classic_extension_equals(path, extension)) {
-        path /= std::string{patch_name} + std::string{extension};
-    }
+    const std::string fallback_filename =
+        std::string{patch_name} + std::string{extension};
+    const std::filesystem::path path =
+        detail::resolve_classic_description_file(
+            value, description_directory, fallback_filename, extension);
     if (!std::filesystem::is_regular_file(path)) {
         fail("module file does not exist: " + path.string());
     }
