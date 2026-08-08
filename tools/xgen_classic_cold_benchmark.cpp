@@ -648,7 +648,8 @@ int main(int argc, char **argv) try {
                     curves, runtime, 1.0f, roots.surface_tangents,
                     roots.random_prefixes, roots.primitive_ids, clump_data,
                     runtime_inputs.values, roots.reference_positions,
-                    root_relative);
+                    root_relative, nullptr,
+                    static_cast<float>(options.frame.value_or(0.0)));
             }
             if (root_relative) {
                 nanoxgen::make_xgen_classic_curves_world_space(curves);

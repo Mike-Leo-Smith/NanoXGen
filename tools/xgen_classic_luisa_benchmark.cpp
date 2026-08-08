@@ -1042,7 +1042,10 @@ int run_collection_motion_mode(
                 sample_gpu.clump_frame_views,
                 gpu.invariant.clump_runtime_views,
                 gpu.invariant.clump_guide_input_views,
-                gpu.invariant.clump_strand_guide_views});
+                gpu.invariant.clump_strand_guide_views,
+                static_cast<float>(
+                    options.motion_sampling.frame +
+                    host.samples[sample_index].lookup_offset)});
         }
     }
 
@@ -1205,7 +1208,11 @@ int run_collection_motion_mode(
                             host.topology.primitive_ids,
                             sample.clump_data,
                             host.runtime_inputs.values,
-                            host.topology.reference_positions, true);
+                            host.topology.reference_positions, true,
+                            nullptr,
+                            static_cast<float>(
+                                options.motion_sampling.frame +
+                                sample.lookup_offset));
                     }
                     nanoxgen::make_xgen_classic_curves_world_space(cpu);
                     nanoxgen::add_xgen_classic_renderer_endpoints(cpu);
@@ -1673,15 +1680,15 @@ int main(int argc, char **argv) try {
     using NoiseShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
         ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
         Buffer<luisa::float3>, Buffer<luisa::float3>,
-        Buffer<luisa::float4>>;
+        Buffer<luisa::float4>, float>;
     using CutShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
         ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
-        Buffer<luisa::float4>>;
+        Buffer<luisa::float4>, float>;
     using ClumpShader = Shader1D<
         Buffer<luisa::float4>, Buffer<luisa::float4>, ByteBuffer,
         Buffer<std::uint32_t>, Buffer<float>, Buffer<luisa::float4>,
         Buffer<luisa::float4>, Buffer<luisa::float4>,
-        Buffer<std::uint32_t>, Buffer<float>, Buffer<std::uint32_t>>;
+        Buffer<std::uint32_t>, Buffer<float>, Buffer<std::uint32_t>, float>;
 
     const nanoxgen::ClassicAlembicAssetInput imported =
         nanoxgen::build_xgen_classic_alembic_asset_input(
@@ -2010,7 +2017,8 @@ int main(int argc, char **argv) try {
         stream << base(roots, offsets, influences, guides, a)
                       .dispatch(static_cast<std::uint32_t>(strand_count));
         if (options.base_only) { return; }
-        stream << primitive(a, b, roots, runtime_data, ptex_buffer, states)
+        stream << primitive(
+                      a, b, roots, runtime_data, ptex_buffer, states, 0.0f)
                       .dispatch(static_cast<std::uint32_t>(strand_count));
         bool source_is_b = true;
         for (const nanoxgen::ClassicFloatEffect effect : runtime.effects) {
@@ -2022,33 +2030,37 @@ int main(int argc, char **argv) try {
                              clump_frames[effect.module_index],
                              clump_runtime[effect.module_index],
                              clump_guide_inputs[effect.module_index],
-                             clump_strand_guides[effect.module_index])
+                             clump_strand_guides[effect.module_index], 0.0f)
                     : shader(a, b, roots, runtime_data, ptex_buffer, states,
                              clump_axes[effect.module_index],
                              clump_frames[effect.module_index],
                              clump_runtime[effect.module_index],
                              clump_guide_inputs[effect.module_index],
-                             clump_strand_guides[effect.module_index]))
+                             clump_strand_guides[effect.module_index], 0.0f))
                     .dispatch(static_cast<std::uint32_t>(strand_count));
             } else if (effect.type == nanoxgen::ClassicFloatEffectType::Noise) {
                 auto &shader = noises.at(effect.module_index).value();
                 stream << (source_is_b
                     ? shader(b, a, roots, runtime_data, ptex_buffer,
-                             tangent_buffer, noise_domain_buffer, states)
+                             tangent_buffer, noise_domain_buffer, states,
+                             0.0f)
                     : shader(a, b, roots, runtime_data, ptex_buffer,
-                             tangent_buffer, noise_domain_buffer, states))
+                             tangent_buffer, noise_domain_buffer, states,
+                             0.0f))
                     .dispatch(static_cast<std::uint32_t>(strand_count));
             } else {
                 auto &shader = cuts.at(effect.module_index).value();
                 stream << (source_is_b
-                    ? shader(b, a, roots, runtime_data, ptex_buffer, states)
-                    : shader(a, b, roots, runtime_data, ptex_buffer, states))
+                    ? shader(
+                        b, a, roots, runtime_data, ptex_buffer, states, 0.0f)
+                    : shader(
+                        a, b, roots, runtime_data, ptex_buffer, states, 0.0f))
                     .dispatch(static_cast<std::uint32_t>(strand_count));
             }
             source_is_b = !source_is_b;
         }
         stream << width(final_is_a ? a : b, roots, runtime_data,
-                        ptex_buffer, states)
+                        ptex_buffer, states, 0.0f)
                       .dispatch(static_cast<std::uint32_t>(strand_count));
     };
 

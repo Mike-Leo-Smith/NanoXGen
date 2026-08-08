@@ -43,7 +43,7 @@ void test_external_device_collection_compile(
         description.name = "collection_" + std::to_string(index);
         description.objects.push_back({"SplinePrimitive", {
             {"fxCVCount", "4", 1u},
-            {"width", index == 0u ? "0.1" : "0.2", 2u}}, 1u});
+            {"width", index == 0u ? "$frame*0.01" : "0.2", 2u}}, 1u});
         plans[index] =
             nanoxgen::compile_xgen_classic_float_runtime_plan(description);
     }
@@ -117,7 +117,7 @@ void test_external_device_collection_compile(
             root_runtime_buffer.view(), runtime_input_buffer.view(),
             tangent_buffer.view(), noise_domain_buffer.view(),
             points_a.view(), points_b.view(), states.view(),
-            {}, {}, {}, {}, {}};
+            {}, {}, {}, {}, {}, 10.0f};
     std::array<luisa::float4, 4u> output{};
     stream << root_buffer.copy_from(roots.data())
            << offset_buffer.copy_from(offsets.data())
@@ -134,7 +134,7 @@ void test_external_device_collection_compile(
         if (output[cv].x != 0.0f ||
             output[cv].y != guides[cv].y ||
             output[cv].z != 0.0f ||
-            output[cv].w != 0.05f) {
+            std::abs(output[cv].w - 0.05f) > 1.0e-7f) {
             throw std::runtime_error(
                 "external-device Classic collection encode mismatch");
         }
@@ -147,7 +147,7 @@ void test_external_device_collection_compile(
             root_runtime_buffer.view(), runtime_input_buffer.view(),
             tangent_buffer.view(), noise_domain_buffer.view(),
             motion_points_a.view(), motion_points_b.view(),
-            motion_states.view(), {}, {}, {}, {}, {}};
+            motion_states.view(), {}, {}, {}, {}, {}, 20.0f};
     const std::array<
         nanoxgen::luisa_backend::ClassicCollectionDispatchResources, 3u>
         motion_samples{{resources, motion_resources, resources}};
@@ -162,7 +162,7 @@ void test_external_device_collection_compile(
         if (motion_output[cv].x != deformed_guides[cv].x ||
             motion_output[cv].y != deformed_guides[cv].y ||
             motion_output[cv].z != deformed_guides[cv].z ||
-            motion_output[cv].w != 0.05f) {
+            std::abs(motion_output[cv].w - 0.1f) > 1.0e-7f) {
             throw std::runtime_error(
                 "external-device Classic motion encode lost deformation");
         }
@@ -288,7 +288,7 @@ void test_luisa_classic_primitive_culling(Device &device, Stream &stream) {
            << runtime.copy_from(root_runtime.data())
            << ptex.copy_from(ptex_values.data())
            << a.copy_from(source.data())
-           << primitive(a, b, roots, runtime, ptex, state_buffer)
+           << primitive(a, b, roots, runtime, ptex, state_buffer, 0.0f)
                   .dispatch(strand_count)
            << state_buffer.copy_to(luisa::span{states})
            << synchronize();
@@ -531,18 +531,20 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
            << clump_guides_buffer.copy_from(
                   clump_data.strand_guide_indices.data())
            << a.copy_from(source.data())
-           << primitive(a, b, roots, runtime, ptex, states)
+           << primitive(a, b, roots, runtime, ptex, states, 0.0f)
                   .dispatch(strand_count)
            << clump(b, a, roots, runtime, ptex, states,
                      clump_axes_buffer, clump_frames_buffer,
                      clump_runtime_buffer, clump_guide_inputs_buffer,
-                     clump_guides_buffer)
+                     clump_guides_buffer, 0.0f)
                   .dispatch(strand_count)
            << noise(a, b, roots, runtime, ptex, tangent_buffer,
-                    noise_domain_buffer, states)
+                    noise_domain_buffer, states, 0.0f)
                   .dispatch(strand_count)
-           << cut(b, a, roots, runtime, ptex, states).dispatch(strand_count)
-           << width(a, roots, runtime, ptex, states).dispatch(strand_count)
+           << cut(b, a, roots, runtime, ptex, states, 0.0f)
+                  .dispatch(strand_count)
+           << width(a, roots, runtime, ptex, states, 0.0f)
+                  .dispatch(strand_count)
            << a.copy_to(luisa::span{actual})
            << synchronize();
     float max_error = 0.0f;
@@ -625,7 +627,8 @@ int main(int argc, char **argv) try {
         nanoxgen::make_xgen_float_expression_program(
             nanoxgen::compile_xgen_scalar_expression(
                 "$a=hash($id+355) <= .3? rand(0.1,0.7):rand(0.2,0);"
-                "$a*$cLength*rampUI(0,0,3:0.5,1,3:1,0,3)",
+                "$a*$cLength*rampUI(0,0,3:0.5,1,3:1,0,3)+"
+                "$frame*0.001",
                 expression_options));
     const nanoxgen::ClassicFloatRuntimeExpression classic_expression{
         "CutFXModule", "Cut1", "amount", expression_program};
@@ -666,6 +669,7 @@ int main(int argc, char **argv) try {
         runtime_context.face_seed =
             expression_contexts[i + expression_count * 2u];
         runtime_context.t = expression_contexts[i + expression_count * 3u];
+        runtime_context.frame = 12.5f;
         runtime_context.random_prefix = expression_prefixes[i];
         runtime_context.has_random_prefix = true;
         for (std::size_t input_index = 0u;
@@ -712,6 +716,7 @@ int main(int argc, char **argv) try {
                                      static_cast<std::uint32_t>(c_length_input)),
                      0.0f,
                      expression_context.read(index + expression_count * 3u),
+                     12.5f,
                      random_prefix.read(index),
                      true}));
         };

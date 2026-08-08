@@ -267,6 +267,28 @@ void test_float_runtime_plan() {
     require(id_curves.points[0u].radius == 3.5f &&
                 id_curves.points[1u].radius == 3.5f,
             "Classic runtime ignored the per-face primitive ID");
+
+    ClassicDescription frame_description{};
+    frame_description.name = "frame";
+    frame_description.objects.push_back({"SplinePrimitive", {
+        {"width", "$frame*0.02", 1u}}, 1u});
+    const ClassicFloatRuntimePlan frame_plan =
+        compile_xgen_classic_float_runtime_plan(frame_description);
+    require(frame_plan.lowering_complete() && frame_plan.frame_varying,
+            "Classic runtime did not retain the $frame dependency");
+    PackedGeneratedCurves frame_curves{};
+    frame_curves.strand_count = 1u;
+    frame_curves.cvs_per_strand = 2u;
+    frame_curves.point_counts = {2u};
+    frame_curves.points.resize(2u);
+    frame_curves.points[1u].y = 1.0f;
+    frame_curves.roots.resize(1u);
+    apply_xgen_classic_float_runtime_plan_cpu(
+        frame_curves, frame_plan, 1.0f, {}, {}, {}, {}, {}, {}, false,
+        nullptr, 12.0f);
+    require(frame_curves.points[0u].radius == 0.12f &&
+                frame_curves.points[1u].radius == 0.12f,
+            "Classic runtime did not bind the current frame");
 }
 
 void test_float_runtime_fallbacks_and_validation() {

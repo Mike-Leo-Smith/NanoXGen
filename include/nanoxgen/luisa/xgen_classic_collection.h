@@ -74,6 +74,9 @@ struct ClassicCollectionDispatchResources {
     std::span<const luisa::compute::BufferView<float>> clump_guide_inputs;
     std::span<const luisa::compute::BufferView<luisa::uint>>
         clump_strand_guides;
+    // Current XGen frame for runtime expressions. Motion samples bind
+    // frame + lookup_offset independently without recompiling kernels.
+    float frame{};
 };
 
 class ClassicCollectionPipeline {

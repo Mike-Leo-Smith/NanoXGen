@@ -457,7 +457,8 @@ bool supported_runtime_input(std::string_view input) {
     // These are the variables whose fast-float binding is unambiguous without
     // retaining Autodesk patch/evaluation state. Patch u/v/face IDs and ri/rf
     // require the native root sampler and therefore remain fallbacks.
-    if (input == "id" || input == "cLength" || input == "cWidth") {
+    if (input == "id" || input == "cLength" || input == "cWidth" ||
+        input == "frame") {
         return true;
     }
     constexpr std::string_view map_prefix{"__nxg_map_"};
@@ -532,6 +533,7 @@ float input_value(std::string_view name,
     if (name == "id") { return static_cast<float>(context.id); }
     if (name == "cLength") { return context.c_length; }
     if (name == "cWidth") { return context.c_width; }
+    if (name == "frame") { return context.frame; }
     constexpr std::string_view prefix{"__nxg_map_"};
     if (name.starts_with(prefix)) {
         name.remove_prefix(prefix.size());
@@ -1524,6 +1526,43 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
             }
         }
     }
+    const auto expression_uses_frame = [](const auto &expression) {
+        return std::find(
+                   expression.program.inputs.begin(),
+                   expression.program.inputs.end(), "frame") !=
+               expression.program.inputs.end();
+    };
+    const auto include_optional_frame = [&](const auto &expression) {
+        if (expression) {
+            result.frame_varying |= expression_uses_frame(*expression);
+        }
+    };
+    include_optional_frame(result.length);
+    include_optional_frame(result.width);
+    include_optional_frame(result.taper);
+    include_optional_frame(result.taper_start);
+    include_optional_frame(result.width_ramp);
+    include_optional_frame(result.stray_percentage);
+    for (const ClassicFloatCutModule &cut : result.cuts) {
+        result.frame_varying |= expression_uses_frame(cut.amount);
+    }
+    for (const ClassicFloatNoiseModule &noise : result.noises) {
+        const ClassicFloatRuntimeExpression *expressions[]{
+            &noise.mask, &noise.magnitude, &noise.magnitude_scale,
+            &noise.frequency, &noise.correlation, &noise.preserve_length};
+        for (const auto *expression : expressions) {
+            result.frame_varying |= expression_uses_frame(*expression);
+        }
+    }
+    for (const ClassicFloatClumpModule &clump : result.clumps) {
+        const ClassicFloatRuntimeExpression *expressions[]{
+            &clump.mask, &clump.clump, &clump.clump_scale, &clump.noise,
+            &clump.noise_scale, &clump.noise_frequency,
+            &clump.noise_correlation};
+        for (const auto *expression : expressions) {
+            result.frame_varying |= expression_uses_frame(*expression);
+        }
+    }
     return result;
 }
 
@@ -1562,7 +1601,8 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     std::span<const float> runtime_inputs,
     std::span<const Vec3> noise_domain_positions,
     bool root_relative,
-    NanoXGenContext *context) {
+    NanoXGenContext *context,
+    float frame) {
     if (curves.strand_count == 0u || curves.cvs_per_strand < 2u ||
         curves.point_counts.size() != curves.strand_count ||
         curves.roots.size() != curves.strand_count ||
@@ -1571,9 +1611,10 @@ void apply_xgen_classic_float_runtime_plan_cpu(
         throw std::invalid_argument(
             "Classic runtime needs a valid fixed-CV packed curve set");
     }
-    if (!std::isfinite(radius_scale) || radius_scale < 0.0f) {
+    if (!std::isfinite(radius_scale) || radius_scale < 0.0f ||
+        !std::isfinite(frame)) {
         throw std::invalid_argument(
-            "Classic runtime radius scale must be finite and non-negative");
+            "Classic runtime radius scale and frame must be finite");
     }
     if (!plan.noises.empty() &&
         surface_tangents.size() != curves.strand_count) {
@@ -1773,6 +1814,7 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             root.surface_face_id == kInvalidIndex
                 ? root.triangle_index
                 : root.surface_face_id);
+        context.frame = frame;
         context.random_prefix = random_prefixes.empty()
             ? 0u : random_prefixes[strand];
         context.has_random_prefix = !random_prefixes.empty();

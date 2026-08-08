@@ -12,7 +12,8 @@ using ClassicRuntimePrimitiveKernel = luisa::compute::Kernel1D<void(
     luisa::compute::ByteBuffer,
     luisa::compute::Buffer<luisa::uint>,
     luisa::compute::Buffer<float>,
-    luisa::compute::Buffer<luisa::float4>)>;
+    luisa::compute::Buffer<luisa::float4>,
+    float)>;
 using ClassicRuntimeCutKernel = ClassicRuntimePrimitiveKernel;
 using ClassicRuntimeClumpKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::float4>,
@@ -25,7 +26,8 @@ using ClassicRuntimeClumpKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::float4>,
     luisa::compute::Buffer<luisa::uint>,
     luisa::compute::Buffer<float>,
-    luisa::compute::Buffer<luisa::uint>)>;
+    luisa::compute::Buffer<luisa::uint>,
+    float)>;
 using ClassicRuntimeNoiseKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::float4>,
     luisa::compute::Buffer<luisa::float4>,
@@ -34,13 +36,15 @@ using ClassicRuntimeNoiseKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<float>,
     luisa::compute::Buffer<luisa::float3>,
     luisa::compute::Buffer<luisa::float3>,
-    luisa::compute::Buffer<luisa::float4>)>;
+    luisa::compute::Buffer<luisa::float4>,
+    float)>;
 using ClassicRuntimeWidthKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::float4>,
     luisa::compute::ByteBuffer,
     luisa::compute::Buffer<luisa::uint>,
     luisa::compute::Buffer<float>,
-    luisa::compute::Buffer<luisa::float4>)>;
+    luisa::compute::Buffer<luisa::float4>,
+    float)>;
 
 struct ClassicFloatRuntimeLuisaContext {
     luisa::compute::Expr<luisa::uint> id;
@@ -50,6 +54,7 @@ struct ClassicFloatRuntimeLuisaContext {
     luisa::compute::Expr<float> c_length;
     luisa::compute::Expr<float> c_width;
     luisa::compute::Expr<float> t;
+    luisa::compute::Expr<float> frame;
     luisa::compute::Expr<luisa::uint> random_prefix;
     bool has_random_prefix{};
     const luisa::compute::BufferVar<float> *ptex_values{};

@@ -27,17 +27,18 @@ using BaseShader = Shader1D<
     ByteBuffer, Buffer<uint>, ByteBuffer, Buffer<float3>, Buffer<float4>>;
 using PrimitiveShader = Shader1D<
     Buffer<float4>, Buffer<float4>, ByteBuffer, Buffer<uint>, Buffer<float>,
-    Buffer<float4>>;
+    Buffer<float4>, float>;
 using WidthShader = Shader1D<
-    Buffer<float4>, ByteBuffer, Buffer<uint>, Buffer<float>, Buffer<float4>>;
+    Buffer<float4>, ByteBuffer, Buffer<uint>, Buffer<float>, Buffer<float4>,
+    float>;
 using NoiseShader = Shader1D<
     Buffer<float4>, Buffer<float4>, ByteBuffer, Buffer<uint>, Buffer<float>,
-    Buffer<float3>, Buffer<float3>, Buffer<float4>>;
+    Buffer<float3>, Buffer<float3>, Buffer<float4>, float>;
 using CutShader = PrimitiveShader;
 using ClumpShader = Shader1D<
     Buffer<float4>, Buffer<float4>, ByteBuffer, Buffer<uint>, Buffer<float>,
     Buffer<float4>, Buffer<float4>, Buffer<float4>, Buffer<uint>,
-    Buffer<float>, Buffer<uint>>;
+    Buffer<float>, Buffer<uint>, float>;
 
 double milliseconds(Clock::time_point begin, Clock::time_point end) {
     return std::chrono::duration<double, std::milli>(end - begin).count();
@@ -136,7 +137,7 @@ void ClassicCollectionPipeline::encode(
     stream << (*pipeline.primitive)(
                   resources.points_a, resources.points_b, resources.roots,
                   resources.root_runtime, resources.runtime_inputs,
-                  resources.states)
+                  resources.states, resources.frame)
                   .dispatch(strand_count);
     bool source_is_b = true;
     for (const ClassicFloatEffect effect : pipeline.effects) {
@@ -157,7 +158,8 @@ void ClassicCollectionPipeline::encode(
                     resources.clump_frames[effect.module_index],
                     resources.clump_runtime[effect.module_index],
                     resources.clump_guide_inputs[effect.module_index],
-                    resources.clump_strand_guides[effect.module_index])
+                    resources.clump_strand_guides[effect.module_index],
+                    resources.frame)
                 : shader(
                     resources.points_a, resources.points_b, resources.roots,
                     resources.root_runtime, resources.runtime_inputs,
@@ -166,7 +168,8 @@ void ClassicCollectionPipeline::encode(
                     resources.clump_frames[effect.module_index],
                     resources.clump_runtime[effect.module_index],
                     resources.clump_guide_inputs[effect.module_index],
-                    resources.clump_strand_guides[effect.module_index]))
+                    resources.clump_strand_guides[effect.module_index],
+                    resources.frame))
                 .dispatch(strand_count);
         } else if (effect.type == ClassicFloatEffectType::Noise) {
             if (effect.module_index >= pipeline.noises.size() ||
@@ -181,12 +184,14 @@ void ClassicCollectionPipeline::encode(
                     resources.points_b, resources.points_a, resources.roots,
                     resources.root_runtime, resources.runtime_inputs,
                     resources.surface_tangents,
-                    resources.noise_domain_positions, resources.states)
+                    resources.noise_domain_positions, resources.states,
+                    resources.frame)
                 : shader(
                     resources.points_a, resources.points_b, resources.roots,
                     resources.root_runtime, resources.runtime_inputs,
                     resources.surface_tangents,
-                    resources.noise_domain_positions, resources.states))
+                    resources.noise_domain_positions, resources.states,
+                    resources.frame))
                 .dispatch(strand_count);
         } else {
             if (effect.module_index >= pipeline.cuts.size() ||
@@ -199,11 +204,11 @@ void ClassicCollectionPipeline::encode(
                 ? shader(
                     resources.points_b, resources.points_a, resources.roots,
                     resources.root_runtime, resources.runtime_inputs,
-                    resources.states)
+                    resources.states, resources.frame)
                 : shader(
                     resources.points_a, resources.points_b, resources.roots,
                     resources.root_runtime, resources.runtime_inputs,
-                    resources.states))
+                    resources.states, resources.frame))
                 .dispatch(strand_count);
         }
         source_is_b = !source_is_b;
@@ -212,13 +217,13 @@ void ClassicCollectionPipeline::encode(
         stream << (*pipeline.width)(
                       resources.points_a, resources.roots,
                       resources.root_runtime, resources.runtime_inputs,
-                      resources.states)
+                      resources.states, resources.frame)
                       .dispatch(strand_count);
     } else {
         stream << (*pipeline.width)(
                       resources.points_b, resources.roots,
                       resources.root_runtime, resources.runtime_inputs,
-                      resources.states)
+                      resources.states, resources.frame)
                       .dispatch(strand_count);
     }
 }

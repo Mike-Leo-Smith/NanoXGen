@@ -125,6 +125,7 @@ struct ClassicFloatRuntimePlan {
     std::uint32_t fx_cv_count{};
     bool use_guide_cache{};
     bool guide_cache_live_mode{true};
+    bool frame_varying{};
     std::string guide_cache_file;
     std::string guide_cache_wire_names;
     std::optional<ClassicFloatRuntimeExpression> stray_percentage;
@@ -171,6 +172,7 @@ struct ClassicFloatRuntimeContext {
     float c_length{};
     float c_width{};
     float t{};
+    float frame{};
     std::uint32_t random_prefix{};
     bool has_random_prefix{};
     std::span<const float> ptex_values;
@@ -224,7 +226,8 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     // Clump guide goals are translated into the same local frame; noise
     // domains remain in authored reference space.
     bool root_relative = false,
-    NanoXGenContext *context = nullptr);
+    NanoXGenContext *context = nullptr,
+    float frame = 0.0f);
 
 // Match the Classic renderer cache convention by adding one extrapolated
 // endpoint before and after every fixed-CV spline. Call after all FX modules

@@ -355,16 +355,30 @@ build_xgen_classic_collection_execution_plan(
                 output.runtime.fallback_reasons.front());
         }
         const std::uint32_t cvs = output.runtime.fx_cv_count;
-        output.surface = build_xgen_classic_alembic_asset_input(
-            description, archive_path);
+        output.deformation_static =
+            xgen_classic_alembic_deformation_is_static(
+                description, archive_path);
+        output.surface = options.frame_sample
+            ? build_xgen_classic_alembic_asset_input(
+                  description, archive_path, *options.frame_sample)
+            : build_xgen_classic_alembic_asset_input(
+                  description, archive_path);
         if (output.runtime.use_guide_cache) {
             const std::filesystem::path cache_path =
                 resolve_guide_cache_path(
                     output.runtime,
                     resolved_descriptions_root / description.name);
-            apply_xgen_classic_alembic_guide_cache(
-                output.surface, cache_path,
-                output.runtime.guide_cache_wire_names);
+            output.deformation_static &=
+                xgen_classic_alembic_guide_cache_is_static(cache_path);
+            if (options.frame_sample) {
+                apply_xgen_classic_alembic_guide_cache(
+                    output.surface, cache_path, *options.frame_sample,
+                    output.runtime.guide_cache_wire_names);
+            } else {
+                apply_xgen_classic_alembic_guide_cache(
+                    output.surface, cache_path,
+                    output.runtime.guide_cache_wire_names);
+            }
         }
         output.roots = build_xgen_classic_root_plan(
             description, output.surface,
@@ -492,8 +506,16 @@ build_xgen_classic_collection_motion_execution_plan(
             sample.placement = sampling.placements[sample_index];
             sample.deformation_source_index = sample_index;
         }
+        const bool shared_runtime_frame =
+            !output.runtime.frame_varying ||
+            std::all_of(
+                output.samples.begin() + 1u, output.samples.end(),
+                [&](const auto &sample) {
+                    return sample.lookup_offset ==
+                           output.samples.front().lookup_offset;
+                });
         const bool static_deformation =
-            output.samples.size() > 1u &&
+            output.samples.size() > 1u && shared_runtime_frame &&
             xgen_classic_alembic_deformation_is_static(
                 description, archive_path) &&
             (!output.runtime.use_guide_cache ||
@@ -613,6 +635,8 @@ build_xgen_classic_collection_motion_execution_plan(
                     continue;
                 }
                 if (equal_bytes(sample.roots.roots, source.roots.roots) &&
+                    (!output.runtime.frame_varying ||
+                     sample.lookup_offset == source.lookup_offset) &&
                     equal_bytes(
                         sample.roots.surface_tangents,
                         source.roots.surface_tangents) &&

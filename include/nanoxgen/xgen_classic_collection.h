@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,10 @@ struct ClassicCollectionExecutionOptions {
         std::numeric_limits<std::uint32_t>::max()};
     bool profile{};
     std::string profile_file;
+    // Optional current-frame sample for non-motion rendering. Keeping this
+    // separate from motion sampling avoids building motion tables for one
+    // output while still evaluating animated Alembic geometry correctly.
+    std::optional<ClassicAlembicFrameSample> frame_sample;
     // Optional context shared by description, PTEX, clump, and later JIT work.
     // A null context creates an affinity-aware pool for this call and releases
     // it on return. A supplied context must outlive this call.
@@ -27,6 +32,7 @@ struct ClassicCollectionExecutionOptions {
 
 struct ClassicCollectionExecutionDescription {
     std::string name;
+    bool deformation_static{};
     ClassicFloatRuntimePlan runtime;
     ClassicAlembicAssetInput surface;
     ClassicRootPlan roots;

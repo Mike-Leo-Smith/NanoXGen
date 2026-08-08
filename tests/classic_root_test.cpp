@@ -207,24 +207,29 @@ void test_full_mask_and_generation() {
     renderer_attributes.push_back(
         {"custom_float_long", "hash($id)<.5?1:0", 8u});
     renderer_attributes.push_back(
+        {"custom_float_frame", "$frame", 9u});
+    renderer_attributes.push_back(
         {"custom_color_color",
          "$a=map('${DESC}/paintmaps/density');#3dpaint\\n$a", 9u});
     const auto float_primvars =
         nanoxgen::build_xgen_classic_uniform_float_primvars(
             primvar_description, palette, 7u, fixture.path, "testPatch",
-            first);
+            first, nullptr, 24.0f);
     require(
-        float_primvars.size() == 2u &&
+        float_primvars.size() == 3u &&
             float_primvars[0u].name == "curve_id" &&
             float_primvars[1u].name == "long" &&
+            float_primvars[2u].name == "frame" &&
             float_primvars[0u].values.size() == first.roots.size() &&
-            float_primvars[1u].values.size() == first.roots.size(),
+            float_primvars[1u].values.size() == first.roots.size() &&
+            float_primvars[2u].values.size() == first.roots.size(),
         "uniform float primvar dimensions mismatch");
     for (std::size_t strand = 0u; strand < first.roots.size(); ++strand) {
         require(
             std::isfinite(float_primvars[0u].values[strand]) &&
                 (float_primvars[1u].values[strand] == 0.0f ||
-                 float_primvars[1u].values[strand] == 1.0f),
+                 float_primvars[1u].values[strand] == 1.0f) &&
+                float_primvars[2u].values[strand] == 24.0f,
             "uniform float primvar value mismatch");
     }
     const auto color_primvars =

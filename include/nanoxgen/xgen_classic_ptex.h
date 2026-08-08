@@ -63,7 +63,8 @@ build_xgen_classic_uniform_float_primvars(
     const std::filesystem::path &description_directory,
     std::string_view patch_name,
     const ClassicRootPlan &roots,
-    NanoXGenContext *context = nullptr);
+    NanoXGenContext *context = nullptr,
+    float frame = 0.0f);
 
 // Evaluate every RendermanRenderer custom_color_* attribute as one uniform RGB
 // value per retained root. Direct PTEX maps are handled internally. Callers

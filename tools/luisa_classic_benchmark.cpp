@@ -256,7 +256,7 @@ struct RuntimeCase {
     void dispatch(Stream &stream) {
         stream << generate(asset_buffer, root_buffer, a).dispatch(spec.strands)
                << primitive(a, b, root_buffer, root_runtime_buffer,
-                            ptex_buffer, states)
+                            ptex_buffer, states, 0.0f)
                       .dispatch(spec.strands);
         bool source_is_b = true;
         for (const nanoxgen::ClassicFloatEffect effect : plan.effects) {
@@ -265,30 +265,30 @@ struct RuntimeCase {
                 if (source_is_b) {
                     stream << noise(b, a, root_buffer, root_runtime_buffer,
                                     ptex_buffer, surface_tangent_buffer,
-                                    noise_domain_buffer, states)
+                                    noise_domain_buffer, states, 0.0f)
                                   .dispatch(spec.strands);
                 } else {
                     stream << noise(a, b, root_buffer, root_runtime_buffer,
                                     ptex_buffer, surface_tangent_buffer,
-                                    noise_domain_buffer, states)
+                                    noise_domain_buffer, states, 0.0f)
                                   .dispatch(spec.strands);
                 }
             } else {
                 auto &cut = cuts.at(effect.module_index);
                 if (source_is_b) {
                     stream << cut(b, a, root_buffer, root_runtime_buffer,
-                                  ptex_buffer, states)
+                                  ptex_buffer, states, 0.0f)
                                   .dispatch(spec.strands);
                 } else {
                     stream << cut(a, b, root_buffer, root_runtime_buffer,
-                                  ptex_buffer, states)
+                                  ptex_buffer, states, 0.0f)
                                   .dispatch(spec.strands);
                 }
             }
             source_is_b = !source_is_b;
         }
         stream << width(final_is_a ? a : b, root_buffer,
-                        root_runtime_buffer, ptex_buffer, states)
+                        root_runtime_buffer, ptex_buffer, states, 0.0f)
                       .dispatch(spec.strands);
     }
 
