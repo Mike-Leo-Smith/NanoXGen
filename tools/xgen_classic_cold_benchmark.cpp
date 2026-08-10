@@ -51,6 +51,8 @@ struct Options {
     std::uint32_t dump_guides{};
     std::optional<std::uint32_t> dump_runtime;
     std::optional<std::uint32_t> effect_count;
+    std::optional<double> frame;
+    double frames_per_second{24.0};
     std::uint32_t probe_face{};
     nanoxgen::Vec2 probe_uv{};
     bool probe{};
@@ -76,6 +78,7 @@ Options parse_options(int argc, char **argv) {
             "[--generate] [--base-only] [--cvs N] [--face-counts] [--dump-roots N] "
             "[--dump-face ID] [--dump-guides N] [--probe FACE,U,V] "
             "[--dump-runtime N] [--effect-count N] [--generator-mask EXPR] "
+            "[--frame F] [--fps F] "
             "[--module-attr MODULE ATTRIBUTE VALUE ...] "
             "[--nxc OUTPUT]");
     }
@@ -104,6 +107,7 @@ Options parse_options(int argc, char **argv) {
                    argument == "--dump-guides" ||
                    argument == "--dump-runtime" ||
                    argument == "--effect-count" ||
+                   argument == "--frame" || argument == "--fps" ||
                    argument == "--generator-mask" ||
                    argument == "--probe" || argument == "--nxc") {
             if (++index >= argc) {
@@ -131,6 +135,10 @@ Options parse_options(int argc, char **argv) {
                 result.dump_runtime = parse_u32(argv[index], "runtime strand");
             } else if (argument == "--effect-count") {
                 result.effect_count = parse_u32(argv[index], "effect count");
+            } else if (argument == "--frame") {
+                result.frame = std::stod(argv[index]);
+            } else if (argument == "--fps") {
+                result.frames_per_second = std::stod(argv[index]);
             } else {
                 const std::string value{argv[index]};
                 const std::size_t first = value.find(',');
@@ -156,6 +164,12 @@ Options parse_options(int argc, char **argv) {
         throw std::invalid_argument(
             "--nxc requires --generate and exactly one --description");
     }
+    if ((result.frame && !std::isfinite(*result.frame)) ||
+        !std::isfinite(result.frames_per_second) ||
+        !(result.frames_per_second > 0.0)) {
+        throw std::invalid_argument(
+            "frame must be finite and FPS must be positive");
+    }
     return result;
 }
 
@@ -172,6 +186,22 @@ std::uint64_t checksum(const nanoxgen::PackedGeneratedCurves &curves) {
         mix(std::bit_cast<std::uint32_t>(point.radius));
     }
     return hash;
+}
+
+std::filesystem::path guide_cache_path(
+    const nanoxgen::ClassicFloatRuntimePlan &runtime,
+    const std::filesystem::path &description_directory) {
+    constexpr std::string_view desc_token{"${DESC}"};
+    std::string_view value{runtime.guide_cache_file};
+    if (value.starts_with(desc_token)) {
+        value.remove_prefix(desc_token.size());
+        while (!value.empty() &&
+               (value.front() == '/' || value.front() == '\\')) {
+            value.remove_prefix(1u);
+        }
+        return description_directory / std::filesystem::path{value};
+    }
+    return std::filesystem::path{runtime.guide_cache_file};
 }
 
 } // namespace
@@ -254,10 +284,32 @@ int main(int argc, char **argv) try {
                 : options.archive_directory / (description.name + ".abc");
         const std::filesystem::path description_directory =
             descriptions_root / description.name;
+        nanoxgen::ClassicFloatRuntimePlan runtime =
+            nanoxgen::compile_xgen_classic_float_runtime_plan(
+                description, collection.palette_attributes);
         const Clock::time_point import_begin = Clock::now();
-        const nanoxgen::ClassicAlembicAssetInput imported =
-            nanoxgen::build_xgen_classic_alembic_asset_input(
-                description, archive);
+        nanoxgen::ClassicAlembicAssetInput imported = options.frame
+            ? nanoxgen::build_xgen_classic_alembic_asset_input(
+                  description, archive,
+                  {*options.frame, 0.0, options.frames_per_second,
+                   nanoxgen::ClassicAlembicInterpolation::Linear})
+            : nanoxgen::build_xgen_classic_alembic_asset_input(
+                  description, archive);
+        if (runtime.use_guide_cache) {
+            const std::filesystem::path cache_path =
+                guide_cache_path(runtime, description_directory);
+            if (options.frame) {
+                nanoxgen::apply_xgen_classic_alembic_guide_cache(
+                    imported, cache_path,
+                    {*options.frame, 0.0, options.frames_per_second,
+                     nanoxgen::ClassicAlembicInterpolation::Linear},
+                    runtime.guide_cache_wire_names);
+            } else {
+                nanoxgen::apply_xgen_classic_alembic_guide_cache(
+                    imported, cache_path,
+                    runtime.guide_cache_wire_names);
+            }
+        }
         const Clock::time_point import_end = Clock::now();
         if (options.probe) {
             if (!imported.reference_surface || description.patches.empty()) {
@@ -291,26 +343,20 @@ int main(int argc, char **argv) try {
                 description.patches.front().name, options.probe_face,
                 options.probe_uv.x, options.probe_uv.y);
             std::cout << " mask " << mask;
-            nanoxgen::ClassicRootPlan probe_roots{};
-            probe_roots.roots.push_back({
-                current.position, current.normal, options.probe_uv, 0u, {},
-                options.probe_face});
-            probe_roots.influence_offsets.push_back(0u);
-            for (std::size_t index = 0u;
-                 index < imported.asset.guides.size(); ++index) {
-                const float weight =
-                    nanoxgen::evaluate_xgen_classic_guide_weight(
-                        imported.asset.guides[index], sample.position,
-                        sample.normal);
-                if (weight > 0.0f) {
-                    std::cout << ' ' << index << ':' << weight;
-                    probe_roots.influences.push_back({
-                        static_cast<std::uint32_t>(index), weight});
-                }
+            const nanoxgen::ClassicExplicitRoot explicit_root{
+                options.probe_face, options.probe_uv, current.position, 0u};
+            const nanoxgen::ClassicRootPlan probe_roots =
+                nanoxgen::build_xgen_classic_explicit_root_plan(
+                    description, imported, description_directory,
+                    description.patches.front().name,
+                    std::span<const nanoxgen::ClassicExplicitRoot>{
+                        &explicit_root, 1u});
+            for (const nanoxgen::ClassicGuideInfluence influence :
+                 probe_roots.influences) {
+                std::cout << ' ' << influence.guide_index << ':'
+                          << influence.weight;
             }
             std::cout << '\n';
-            probe_roots.influence_offsets.push_back(
-                static_cast<std::uint32_t>(probe_roots.influences.size()));
             if (!probe_roots.influences.empty()) {
                 const std::uint32_t probe_cvs = options.cvs == 0u
                     ? nanoxgen::compile_xgen_classic_float_runtime_plan(
@@ -334,14 +380,11 @@ int main(int argc, char **argv) try {
             surface_area += face.surface_area;
         }
         const nanoxgen::ClassicRootPlan roots =
-            nanoxgen::build_xgen_classic_random_root_plan(
+            nanoxgen::build_xgen_classic_root_plan(
                 description, imported, description_directory);
         const Clock::time_point roots_end = Clock::now();
         const nanoxgen::Asset asset = nanoxgen::build_asset(imported.asset);
         const Clock::time_point asset_end = Clock::now();
-        nanoxgen::ClassicFloatRuntimePlan runtime =
-            nanoxgen::compile_xgen_classic_float_runtime_plan(
-                description, collection.palette_attributes);
         const Clock::time_point runtime_plan_end = Clock::now();
         if (description.patches.empty()) {
             throw std::runtime_error(
@@ -605,7 +648,8 @@ int main(int argc, char **argv) try {
                     curves, runtime, 1.0f, roots.surface_tangents,
                     roots.random_prefixes, roots.primitive_ids, clump_data,
                     runtime_inputs.values, roots.reference_positions,
-                    root_relative);
+                    root_relative, nullptr,
+                    static_cast<float>(options.frame.value_or(0.0)));
             }
             if (root_relative) {
                 nanoxgen::make_xgen_classic_curves_world_space(curves);
@@ -671,6 +715,7 @@ int main(int argc, char **argv) try {
                       << '\n';
         }
         if (options.face_counts) {
+            std::cout << std::setprecision(17);
             for (const nanoxgen::ClassicRootFaceStats &stats :
                  roots.face_stats) {
                 const std::uint32_t face = stats.face_id;
@@ -722,7 +767,9 @@ int main(int argc, char **argv) try {
                 std::cout << ' ' << value.x << ' ' << value.y << ' ' << value.z;
             };
             std::cout << "guide " << index << " face "
-                      << guide.surface_face_id << " position";
+                      << guide.surface_face_id << " uv "
+                      << guide.root_uv.x << ' ' << guide.root_uv.y
+                      << " position";
             print_vec(guide.reference_root_position);
             std::cout << " normal";
             print_vec(guide.reference_root_normal);

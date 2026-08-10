@@ -117,4 +117,36 @@ struct ClassicAlembicAssetInput {
     const std::filesystem::path &archive_path,
     const ClassicAlembicLimits &limits = {});
 
+// Replace the embedded Classic guide CVs with ordinary Alembic ICurves from
+// a SplinePrimitive cache. When _wireNames is provided, matching unique curve
+// IDs define the authored order; otherwise roots are matched geometrically.
+// Guide counts and authored CV counts must match.
+void apply_xgen_classic_alembic_guide_cache(
+    ClassicAlembicAssetInput &asset,
+    const std::filesystem::path &cache_path,
+    const ClassicAlembicLimits &limits = {});
+
+void apply_xgen_classic_alembic_guide_cache(
+    ClassicAlembicAssetInput &asset,
+    const std::filesystem::path &cache_path,
+    std::string_view wire_names,
+    const ClassicAlembicLimits &limits = {});
+
+void apply_xgen_classic_alembic_guide_cache(
+    ClassicAlembicAssetInput &asset,
+    const std::filesystem::path &cache_path,
+    const ClassicAlembicFrameSample &sample,
+    const ClassicAlembicLimits &limits = {});
+
+void apply_xgen_classic_alembic_guide_cache(
+    ClassicAlembicAssetInput &asset,
+    const std::filesystem::path &cache_path,
+    const ClassicAlembicFrameSample &sample,
+    std::string_view wire_names,
+    const ClassicAlembicLimits &limits = {});
+
+[[nodiscard]] bool xgen_classic_alembic_guide_cache_is_static(
+    const std::filesystem::path &cache_path,
+    const ClassicAlembicLimits &limits = {});
+
 } // namespace nanoxgen

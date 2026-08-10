@@ -86,6 +86,7 @@ nanoxgen::ClassicAlembicAssetInput surface() {
     nanoxgen::GuideInput guide{};
     guide.cvs = {{0.5f, 0.0f, 0.5f}, {0.5f, 1.0f, 0.5f}};
     guide.root_uv = {0.5f, 0.5f};
+    guide.surface_face_id = 0u;
     guide.triangle_index = 0u;
     guide.barycentric = {0.0f, 0.5f};
     guide.reference_root_position = guide.cvs.front();
@@ -98,6 +99,35 @@ nanoxgen::ClassicAlembicAssetInput surface() {
         {"testPatch", 0u, 0u, 2u, 1u, 1.0f,
          1.0f, 1.0f, {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 1.0f}});
     return result;
+}
+
+void test_guide_generator_plan() {
+    nanoxgen::ClassicDescription input = description();
+    input.bindings.push_back({"Active", "GuideGenerator", 4u});
+    nanoxgen::ClassicGuide source_guide{};
+    source_guide.id = 42u;
+    source_guide.patch_u = 0.5;
+    source_guide.patch_v = 0.5;
+    source_guide.face_id = 0u;
+    input.patches.front().guides.push_back(source_guide);
+
+    const nanoxgen::ClassicAlembicAssetInput imported = surface();
+    const nanoxgen::ClassicRootPlan roots =
+        nanoxgen::build_xgen_classic_root_plan(input, imported, {});
+    require(roots.candidate_count == 1u && roots.roots.size() == 1u &&
+                roots.primitive_ids == std::vector<std::uint32_t>{42u} &&
+                roots.influence_offsets == std::vector<std::uint32_t>{0u, 1u} &&
+                roots.influences.size() == 1u &&
+                roots.influences.front().guide_index == 0u &&
+                roots.influences.front().weight == 1.0f,
+            "GuideGenerator did not emit one self-associated guide root");
+    const nanoxgen::PackedGeneratedCurves curves =
+        nanoxgen::generate_xgen_classic_base_curves_cpu(
+            imported.asset, roots, 4u);
+    require(curves.strand_count == 1u && curves.points.size() == 4u &&
+                curves.points.front().x == 0.5f &&
+                curves.points.front().z == 0.5f,
+            "GuideGenerator base curve root mismatch");
 }
 
 void test_full_mask_and_generation() {
@@ -177,24 +207,29 @@ void test_full_mask_and_generation() {
     renderer_attributes.push_back(
         {"custom_float_long", "hash($id)<.5?1:0", 8u});
     renderer_attributes.push_back(
+        {"custom_float_frame", "$frame", 9u});
+    renderer_attributes.push_back(
         {"custom_color_color",
          "$a=map('${DESC}/paintmaps/density');#3dpaint\\n$a", 9u});
     const auto float_primvars =
         nanoxgen::build_xgen_classic_uniform_float_primvars(
             primvar_description, palette, 7u, fixture.path, "testPatch",
-            first);
+            first, nullptr, 24.0f);
     require(
-        float_primvars.size() == 2u &&
+        float_primvars.size() == 3u &&
             float_primvars[0u].name == "curve_id" &&
             float_primvars[1u].name == "long" &&
+            float_primvars[2u].name == "frame" &&
             float_primvars[0u].values.size() == first.roots.size() &&
-            float_primvars[1u].values.size() == first.roots.size(),
+            float_primvars[1u].values.size() == first.roots.size() &&
+            float_primvars[2u].values.size() == first.roots.size(),
         "uniform float primvar dimensions mismatch");
     for (std::size_t strand = 0u; strand < first.roots.size(); ++strand) {
         require(
             std::isfinite(float_primvars[0u].values[strand]) &&
                 (float_primvars[1u].values[strand] == 0.0f ||
-                 float_primvars[1u].values[strand] == 1.0f),
+                 float_primvars[1u].values[strand] == 1.0f) &&
+                float_primvars[2u].values[strand] == 24.0f,
             "uniform float primvar value mismatch");
     }
     const auto color_primvars =
@@ -732,6 +767,7 @@ void test_description_root_resolution() {
 } // namespace
 
 int main() try {
+    test_guide_generator_plan();
     test_full_mask_and_generation();
     test_relocated_description_data_paths();
     test_partial_mask_and_limit();

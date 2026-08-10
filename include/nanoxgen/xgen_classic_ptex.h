@@ -63,12 +63,14 @@ build_xgen_classic_uniform_float_primvars(
     const std::filesystem::path &description_directory,
     std::string_view patch_name,
     const ClassicRootPlan &roots,
-    NanoXGenContext *context = nullptr);
+    NanoXGenContext *context = nullptr,
+    float frame = 0.0f);
 
 // Evaluate every RendermanRenderer custom_color_* attribute as one uniform RGB
-// value per retained root. Direct PTEX maps are handled internally. A bridge
-// may provide a typed SeExpr backend for vector expressions; without one,
-// unsupported expressions throw so callers can fall back to native XGen.
+// value per retained root. Direct PTEX maps are handled internally. Callers
+// may provide the embedded typed color-expression evaluator after resolving
+// palette function aliases; unsupported expressions throw instead of being
+// silently omitted.
 [[nodiscard]] std::vector<ClassicUniformColorPrimvar>
 build_xgen_classic_uniform_color_primvars(
     const ClassicDescription &description,

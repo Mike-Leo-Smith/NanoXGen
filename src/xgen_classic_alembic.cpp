@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -203,6 +204,22 @@ struct MeshSearch {
     ArchiveSampleSelection selection;
     std::vector<std::pair<Abc::IObject, Imath::M44d>> matches;
 };
+
+struct CurveSearch {
+    std::size_t visited{};
+    std::size_t max_objects{};
+    ArchiveSampleSelection selection;
+    std::vector<std::pair<Abc::IObject, Imath::M44d>> matches;
+};
+
+void find_curves(const Abc::IObject &object,
+                 const Imath::M44d &parent_transform,
+                 CurveSearch &search);
+
+void inspect_static_curves(
+    const Abc::IObject &object, bool animated_ancestor,
+    std::size_t &visited, std::size_t max_objects,
+    std::size_t &matches, bool &is_static);
 
 [[noreturn]] void fail(const std::string &message) {
     throw std::runtime_error("Classic Alembic import: " + message);
@@ -477,6 +494,109 @@ LoadedMesh load_patch_mesh(const Abc::IArchive &archive, std::string_view name,
     return result;
 }
 
+std::vector<std::vector<Vec3>> load_guide_cache_curves(
+    const Abc::IArchive &archive,
+    const ClassicAlembicLimits &limits,
+    const ArchiveSampleSelection &selection,
+    std::vector<std::string> &curve_names) {
+    CurveSearch search{0u, limits.max_objects, selection, {}};
+    find_curves(archive.getTop(), Imath::M44d{}, search);
+    if (search.matches.empty()) {
+        fail("guide cache contains no ICurves objects");
+    }
+
+    std::vector<std::vector<Vec3>> result;
+    std::size_t total_points{};
+    for (const auto &[object, transform] : search.matches) {
+        AbcGeom::ICurves curves{object, Abc::kWrapExisting};
+        const auto &schema = curves.getSchema();
+        if (schema.getNumSamples() == 0u) {
+            fail("guide-cache curves have no samples: " +
+                 object.getFullName());
+        }
+        const SampleBlend blend = select_samples(schema, selection);
+        AbcGeom::ICurvesSchema::Sample lower;
+        schema.get(lower, Abc::ISampleSelector{blend.lower});
+        const auto lower_positions = lower.getPositions();
+        const auto lower_counts = lower.getCurvesNumVertices();
+        if (!lower_positions || !lower_counts) {
+            fail("guide-cache curves are missing positions or counts: " +
+                 object.getFullName());
+        }
+
+        Abc::P3fArraySamplePtr upper_positions;
+        if (blend.lower != blend.upper) {
+            AbcGeom::ICurvesSchema::Sample upper;
+            schema.get(upper, Abc::ISampleSelector{blend.upper});
+            upper_positions = upper.getPositions();
+            const auto upper_counts = upper.getCurvesNumVertices();
+            if (!upper_positions || !upper_counts ||
+                upper_positions->size() != lower_positions->size() ||
+                upper_counts->size() != lower_counts->size() ||
+                !std::equal(
+                    upper_counts->get(),
+                    upper_counts->get() + upper_counts->size(),
+                    lower_counts->get())) {
+                fail("guide-cache curve topology changes between motion samples");
+            }
+        }
+
+        std::size_t point_offset{};
+        for (std::size_t curve = 0u; curve < lower_counts->size(); ++curve) {
+            const std::int32_t raw_count = (*lower_counts)[curve];
+            if (raw_count < 2) {
+                fail("guide-cache curve has fewer than two CVs");
+            }
+            const std::size_t count = static_cast<std::size_t>(raw_count);
+            if (point_offset > lower_positions->size() ||
+                count > lower_positions->size() - point_offset) {
+                fail("guide-cache curve counts exceed the position array");
+            }
+            if (total_points > limits.max_vertices ||
+                count > limits.max_vertices - total_points) {
+                fail("guide-cache point limit exceeded");
+            }
+            if (result.size() >= limits.max_faces) {
+                fail("guide-cache curve limit exceeded");
+            }
+            std::vector<Vec3> output;
+            output.reserve(count);
+            for (std::size_t cv = 0u; cv < count; ++cv) {
+                Imath::V3f value = (*lower_positions)[point_offset + cv];
+                if (upper_positions) {
+                    const float alpha = static_cast<float>(blend.alpha);
+                    value = value * (1.0f - alpha) +
+                        (*upper_positions)[point_offset + cv] * alpha;
+                }
+                Imath::V3d transformed;
+                transform.multVecMatrix(
+                    Imath::V3d{value.x, value.y, value.z}, transformed);
+                if (!finite(transformed)) {
+                    fail("guide-cache curve contains a non-finite position");
+                }
+                const Vec3 converted{
+                    static_cast<float>(transformed.x),
+                    static_cast<float>(transformed.y),
+                    static_cast<float>(transformed.z)};
+                if (!std::isfinite(converted.x) ||
+                    !std::isfinite(converted.y) ||
+                    !std::isfinite(converted.z)) {
+                    fail("guide-cache position cannot be represented as float");
+                }
+                output.push_back(converted);
+            }
+            result.emplace_back(std::move(output));
+            curve_names.push_back(object.getName());
+            total_points += count;
+            point_offset += count;
+        }
+        if (point_offset != lower_positions->size()) {
+            fail("guide-cache curve counts do not consume the position array");
+        }
+    }
+    return result;
+}
+
 Vec3 transformed_position(std::span<const Imath::V3f> positions,
                           const Imath::M44d &transform,
                           std::uint32_t index) {
@@ -505,6 +625,38 @@ Vec3 reference_position(const LoadedMesh &mesh, std::uint32_t index) {
         mesh.reference_positions, mesh.transform, index);
 }
 
+struct PtexFaceLocation {
+    std::uint32_t coarse_face{};
+    std::uint32_t quadrant{};
+    std::uint32_t quadrant_count{};
+};
+
+std::vector<PtexFaceLocation> build_ptex_face_locations(
+    const LoadedMesh &mesh) {
+    if (mesh.face_counts.size() >
+        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+        fail("subdivision face count exceeds uint32");
+    }
+    std::vector<PtexFaceLocation> result;
+    for (std::uint32_t face = 0u; face < mesh.face_counts.size(); ++face) {
+        const std::int32_t raw_count = mesh.face_counts[face];
+        if (raw_count < 3) {
+            fail("mesh contains a face with fewer than three vertices");
+        }
+        const std::uint32_t count = static_cast<std::uint32_t>(raw_count);
+        const std::uint32_t ptex_count = count == 4u ? 1u : count;
+        if (ptex_count >
+            std::numeric_limits<std::uint32_t>::max() - result.size()) {
+            fail("subdivision PTEX face count exceeds uint32");
+        }
+        for (std::uint32_t quadrant = 0u;
+             quadrant < ptex_count; ++quadrant) {
+            result.push_back({face, quadrant, ptex_count});
+        }
+    }
+    return result;
+}
+
 class SubdEvaluator {
 public:
     SubdEvaluator(const LoadedMesh &mesh,
@@ -520,7 +672,27 @@ public:
             fail("subdivision topology exceeds int indexing");
         }
         std::vector<int> counts(mesh.face_counts.begin(), mesh.face_counts.end());
-        std::vector<int> indices(mesh.face_indices.begin(), mesh.face_indices.end());
+        std::vector<int> indices;
+        indices.reserve(mesh.face_indices.size());
+        std::size_t face_offset{};
+        for (const std::int32_t raw_count : mesh.face_counts) {
+            if (raw_count < 3) {
+                fail("mesh contains a face with fewer than three vertices");
+            }
+            const std::size_t count = static_cast<std::size_t>(raw_count);
+            if (face_offset > mesh.face_indices.size() ||
+                count > mesh.face_indices.size() - face_offset) {
+                fail("face counts exceed the face-index array");
+            }
+            for (std::size_t corner = 0u; corner < count; ++corner) {
+                indices.push_back(mesh.face_indices[
+                    face_offset + count - 1u - corner]);
+            }
+            face_offset += count;
+        }
+        if (face_offset != mesh.face_indices.size()) {
+            fail("face counts do not consume the face-index array");
+        }
         Far::TopologyDescriptor descriptor{};
         descriptor.numVertices = static_cast<int>(mesh.positions.size());
         descriptor.numFaces = static_cast<int>(mesh.face_counts.size());
@@ -536,7 +708,7 @@ public:
             Far::TopologyRefinerFactory<Far::TopologyDescriptor>::Create(
                 descriptor, refiner_options));
         if (!_base_refiner) { fail("OpenSubdiv rejected the patch topology"); }
-        _ptex_indices = std::make_unique<Far::PtexIndices>(*_base_refiner);
+        _ptex_faces = build_ptex_face_locations(mesh);
 
         _base_positions.resize(mesh.positions.size());
         _reference_base_positions.resize(mesh.positions.size());
@@ -549,12 +721,15 @@ public:
         }
         std::vector<Far::Index> faces;
         faces.reserve(selected_faces.size());
-        for (const std::uint32_t face : selected_faces) {
-            if (face >= mesh.face_counts.size()) {
-                fail("selected subdivision face is out of range");
+        for (const std::uint32_t ptex_face : selected_faces) {
+            if (ptex_face >= _ptex_faces.size()) {
+                fail("selected subdivision PTEX face is out of range");
             }
-            faces.push_back(static_cast<Far::Index>(face));
+            faces.push_back(static_cast<Far::Index>(
+                _ptex_faces[ptex_face].coarse_face));
         }
+        std::sort(faces.begin(), faces.end());
+        faces.erase(std::unique(faces.begin(), faces.end()), faces.end());
         Far::ConstIndexArray group_faces{
             faces.data(), static_cast<int>(faces.size())};
         std::unique_ptr<Far::TopologyRefiner> local_refiner{
@@ -627,15 +802,24 @@ private:
         const std::vector<SubdPosition> &base_positions,
         const std::vector<SubdPosition> &local_positions,
         std::uint32_t face, float u, float v) const {
-        const int ptex_face = _ptex_indices->GetFaceId(static_cast<int>(face));
+        if (face >= _ptex_faces.size()) {
+            fail("subdivision PTEX face is out of range");
+        }
+        // XGen logical subdivision face ids are OpenSubdiv Ptex face ids.
+        // XGen's surface convention has V reversed relative to PatchMap.
+        const float evaluation_u = u;
+        const float evaluation_v = 1.0f - v;
         const Far::PatchTable::PatchHandle *handle =
-            _patch_map->FindPatch(ptex_face, u, v);
+            _patch_map->FindPatch(
+                static_cast<int>(face),
+                evaluation_u, evaluation_v);
         if (!handle) { fail("cannot locate OpenSubdiv patch for guide coordinate"); }
         float weights[20u]{};
         float du_weights[20u]{};
         float dv_weights[20u]{};
         _patch_table->EvaluateBasis(
-            *handle, u, v, weights, du_weights, dv_weights);
+            *handle, evaluation_u, evaluation_v,
+            weights, du_weights, dv_weights);
         const Far::ConstIndexArray vertices =
             _patch_table->GetPatchVertices(*handle);
         if (vertices.size() <= 0 || vertices.size() > 20) {
@@ -661,9 +845,10 @@ private:
             du.AddWithWeight(*source, du_weights[index]);
             dv.AddWithWeight(*source, dv_weights[index]);
         }
-        const SubdSample result{{p.x, p.y, p.z},
-                                {du.x, du.y, du.z},
-                                {dv.x, dv.y, dv.z}};
+        const SubdSample result{
+            {p.x, p.y, p.z},
+            {du.x, du.y, du.z},
+            {-dv.x, -dv.y, -dv.z}};
         if (!std::isfinite(result.position.x) ||
             !std::isfinite(result.position.y) ||
             !std::isfinite(result.position.z) ||
@@ -676,14 +861,109 @@ private:
     }
 
     std::unique_ptr<Far::TopologyRefiner> _base_refiner;
-    std::unique_ptr<Far::PtexIndices> _ptex_indices;
     std::unique_ptr<Far::PatchTable> _patch_table;
     std::unique_ptr<Far::PatchMap> _patch_map;
+    std::vector<PtexFaceLocation> _ptex_faces;
     std::vector<SubdPosition> _base_positions;
     std::vector<SubdPosition> _local_positions;
     std::vector<SubdPosition> _reference_base_positions;
     std::vector<SubdPosition> _reference_local_positions;
 };
+
+SurfaceFrame subd_surface_frame(
+    const SubdEvaluator &evaluator, std::uint32_t face, float u, float v,
+    bool reference, const SubdSample &sample) {
+    try {
+        return xgen_surface_frame(sample.du, sample.dv);
+    } catch (const std::runtime_error &) {
+        // At an extraordinary corner the limit-surface parameterization can
+        // have coincident analytic derivatives. XGen's level-one logical-face
+        // evaluator still returns a frame there. Recover the same geometric
+        // directions with independent one-sided U/V secants; a diagonal inset
+        // keeps both derivatives on the singular parameter line.
+        for (const float step : {1.0e-3f, 1.0e-2f}) {
+            const float other_u = u <= 0.5f
+                ? std::min(1.0f, u + step)
+                : std::max(0.0f, u - step);
+            const float other_v = v <= 0.5f
+                ? std::min(1.0f, v + step)
+                : std::max(0.0f, v - step);
+            if (other_u == u || other_v == v) { continue; }
+            const SubdSample u_sample = reference
+                ? evaluator.evaluate_reference(face, other_u, v)
+                : evaluator.evaluate(face, other_u, v);
+            const SubdSample v_sample = reference
+                ? evaluator.evaluate_reference(face, u, other_v)
+                : evaluator.evaluate(face, u, other_v);
+            const float inverse_u = 1.0f / (other_u - u);
+            const float inverse_v = 1.0f / (other_v - v);
+            const Vec3 finite_du{
+                (u_sample.position.x - sample.position.x) * inverse_u,
+                (u_sample.position.y - sample.position.y) * inverse_u,
+                (u_sample.position.z - sample.position.z) * inverse_u};
+            const Vec3 finite_dv{
+                (v_sample.position.x - sample.position.x) * inverse_v,
+                (v_sample.position.y - sample.position.y) * inverse_v,
+                (v_sample.position.z - sample.position.z) * inverse_v};
+            try {
+                return xgen_surface_frame(finite_du, finite_dv);
+            } catch (const std::runtime_error &) {
+            }
+        }
+        fail("cannot construct frame for PTEX face " +
+             std::to_string(face) + " at (" + std::to_string(u) +
+             ", " + std::to_string(v) + ")");
+    }
+}
+
+void find_curves(const Abc::IObject &object,
+                 const Imath::M44d &parent_transform,
+                 CurveSearch &search) {
+    if (++search.visited > search.max_objects) {
+        fail("guide-cache object limit exceeded");
+    }
+    Imath::M44d transform = parent_transform;
+    if (AbcGeom::IXform::matches(object.getHeader())) {
+        AbcGeom::IXform xform{object, Abc::kWrapExisting};
+        if (xform.getSchema().getNumSamples() != 0u) {
+            transform = sample_transform(
+                xform.getSchema(), search.selection) * parent_transform;
+        }
+    }
+    if (AbcGeom::ICurves::matches(object.getHeader())) {
+        search.matches.emplace_back(object, transform);
+    }
+    for (std::size_t index = 0u; index < object.getNumChildren(); ++index) {
+        const Abc::ObjectHeader &header = object.getChildHeader(index);
+        find_curves(
+            Abc::IObject{object, header.getName()}, transform, search);
+    }
+}
+
+void inspect_static_curves(
+    const Abc::IObject &object, bool animated_ancestor,
+    std::size_t &visited, std::size_t max_objects,
+    std::size_t &matches, bool &is_static) {
+    if (++visited > max_objects) {
+        fail("guide-cache object limit exceeded");
+    }
+    bool animated = animated_ancestor;
+    if (AbcGeom::IXform::matches(object.getHeader())) {
+        AbcGeom::IXform xform{object, Abc::kWrapExisting};
+        animated |= xform.getSchema().getNumSamples() > 1u;
+    }
+    if (AbcGeom::ICurves::matches(object.getHeader())) {
+        AbcGeom::ICurves curves{object, Abc::kWrapExisting};
+        ++matches;
+        is_static &= !animated && curves.getSchema().getNumSamples() <= 1u;
+    }
+    for (std::size_t index = 0u; index < object.getNumChildren(); ++index) {
+        const Abc::ObjectHeader &header = object.getChildHeader(index);
+        inspect_static_curves(
+            Abc::IObject{object, header.getName()}, animated,
+            visited, max_objects, matches, is_static);
+    }
+}
 
 class ImportedReferenceSurface final : public ClassicReferenceSurfaceEvaluator {
 public:
@@ -723,7 +1003,8 @@ private:
         const SubdSample sample = reference
             ? found->second->evaluate_reference(face_id, u, 1.0f - v)
             : found->second->evaluate(face_id, u, 1.0f - v);
-        const SurfaceFrame frame = xgen_surface_frame(sample.du, sample.dv);
+        const SurfaceFrame frame = subd_surface_frame(
+            *found->second, face_id, u, 1.0f - v, reference, sample);
         return {sample.position, frame.normal, frame.tangent};
     }
     std::unordered_map<std::string, std::unique_ptr<SubdEvaluator>> _evaluators;
@@ -764,12 +1045,16 @@ LimitVertexApproximation xgen_limit_vertices(const LoadedMesh &mesh) {
         std::uint32_t first{};
         std::uint32_t second{};
         std::uint32_t face_count{};
+        Vec3 face_point_sum{};
+        std::array<Vec3, 2u> adjacent_face_points{};
+        std::uint32_t face_points_added{};
     };
     std::vector<Vec3> neighbor_sums(mesh.positions.size());
     std::vector<Vec3> boundary_neighbor_sums(mesh.positions.size());
     std::vector<Vec3> face_point_sums(mesh.positions.size());
     std::vector<std::uint32_t> incident_faces(mesh.positions.size());
     std::vector<std::uint32_t> boundary_edges(mesh.positions.size());
+    std::vector<Vec3> face_points(mesh.face_counts.size());
     std::vector<Edge> edges;
     edges.reserve(mesh.face_indices.size() / 2u);
     std::unordered_map<std::uint64_t, std::size_t> edge_indices;
@@ -811,11 +1096,29 @@ LimitVertexApproximation xgen_limit_vertices(const LoadedMesh &mesh) {
             }
         }
         face_point = face_point / static_cast<float>(count);
+        face_points[face] = face_point;
         for (std::size_t corner = 0u; corner < count; ++corner) {
+            const std::size_t reversed = count - 1u - corner;
             const std::uint32_t vertex = static_cast<std::uint32_t>(
-                mesh.face_indices[offset + count - 1u - corner]);
+                mesh.face_indices[offset + reversed]);
             face_point_sums[vertex] = face_point_sums[vertex] + face_point;
             ++incident_faces[vertex];
+            const std::uint32_t next = static_cast<std::uint32_t>(
+                mesh.face_indices[offset + (reversed + count - 1u) % count]);
+            const std::uint32_t first = std::min(vertex, next);
+            const std::uint32_t second = std::max(vertex, next);
+            const std::uint64_t key =
+                (static_cast<std::uint64_t>(first) << 32u) | second;
+            const auto found = edge_indices.find(key);
+            if (found == edge_indices.end()) {
+                fail("subdivision edge lookup is inconsistent");
+            }
+            Edge &edge = edges[found->second];
+            if (edge.face_points_added < edge.adjacent_face_points.size()) {
+                edge.adjacent_face_points[edge.face_points_added] = face_point;
+            }
+            ++edge.face_points_added;
+            edge.face_point_sum = edge.face_point_sum + face_point;
         }
     }
     std::vector<std::uint32_t> valence(mesh.positions.size());
@@ -837,18 +1140,142 @@ LimitVertexApproximation xgen_limit_vertices(const LoadedMesh &mesh) {
         ++valence[edge.first];
         ++valence[edge.second];
     }
+    // SESubd first updates the authored cage vertices once with the
+    // Catmull-Clark vertex rule, then evaluates its limit stencil on that
+    // smoothed cage. Applying the algebraically collapsed limit rule directly
+    // to the authored cage changes float rounding and therefore XGen's
+    // RandomGenerator surface-compensation UVs.
+    std::vector<Vec3> smoothed_positions(mesh.positions.size());
+    for (std::uint32_t vertex = 0u; vertex < mesh.positions.size(); ++vertex) {
+        const Vec3 own = reference_position(mesh, vertex);
+        const std::uint32_t n = valence[vertex];
+        if (boundary_edges[vertex] == 2u) {
+            smoothed_positions[vertex] =
+                own * 0.75f + boundary_neighbor_sums[vertex] * 0.125f;
+            continue;
+        }
+        const bool regular = boundary_edges[vertex] == 0u && n >= 3u &&
+            incident_faces[vertex] == n;
+        if (!regular) {
+            smoothed_positions[vertex] = own;
+            continue;
+        }
+        const float own_weight = static_cast<float>(
+            (static_cast<double>(n) - 2.0) / static_cast<double>(n));
+        const float sum_weight = static_cast<float>(
+            1.0 / (static_cast<double>(n) * static_cast<double>(n)));
+        smoothed_positions[vertex] =
+            own * own_weight +
+            (neighbor_sums[vertex] + face_point_sums[vertex]) * sum_weight;
+    }
+
+    std::vector<Vec3> edge_points(edges.size());
+    for (std::size_t edge_index = 0u; edge_index < edges.size(); ++edge_index) {
+        const Edge &edge = edges[edge_index];
+        const Vec3 endpoints = reference_position(mesh, edge.first) +
+            reference_position(mesh, edge.second);
+        edge_points[edge_index] = edge.face_count == 2u
+            ? (endpoints + edge.adjacent_face_points[0u] +
+               edge.adjacent_face_points[1u]) * 0.25f
+            : endpoints * 0.5f;
+    }
+
+    std::vector<Vec3> smoothed_neighbor_sums(mesh.positions.size());
+    std::vector<Vec3> smoothed_boundary_neighbor_sums(mesh.positions.size());
+    std::vector<Vec3> smoothed_face_point_sums(mesh.positions.size());
+    std::vector<std::vector<std::size_t>> ordered_incident_edges(
+        mesh.positions.size());
+    for (std::size_t face = 0u; face < mesh.face_counts.size(); ++face) {
+        const std::size_t count = static_cast<std::size_t>(mesh.face_counts[face]);
+        const std::size_t offset = offsets[face];
+        for (std::size_t corner = 0u; corner < count; ++corner) {
+            const std::size_t reversed = count - 1u - corner;
+            const std::uint32_t vertex = static_cast<std::uint32_t>(
+                mesh.face_indices[offset + reversed]);
+            const std::uint32_t previous = static_cast<std::uint32_t>(
+                mesh.face_indices[offset + (reversed + 1u) % count]);
+            const std::uint32_t next = static_cast<std::uint32_t>(
+                mesh.face_indices[offset + (reversed + count - 1u) % count]);
+            auto &incident = ordered_incident_edges[vertex];
+            for (const std::uint32_t other : {next, previous}) {
+                const std::uint32_t first = std::min(vertex, other);
+                const std::uint32_t second = std::max(vertex, other);
+                const std::uint64_t key =
+                    (static_cast<std::uint64_t>(first) << 32u) | second;
+                const auto found = edge_indices.find(key);
+                if (found == edge_indices.end()) {
+                    fail("subdivision edge lookup is inconsistent");
+                }
+                if (std::find(incident.begin(), incident.end(), found->second) ==
+                    incident.end()) {
+                    incident.push_back(found->second);
+                }
+            }
+        }
+    }
+    for (std::uint32_t vertex = 0u; vertex < mesh.positions.size(); ++vertex) {
+        for (const std::size_t edge_index : ordered_incident_edges[vertex]) {
+            const Edge &edge = edges[edge_index];
+            const Vec3 edge_point = edge_points[edge_index];
+            smoothed_neighbor_sums[vertex] =
+                smoothed_neighbor_sums[vertex] + edge_point;
+            if (edge.face_count != 2u) {
+                smoothed_boundary_neighbor_sums[vertex] =
+                    smoothed_boundary_neighbor_sums[vertex] + edge_point;
+            }
+        }
+    }
+    for (std::size_t face = 0u; face < mesh.face_counts.size(); ++face) {
+        const std::size_t count = static_cast<std::size_t>(mesh.face_counts[face]);
+        const std::size_t offset = offsets[face];
+        for (std::size_t corner = 0u; corner < count; ++corner) {
+            const std::size_t reversed = count - 1u - corner;
+            const std::uint32_t vertex = static_cast<std::uint32_t>(
+                mesh.face_indices[offset + reversed]);
+            const std::uint32_t previous = static_cast<std::uint32_t>(
+                mesh.face_indices[offset + (reversed + 1u) % count]);
+            const std::uint32_t next = static_cast<std::uint32_t>(
+                mesh.face_indices[offset + (reversed + count - 1u) % count]);
+            const auto find_edge_point = [&](std::uint32_t other) {
+                const std::uint32_t first = std::min(vertex, other);
+                const std::uint32_t second = std::max(vertex, other);
+                const std::uint64_t key =
+                    (static_cast<std::uint64_t>(first) << 32u) | second;
+                const auto found = edge_indices.find(key);
+                if (found == edge_indices.end()) {
+                    fail("subdivision edge lookup is inconsistent");
+                }
+                return edge_points[found->second];
+            };
+            const Vec3 previous_edge_point = find_edge_point(previous);
+            const Vec3 next_edge_point = find_edge_point(next);
+            const Vec3 child_face_point =
+                (smoothed_positions[vertex] + next_edge_point +
+                 face_points[face] + previous_edge_point) * 0.25f;
+            smoothed_face_point_sums[vertex] =
+                smoothed_face_point_sums[vertex] + child_face_point;
+        }
+    }
+
     LimitVertexApproximation result{};
     result.positions.resize(mesh.positions.size());
     result.supported_neighborhood.resize(mesh.positions.size());
     for (std::uint32_t vertex = 0u; vertex < mesh.positions.size(); ++vertex) {
         const std::uint32_t n = valence[vertex];
-        const Vec3 own = reference_position(mesh, vertex);
+        const Vec3 own = smoothed_positions[vertex];
+        const bool boundary_corner =
+            boundary_edges[vertex] == 2u && n == 2u;
+        if (boundary_corner) {
+            result.positions[vertex] = own;
+            result.supported_neighborhood[vertex] = true;
+            continue;
+        }
         if (boundary_edges[vertex] == 2u) {
             // SESubd's smooth-boundary limit rule. It retains only the two
             // boundary neighbours in the vertex edge accumulator and applies
             // (4*P + E0 + E1) / 6 using float arithmetic.
             result.positions[vertex] =
-                (own * 4.0f + boundary_neighbor_sums[vertex]) *
+                (own * 4.0f + smoothed_boundary_neighbor_sums[vertex]) *
                 (1.0f / 6.0f);
             result.supported_neighborhood[vertex] = true;
             continue;
@@ -870,8 +1297,10 @@ LimitVertexApproximation xgen_limit_vertices(const LoadedMesh &mesh) {
         const float face_weight = static_cast<float>(
             4.0 / (dn * (dn + 5.0)));
         const Vec3 vertex_term = own * vertex_weight;
-        const Vec3 neighbor_term = neighbor_sums[vertex] * neighbor_weight;
-        const Vec3 face_term = face_point_sums[vertex] * face_weight;
+        const Vec3 neighbor_term =
+            smoothed_neighbor_sums[vertex] * neighbor_weight;
+        const Vec3 face_term =
+            smoothed_face_point_sums[vertex] * face_weight;
         result.positions[vertex] = vertex_term + neighbor_term + face_term;
     }
     return result;
@@ -981,6 +1410,9 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input_impl(
         const LimitVertexApproximation limit_vertices = subdivide
             ? xgen_limit_vertices(mesh)
             : LimitVertexApproximation{};
+        const std::vector<PtexFaceLocation> ptex_faces = subdivide
+            ? build_ptex_face_locations(mesh)
+            : std::vector<PtexFaceLocation>{};
         if (limits.subd_face_resolution == 0u ||
             limits.subd_face_resolution > 64u) {
             fail("subdivision face resolution must be in [1, 64]");
@@ -989,12 +1421,9 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input_impl(
         if (subdivide) {
             result.subdivision_face_count += patch.face_ids.size();
             for (const std::uint32_t face_id : patch.face_ids) {
-                if (face_id >= mesh.face_counts.size()) {
-                    fail("patch face ID is outside the Alembic mesh: " +
+                if (face_id >= ptex_faces.size()) {
+                    fail("patch PTEX face ID is outside the Alembic mesh: " +
                          std::to_string(face_id));
-                }
-                if (mesh.face_counts[face_id] != 4) {
-                    fail("subdivision import currently requires quad patch faces");
                 }
             }
             subd = std::make_unique<SubdEvaluator>(mesh, patch.face_ids);
@@ -1042,13 +1471,16 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input_impl(
         std::unordered_map<std::uint32_t, FaceRange> selected;
         selected.reserve(patch.face_ids.size());
         for (const std::uint32_t face_id : patch.face_ids) {
-            if (face_id >= mesh.face_counts.size()) {
+            const std::uint32_t coarse_face = subdivide
+                ? ptex_faces.at(face_id).coarse_face
+                : face_id;
+            if (coarse_face >= mesh.face_counts.size()) {
                 fail("patch face ID is outside the Alembic mesh: " +
                      std::to_string(face_id));
             }
-            const std::size_t offset = offsets[face_id];
+            const std::size_t offset = offsets[coarse_face];
             const std::size_t count = static_cast<std::size_t>(
-                mesh.face_counts[face_id]);
+                mesh.face_counts[coarse_face]);
             const std::size_t triangle_count = subdivide
                 ? static_cast<std::size_t>(limits.subd_face_resolution) *
                       limits.subd_face_resolution * 2u
@@ -1079,11 +1511,15 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input_impl(
                             subd->evaluate(face_id, u, surface_v);
                         const SubdSample reference =
                             subd->evaluate_reference(face_id, u, surface_v);
+                        const SurfaceFrame current_frame =
+                            subd_surface_frame(
+                                *subd, face_id, u, surface_v, false, current);
+                        const SurfaceFrame reference_frame =
+                            subd_surface_frame(
+                                *subd, face_id, u, surface_v, true, reference);
                         append_vertex(
-                            current.position,
-                            xgen_surface_frame(current.du, current.dv).normal,
-                            reference.position,
-                            xgen_surface_frame(reference.du, reference.dv).normal);
+                            current.position, current_frame.normal,
+                            reference.position, reference_frame.normal);
                     }
                 }
                 const std::uint32_t row = resolution + 1u;
@@ -1112,20 +1548,23 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input_impl(
             double center_v_length = 0.0;
             if (subdivide) {
                 Double3 cage[4u]{};
-                bool supported_neighborhood = true;
-                for (std::size_t corner = 0u; corner < 4u; ++corner) {
-                    const std::int32_t source_index =
-                        mesh.face_indices[offset + corner];
-                    if (source_index < 0) {
-                        fail("selected face has a negative vertex index");
+                bool evaluate_corners = count != 4u;
+                if (!evaluate_corners) {
+                    for (std::size_t corner = 0u; corner < 4u; ++corner) {
+                        const std::int32_t source_index =
+                            mesh.face_indices[offset + corner];
+                        if (source_index < 0) {
+                            fail("selected face has a negative vertex index");
+                        }
+                        const std::uint32_t vertex =
+                            static_cast<std::uint32_t>(source_index);
+                        evaluate_corners = evaluate_corners ||
+                            !limit_vertices.supported_neighborhood[vertex];
+                        cage[corner] =
+                            to_double(limit_vertices.positions[vertex]);
                     }
-                    const std::uint32_t vertex =
-                        static_cast<std::uint32_t>(source_index);
-                    supported_neighborhood = supported_neighborhood &&
-                        limit_vertices.supported_neighborhood[vertex];
-                    cage[corner] = to_double(limit_vertices.positions[vertex]);
                 }
-                if (!supported_neighborhood) {
+                if (evaluate_corners) {
                     cage[0] = to_double(subd->evaluate_reference(
                         face_id, 0.0f, 0.0f).position);
                     cage[1] = to_double(subd->evaluate_reference(
@@ -1233,7 +1672,7 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input_impl(
                 fail("guide face was not selected");
             }
             const FaceRange face = found->second;
-            if (face.count != 4u) {
+            if (!subdivide && face.count != 4u) {
                 fail("guide root evaluation currently requires quad patch faces");
             }
             const float u = static_cast<float>(guide.patch_u);
@@ -1249,29 +1688,8 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input_impl(
             Vec3 reference_root{};
             Vec3 reference_du{};
             Vec3 reference_dv{};
-            Vec3 corners[4u]{};
-            Vec3 reference_corners[4u]{};
-            for (std::size_t corner = 0u; corner < 4u; ++corner) {
-                const std::int32_t source_index =
-                    mesh.face_indices[face.offset + corner];
-                if (source_index < 0) {
-                    fail("guide face has a negative vertex index");
-                }
-                corners[corner] = position(
-                    mesh, static_cast<std::uint32_t>(source_index));
-                reference_corners[corner] = reference_position(
-                    mesh, static_cast<std::uint32_t>(source_index));
-            }
-            const Vec3 cage_root =
-                corners[0] * ((1.0f - u) * (1.0f - surface_v)) +
-                corners[1] * (u * (1.0f - surface_v)) +
-                corners[2] * (u * surface_v) +
-                corners[3] * ((1.0f - u) * surface_v);
-            const Vec3 reference_cage_root =
-                reference_corners[0] * ((1.0f - u) * (1.0f - surface_v)) +
-                reference_corners[1] * (u * (1.0f - surface_v)) +
-                reference_corners[2] * (u * surface_v) +
-                reference_corners[3] * ((1.0f - u) * surface_v);
+            Vec3 cage_root{};
+            Vec3 reference_cage_root{};
             if (subdivide) {
                 const SubdSample sample =
                     subd->evaluate(guide.face_id, u, surface_v);
@@ -1283,6 +1701,35 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input_impl(
                 reference_root = reference_sample.position;
                 reference_du = reference_sample.du;
                 reference_dv = reference_sample.dv;
+                cage_root = root;
+                reference_cage_root = reference_root;
+                if (face.count == 4u) {
+                    Vec3 corners[4u]{};
+                    Vec3 reference_corners[4u]{};
+                    for (std::size_t corner = 0u; corner < 4u; ++corner) {
+                        const std::int32_t source_index =
+                            mesh.face_indices[face.offset + corner];
+                        if (source_index < 0) {
+                            fail("guide face has a negative vertex index");
+                        }
+                        const std::uint32_t vertex =
+                            static_cast<std::uint32_t>(source_index);
+                        corners[corner] = position(mesh, vertex);
+                        reference_corners[corner] =
+                            reference_position(mesh, vertex);
+                    }
+                    cage_root =
+                        corners[0] * ((1.0f - u) * (1.0f - surface_v)) +
+                        corners[1] * (u * (1.0f - surface_v)) +
+                        corners[2] * (u * surface_v) +
+                        corners[3] * ((1.0f - u) * surface_v);
+                    reference_cage_root =
+                        reference_corners[0] *
+                            ((1.0f - u) * (1.0f - surface_v)) +
+                        reference_corners[1] * (u * (1.0f - surface_v)) +
+                        reference_corners[2] * (u * surface_v) +
+                        reference_corners[3] * ((1.0f - u) * surface_v);
+                }
                 const float distance_squared = length_squared(root - cage_root);
                 guide_cage_root_squared_distance_sum += distance_squared;
                 result.guide_cage_root_max_distance = std::max(
@@ -1290,6 +1737,31 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input_impl(
                     std::sqrt(distance_squared));
                 ++subdivision_guide_count;
             } else {
+                Vec3 corners[4u]{};
+                Vec3 reference_corners[4u]{};
+                for (std::size_t corner = 0u; corner < 4u; ++corner) {
+                    const std::int32_t source_index =
+                        mesh.face_indices[face.offset + corner];
+                    if (source_index < 0) {
+                        fail("guide face has a negative vertex index");
+                    }
+                    const std::uint32_t vertex =
+                        static_cast<std::uint32_t>(source_index);
+                    corners[corner] = position(mesh, vertex);
+                    reference_corners[corner] =
+                        reference_position(mesh, vertex);
+                }
+                cage_root =
+                    corners[0] * ((1.0f - u) * (1.0f - surface_v)) +
+                    corners[1] * (u * (1.0f - surface_v)) +
+                    corners[2] * (u * surface_v) +
+                    corners[3] * ((1.0f - u) * surface_v);
+                reference_cage_root =
+                    reference_corners[0] *
+                        ((1.0f - u) * (1.0f - surface_v)) +
+                    reference_corners[1] * (u * (1.0f - surface_v)) +
+                    reference_corners[2] * (u * surface_v) +
+                    reference_corners[3] * ((1.0f - u) * surface_v);
                 root = cage_root;
                 du = (corners[1] - corners[0]) * (1.0f - surface_v) +
                      (corners[2] - corners[3]) * surface_v;
@@ -1305,9 +1777,16 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input_impl(
                     (reference_corners[2] - reference_corners[1]) * u;
             }
             GuideInput output{};
-            const SurfaceFrame current_frame = xgen_surface_frame(du, dv);
-            const SurfaceFrame reference_frame =
-                xgen_surface_frame(reference_du, reference_dv);
+            const SurfaceFrame current_frame = subdivide
+                ? subd_surface_frame(
+                      *subd, guide.face_id, u, surface_v, false,
+                      {root, du, dv})
+                : xgen_surface_frame(du, dv);
+            const SurfaceFrame reference_frame = subdivide
+                ? subd_surface_frame(
+                      *subd, guide.face_id, u, surface_v, true,
+                      {reference_root, reference_du, reference_dv})
+                : xgen_surface_frame(reference_du, reference_dv);
             output.root_normal = current_frame.normal;
             output.root_uv = {u, v};
             output.surface_face_id = guide.face_id;
@@ -1440,6 +1919,508 @@ ClassicAlembicAssetInput build_xgen_classic_alembic_asset_input(
     return build_xgen_classic_alembic_asset_input_impl(
         description, archive_path, limits,
         {false, time_seconds, sample.interpolation});
+}
+
+void apply_xgen_classic_alembic_guide_cache_impl(
+    ClassicAlembicAssetInput &asset,
+    const std::filesystem::path &cache_path,
+    const ClassicAlembicLimits &limits,
+    const ArchiveSampleSelection &selection,
+    std::string_view wire_names) {
+    if (limits.max_objects == 0u || limits.max_vertices == 0u ||
+        limits.max_faces == 0u) {
+        fail("guide-cache limits must be nonzero");
+    }
+    AbcFactory::IFactory factory;
+    const Abc::IArchive archive = factory.getArchive(cache_path.string());
+    if (!archive.valid()) {
+        fail("cannot open guide cache: " + cache_path.string());
+    }
+    std::vector<std::string> curve_names;
+    std::vector<std::vector<Vec3>> curves =
+        load_guide_cache_curves(
+            archive, limits, selection, curve_names);
+    if (curves.size() != asset.asset.guides.size()) {
+        fail(
+            "guide-cache curve count " + std::to_string(curves.size()) +
+            " does not match description guide count " +
+            std::to_string(asset.asset.guides.size()));
+    }
+    for (std::size_t index = 0u; index < curves.size(); ++index) {
+        if (curves[index].empty()) {
+            fail("guide-cache curve has no CVs");
+        }
+    }
+
+    const auto dot3 = [](Vec3 a, Vec3 b) {
+        return a.x * b.x + a.y * b.y + a.z * b.z;
+    };
+    const auto cross3 = [](Vec3 a, Vec3 b) {
+        return Vec3{a.y * b.z - a.z * b.y,
+                    a.z * b.x - a.x * b.z,
+                    a.x * b.y - a.y * b.x};
+    };
+    const auto negate3 = [](Vec3 value) {
+        return Vec3{-value.x, -value.y, -value.z};
+    };
+    const auto directional_radius = [&](const GuideInput &guide,
+                                        Vec3 tangent, Vec3 offset) {
+        const float normal_projection =
+            dot3(offset, guide.reference_root_normal);
+        Vec3 projected{
+            offset.x - guide.reference_root_normal.x * normal_projection,
+            offset.y - guide.reference_root_normal.y * normal_projection,
+            offset.z - guide.reference_root_normal.z * normal_projection};
+        const float projected_squared = dot3(projected, projected);
+        if (guide.support_angles.empty() ||
+            !(projected_squared > 1.0e-20f)) {
+            return guide.support_radii.front();
+        }
+        const float inverse_length = 1.0f / std::sqrt(projected_squared);
+        projected.x *= inverse_length;
+        projected.y *= inverse_length;
+        projected.z *= inverse_length;
+        const float cosine = std::clamp(
+            dot3(projected, tangent), -1.0f, 1.0f);
+        float angle = 1.0f - cosine * std::abs(cosine);
+        if (dot3(cross3(projected, tangent),
+                 guide.reference_root_normal) < 0.0f) {
+            angle = 4.0f - angle;
+        }
+        const auto upper = std::upper_bound(
+            guide.support_angles.begin(), guide.support_angles.end(), angle);
+        std::size_t lower_index{};
+        std::size_t upper_index{};
+        float lower_angle{};
+        float upper_angle{};
+        if (upper == guide.support_angles.begin()) {
+            lower_index = guide.support_angles.size() - 1u;
+            upper_index = 0u;
+            lower_angle = guide.support_angles[lower_index] - 4.0f;
+            upper_angle = guide.support_angles[upper_index];
+        } else if (upper == guide.support_angles.end()) {
+            lower_index = guide.support_angles.size() - 1u;
+            upper_index = 0u;
+            lower_angle = guide.support_angles[lower_index];
+            upper_angle = guide.support_angles[upper_index] + 4.0f;
+        } else {
+            upper_index = static_cast<std::size_t>(
+                upper - guide.support_angles.begin());
+            lower_index = upper_index - 1u;
+            lower_angle = guide.support_angles[lower_index];
+            upper_angle = guide.support_angles[upper_index];
+        }
+        const float denominator = upper_angle - lower_angle;
+        if (!(denominator > 0.0f)) {
+            return guide.support_radii[upper_index + 1u];
+        }
+        const float blend = std::clamp(
+            (angle - lower_angle) / denominator, 0.0f, 1.0f);
+        return guide.support_radii[lower_index + 1u] * (1.0f - blend) +
+               guide.support_radii[upper_index + 1u] * blend;
+    };
+    for (std::size_t index = 0u; index < asset.asset.guides.size(); ++index) {
+        GuideInput &guide = asset.asset.guides[index];
+        if (guide.support_radii.size() != guide.support_angles.size() + 1u ||
+            guide.support_angles.empty()) {
+            continue;
+        }
+        const Vec3 tangent = guide.reference_root_tangent;
+        const Vec3 binormal = guide.reference_root_binormal;
+        const Vec3 candidates[4u]{
+            tangent, binormal, negate3(tangent), negate3(binormal)};
+        double best_score = std::numeric_limits<double>::infinity();
+        std::size_t best{};
+        for (std::size_t rotation = 0u; rotation < 4u; ++rotation) {
+            double score{};
+            for (std::size_t other = 0u;
+                 other < asset.asset.guides.size(); ++other) {
+                if (other == index) { continue; }
+                const GuideInput &neighbor = asset.asset.guides[other];
+                if (!(dot3(neighbor.reference_root_normal,
+                           guide.reference_root_normal) >= 0.0f)) {
+                    continue;
+                }
+                const Vec3 offset{
+                    neighbor.reference_root_position.x -
+                        guide.reference_root_position.x,
+                    neighbor.reference_root_position.y -
+                        guide.reference_root_position.y,
+                    neighbor.reference_root_position.z -
+                        guide.reference_root_position.z};
+                const float distance_squared = dot3(offset, offset);
+                const float broad_radius = guide.support_radii.front();
+                if (!(distance_squared < broad_radius * broad_radius)) {
+                    continue;
+                }
+                const float radius = directional_radius(
+                    guide, candidates[rotation], offset);
+                const float distance = std::sqrt(distance_squared);
+                if (radius > distance && radius > 0.0f) {
+                    const double penetration =
+                        static_cast<double>(radius - distance) / radius;
+                    score += penetration * penetration;
+                }
+            }
+            if (score < best_score) {
+                best_score = score;
+                best = rotation;
+            }
+        }
+        guide.reference_root_tangent = candidates[best];
+        guide.reference_root_binormal =
+            best == 0u ? binormal :
+            best == 1u ? negate3(tangent) :
+            best == 2u ? negate3(binormal) : tangent;
+    }
+
+    const std::size_t count = curves.size();
+    std::vector<std::vector<double>> guide_fingerprints(count);
+    std::vector<std::vector<double>> curve_fingerprints(count);
+    double guide_scale{};
+    double curve_scale{};
+    const auto distance = [](Vec3 a, Vec3 b) {
+        const double x = static_cast<double>(a.x) - b.x;
+        const double y = static_cast<double>(a.y) - b.y;
+        const double z = static_cast<double>(a.z) - b.z;
+        return std::sqrt(x * x + y * y + z * z);
+    };
+    for (std::size_t a = 0u; a < count; ++a) {
+        if (asset.asset.guides[a].cvs.empty()) {
+            fail("description guide has no CVs");
+        }
+        guide_fingerprints[a].reserve(count - 1u);
+        curve_fingerprints[a].reserve(count - 1u);
+        for (std::size_t b = 0u; b < count; ++b) {
+            if (a == b) { continue; }
+            const double guide_distance = distance(
+                asset.asset.guides[a].cvs.front(),
+                asset.asset.guides[b].cvs.front());
+            const double curve_distance = distance(
+                curves[a].front(), curves[b].front());
+            guide_scale = std::max(guide_scale, guide_distance);
+            curve_scale = std::max(curve_scale, curve_distance);
+            guide_fingerprints[a].push_back(guide_distance);
+            curve_fingerprints[a].push_back(curve_distance);
+        }
+    }
+    if (count > 1u && (!(guide_scale > 0.0) || !(curve_scale > 0.0))) {
+        fail("guide-cache root domain is degenerate");
+    }
+    if (count > 1u) {
+        for (auto &values : guide_fingerprints) {
+            for (double &value : values) { value /= guide_scale; }
+            std::sort(values.begin(), values.end());
+        }
+        for (auto &values : curve_fingerprints) {
+            for (double &value : values) { value /= curve_scale; }
+            std::sort(values.begin(), values.end());
+        }
+    }
+
+    constexpr double incompatible_cost = 1.0e6;
+    std::vector<double> costs(count * count, incompatible_cost);
+    for (std::size_t guide = 0u; guide < count; ++guide) {
+        for (std::size_t curve = 0u; curve < count; ++curve) {
+            if (asset.asset.guides[guide].cvs.size() !=
+                curves[curve].size()) {
+                continue;
+            }
+            double squared_error{};
+            for (std::size_t sample = 0u;
+                 sample < guide_fingerprints[guide].size(); ++sample) {
+                const double error = guide_fingerprints[guide][sample] -
+                    curve_fingerprints[curve][sample];
+                squared_error += error * error;
+            }
+            const double divisor = static_cast<double>(
+                std::max<std::size_t>(
+                    guide_fingerprints[guide].size(), 1u));
+            const double fingerprint_cost =
+                std::sqrt(squared_error / divisor);
+            const double root_scale = std::max(guide_scale, curve_scale);
+            const double root_cost = count <= 1u
+                ? 0.0
+                : distance(
+                      asset.asset.guides[guide].cvs.front(),
+                      curves[curve].front()) / root_scale;
+            costs[guide * count + curve] =
+                root_cost + fingerprint_cost * 1.0e-6;
+        }
+    }
+
+    // Minimum-cost one-to-one assignment. Dense guide layouts often have
+    // locally similar distance fingerprints, where greedy edge selection can
+    // consume the correct curve for a later guide.
+    std::vector<double> row_potential(count + 1u);
+    std::vector<double> column_potential(count + 1u);
+    std::vector<std::size_t> column_row(count + 1u);
+    std::vector<std::size_t> previous_column(count + 1u);
+    for (std::size_t row = 1u; row <= count; ++row) {
+        column_row[0u] = row;
+        std::size_t column0{};
+        std::vector<double> minimum(count + 1u,
+                                    std::numeric_limits<double>::infinity());
+        std::vector<bool> used(count + 1u);
+        do {
+            used[column0] = true;
+            const std::size_t row0 = column_row[column0];
+            double delta = std::numeric_limits<double>::infinity();
+            std::size_t column1{};
+            for (std::size_t column = 1u; column <= count; ++column) {
+                if (used[column]) { continue; }
+                const double reduced =
+                    costs[(row0 - 1u) * count + column - 1u] -
+                    row_potential[row0] - column_potential[column];
+                if (reduced < minimum[column]) {
+                    minimum[column] = reduced;
+                    previous_column[column] = column0;
+                }
+                if (minimum[column] < delta) {
+                    delta = minimum[column];
+                    column1 = column;
+                }
+            }
+            if (!std::isfinite(delta)) {
+                fail("guide-cache CV counts cannot be matched to description guides");
+            }
+            for (std::size_t column = 0u; column <= count; ++column) {
+                if (used[column]) {
+                    row_potential[column_row[column]] += delta;
+                    column_potential[column] -= delta;
+                } else {
+                    minimum[column] -= delta;
+                }
+            }
+            column0 = column1;
+        } while (column_row[column0] != 0u);
+        do {
+            const std::size_t column1 = previous_column[column0];
+            column_row[column0] = column_row[column1];
+            column0 = column1;
+        } while (column0 != 0u);
+    }
+    std::vector<std::size_t> mapping(count, count);
+    for (std::size_t column = 1u; column <= count; ++column) {
+        if (column_row[column] != 0u) {
+            mapping[column_row[column] - 1u] = column - 1u;
+        }
+    }
+    bool incompatible_mapping =
+        std::find(mapping.begin(), mapping.end(), count) != mapping.end();
+    for (std::size_t guide = 0u;
+         !incompatible_mapping && guide < count; ++guide) {
+        incompatible_mapping =
+            costs[guide * count + mapping[guide]] >= incompatible_cost;
+    }
+    if (incompatible_mapping) {
+        fail("guide-cache CV counts cannot be matched to description guides");
+    }
+
+    const auto trailing_id = [](std::string_view value) {
+        std::size_t begin = value.size();
+        while (begin != 0u && value[begin - 1u] >= '0' &&
+               value[begin - 1u] <= '9') {
+            --begin;
+        }
+        std::uint64_t id{};
+        if (begin == value.size()) {
+            return std::pair{false, id};
+        }
+        const auto parsed = std::from_chars(
+            value.data() + begin, value.data() + value.size(), id);
+        return std::pair{
+            parsed.ec == std::errc{} &&
+                parsed.ptr == value.data() + value.size(),
+            id};
+    };
+    std::vector<std::uint64_t> wire_ids;
+    for (std::size_t begin = 0u; begin <= wire_names.size();) {
+        const std::size_t end = wire_names.find(',', begin);
+        std::string_view entry = wire_names.substr(
+            begin, (end == std::string_view::npos
+                        ? wire_names.size() : end) - begin);
+        if (!entry.empty()) {
+            const auto [valid, id] = trailing_id(entry);
+            if (!valid) {
+                wire_ids.clear();
+                break;
+            }
+            wire_ids.push_back(id);
+        }
+        if (end == std::string_view::npos) { break; }
+        begin = end + 1u;
+    }
+    std::vector<std::pair<std::uint64_t, std::size_t>> cache_ids;
+    cache_ids.reserve(curve_names.size());
+    for (std::size_t curve = 0u; curve < curve_names.size(); ++curve) {
+        const auto [valid, id] = trailing_id(curve_names[curve]);
+        if (!valid) {
+            cache_ids.clear();
+            break;
+        }
+        cache_ids.emplace_back(id, curve);
+    }
+    bool authored_mapping_applied = false;
+    if (wire_ids.size() == count && cache_ids.size() == count) {
+        std::vector<std::uint64_t> sorted_wire_ids = wire_ids;
+        std::sort(sorted_wire_ids.begin(), sorted_wire_ids.end());
+        std::sort(cache_ids.begin(), cache_ids.end());
+        const bool unique_wire_ids = std::adjacent_find(
+            sorted_wire_ids.begin(), sorted_wire_ids.end()) ==
+            sorted_wire_ids.end();
+        const bool unique_cache_ids = std::adjacent_find(
+            cache_ids.begin(), cache_ids.end(),
+            [](const auto &a, const auto &b) {
+                return a.first == b.first;
+            }) == cache_ids.end();
+        const bool matching_ids = std::equal(
+            sorted_wire_ids.begin(), sorted_wire_ids.end(),
+            cache_ids.begin(), cache_ids.end(),
+            [](std::uint64_t wire_id, const auto &cache_id) {
+                return wire_id == cache_id.first;
+            });
+        if (unique_wire_ids && unique_cache_ids && matching_ids) {
+            std::vector<std::size_t> authored_mapping(count, count);
+            bool compatible = true;
+            for (std::size_t guide = 0u; guide < count; ++guide) {
+                const auto found = std::lower_bound(
+                    sorted_wire_ids.begin(), sorted_wire_ids.end(),
+                    wire_ids[guide]);
+                const std::size_t rank = static_cast<std::size_t>(
+                    found - sorted_wire_ids.begin());
+                const std::size_t curve = cache_ids[rank].second;
+                authored_mapping[guide] = curve;
+                compatible &= asset.asset.guides[guide].cvs.size() ==
+                    curves[curve].size();
+            }
+            if (compatible) {
+                // _wireNames is the authored XGen guide order. Cache curves
+                // may deform relative to their bound patch, so root-distance
+                // heuristics cannot override or reject this association.
+                mapping = std::move(authored_mapping);
+                authored_mapping_applied = true;
+            }
+        }
+    }
+
+    double pair_squared_error{};
+    double pair_max_error{};
+    std::size_t pair_count{};
+    for (std::size_t a = 0u; a < count; ++a) {
+        for (std::size_t b = a + 1u; b < count; ++b) {
+            const double guide_distance = distance(
+                asset.asset.guides[a].cvs.front(),
+                asset.asset.guides[b].cvs.front()) / guide_scale;
+            const double curve_distance = distance(
+                curves[mapping[a]].front(),
+                curves[mapping[b]].front()) / curve_scale;
+            const double error = std::abs(guide_distance - curve_distance);
+            pair_squared_error += error * error;
+            pair_max_error = std::max(pair_max_error, error);
+            ++pair_count;
+        }
+    }
+    const double pair_rms_error = pair_count == 0u
+        ? 0.0 : std::sqrt(pair_squared_error / pair_count);
+    if (!authored_mapping_applied &&
+        (pair_rms_error > 1.0e-2 || pair_max_error > 3.0e-2)) {
+        fail(
+            "guide-cache roots do not match description guides "
+            "(normalized pairwise RMS=" +
+            std::to_string(pair_rms_error) + ", max=" +
+            std::to_string(pair_max_error) + ")");
+    }
+    for (std::size_t guide = 0u; guide < count; ++guide) {
+        std::vector<Vec3> &curve = curves[mapping[guide]];
+        // XGen's cache override preserves the guide's evaluated surface root
+        // as cGuideGeom[0] while replacing the remaining CVs from the cache.
+        curve.front() = asset.asset.guides[guide].cvs.front();
+        asset.asset.guides[guide].cvs = std::move(curve);
+    }
+}
+
+void apply_xgen_classic_alembic_guide_cache(
+    ClassicAlembicAssetInput &asset,
+    const std::filesystem::path &cache_path,
+    const ClassicAlembicLimits &limits) {
+    apply_xgen_classic_alembic_guide_cache_impl(
+        asset, cache_path, limits, {}, {});
+}
+
+void apply_xgen_classic_alembic_guide_cache(
+    ClassicAlembicAssetInput &asset,
+    const std::filesystem::path &cache_path,
+    std::string_view wire_names,
+    const ClassicAlembicLimits &limits) {
+    apply_xgen_classic_alembic_guide_cache_impl(
+        asset, cache_path, limits, {}, wire_names);
+}
+
+void apply_xgen_classic_alembic_guide_cache(
+    ClassicAlembicAssetInput &asset,
+    const std::filesystem::path &cache_path,
+    const ClassicAlembicFrameSample &sample,
+    const ClassicAlembicLimits &limits) {
+    if (!std::isfinite(sample.frame) ||
+        !std::isfinite(sample.lookup_offset) ||
+        !std::isfinite(sample.frames_per_second) ||
+        !(sample.frames_per_second > 0.0)) {
+        fail("guide-cache motion frame, lookup offset, and FPS must be finite with positive FPS");
+    }
+    const double time_seconds =
+        (sample.frame + sample.lookup_offset) / sample.frames_per_second;
+    if (!std::isfinite(time_seconds)) {
+        fail("guide-cache motion lookup time is not finite");
+    }
+    apply_xgen_classic_alembic_guide_cache_impl(
+        asset, cache_path, limits,
+        {false, time_seconds, sample.interpolation}, {});
+}
+
+void apply_xgen_classic_alembic_guide_cache(
+    ClassicAlembicAssetInput &asset,
+    const std::filesystem::path &cache_path,
+    const ClassicAlembicFrameSample &sample,
+    std::string_view wire_names,
+    const ClassicAlembicLimits &limits) {
+    if (!std::isfinite(sample.frame) ||
+        !std::isfinite(sample.lookup_offset) ||
+        !std::isfinite(sample.frames_per_second) ||
+        !(sample.frames_per_second > 0.0)) {
+        fail("guide-cache motion frame, lookup offset, and FPS must be finite with positive FPS");
+    }
+    const double time_seconds =
+        (sample.frame + sample.lookup_offset) / sample.frames_per_second;
+    if (!std::isfinite(time_seconds)) {
+        fail("guide-cache motion lookup time is not finite");
+    }
+    apply_xgen_classic_alembic_guide_cache_impl(
+        asset, cache_path, limits,
+        {false, time_seconds, sample.interpolation}, wire_names);
+}
+
+bool xgen_classic_alembic_guide_cache_is_static(
+    const std::filesystem::path &cache_path,
+    const ClassicAlembicLimits &limits) {
+    if (limits.max_objects == 0u) {
+        fail("guide-cache object limit must be nonzero");
+    }
+    AbcFactory::IFactory factory;
+    const Abc::IArchive archive = factory.getArchive(cache_path.string());
+    if (!archive.valid()) {
+        fail("cannot open guide cache: " + cache_path.string());
+    }
+    std::size_t visited{};
+    std::size_t matches{};
+    bool result = true;
+    inspect_static_curves(
+        archive.getTop(), false, visited, limits.max_objects,
+        matches, result);
+    if (matches == 0u) {
+        fail("guide cache contains no ICurves objects");
+    }
+    return result;
 }
 
 bool xgen_classic_alembic_deformation_is_static(

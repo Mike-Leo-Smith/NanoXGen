@@ -270,7 +270,38 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data_cached(
         xpd_begin);
     const auto axes_begin = ClumpClock::now();
     const ClassicRootPlan guide_roots = build_xgen_classic_explicit_root_plan(
-        description, surface, patch.name, valid_samples);
+        description, surface, description_directory, patch.name,
+        valid_samples);
+    if (guide_roots.roots.empty()) {
+        fail("clump point file has no region-associated guides");
+    }
+    std::vector<std::uint32_t> valid_to_associated(
+        valid_samples.size(), kInvalidIndex);
+    std::size_t associated{};
+    for (std::size_t source = 0u;
+         source < valid_samples.size() && associated < guide_roots.roots.size();
+         ++source) {
+        const ClassicExplicitRoot &sample = valid_samples[source];
+        const RootSample &root = guide_roots.roots[associated];
+        if (sample.face_id == root.surface_face_id &&
+            std::bit_cast<std::uint32_t>(sample.uv.x) ==
+                std::bit_cast<std::uint32_t>(root.uv.x) &&
+            std::bit_cast<std::uint32_t>(sample.uv.y) ==
+                std::bit_cast<std::uint32_t>(root.uv.y)) {
+            valid_to_associated[source] =
+                static_cast<std::uint32_t>(associated++);
+        }
+    }
+    if (associated != guide_roots.roots.size()) {
+        fail("region-associated clump guide order is inconsistent");
+    }
+    for (std::uint32_t &guide : global_to_compact) {
+        if (guide == kInvalidIndex) { continue; }
+        if (guide >= valid_to_associated.size()) {
+            fail("clump guide prefilter remap is out of range");
+        }
+        guide = valid_to_associated[guide];
+    }
     PackedGeneratedCurves axes = generate_xgen_classic_base_curves_cpu(
         surface.asset, guide_roots, cvs_per_guide, 0.0f, 1.0f, true);
     ClassicFloatRuntimePlan prefix = runtime_plan;
@@ -340,6 +371,16 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data_cached(
     result.guide_uvs.reserve(axes.roots.size());
     result.guide_face_ids.reserve(axes.roots.size());
     result.guide_random_prefixes.reserve(axes.roots.size());
+    const std::size_t guide_input_stride =
+        runtime_plan.ptex_paths.size() + runtime_plan.custom_inputs.size() +
+        runtime_plan.pref_noise_inputs.size();
+    if (guide_input_stride > std::numeric_limits<std::uint32_t>::max()) {
+        fail("clump guide runtime input stride exceeds uint32");
+    }
+    result.guide_runtime_input_stride =
+        static_cast<std::uint32_t>(guide_input_stride);
+    result.guide_runtime_inputs.reserve(
+        axes.roots.size() * guide_input_stride);
     std::vector<std::uint32_t> valid_to_runtime(
         guide_roots.roots.size(), kInvalidIndex);
     std::size_t source_guide = 0u;
@@ -371,6 +412,12 @@ ClassicClumpRuntimeData build_xgen_classic_clump_runtime_data_cached(
             guide_roots.roots[source_guide].surface_face_id);
         result.guide_random_prefixes.push_back(
             guide_roots.random_prefixes[source_guide]);
+        if (guide_input_stride != 0u) {
+            const auto row = std::span{guide_inputs.values}.subspan(
+                source_guide * guide_input_stride, guide_input_stride);
+            result.guide_runtime_inputs.insert(
+                result.guide_runtime_inputs.end(), row.begin(), row.end());
+        }
         ++source_guide;
     }
     for (std::uint32_t &guide : global_to_compact) {

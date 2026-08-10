@@ -29,6 +29,7 @@ enum class XgenScalarOp : std::uint8_t {
     select,
     hash,
     random,
+    stray,
     minimum,
     maximum,
     clamp,
@@ -115,6 +116,7 @@ struct XgenExpressionContext {
     double v{};
     double face_seed{};
     double t{};
+    double stray_percentage{};
 };
 
 // Throughput-oriented runtime context. This path deliberately uses only
@@ -129,6 +131,7 @@ struct XgenExpressionFloatContext {
     float t{};
     std::uint32_t random_prefix{};
     bool has_random_prefix{};
+    float stray_percentage{};
 };
 
 [[nodiscard]] XgenExpressionProgram compile_xgen_scalar_expression(

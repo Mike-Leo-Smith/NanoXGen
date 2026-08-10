@@ -12,7 +12,8 @@ using ClassicRuntimePrimitiveKernel = luisa::compute::Kernel1D<void(
     luisa::compute::ByteBuffer,
     luisa::compute::Buffer<luisa::uint>,
     luisa::compute::Buffer<float>,
-    luisa::compute::Buffer<luisa::float4>)>;
+    luisa::compute::Buffer<luisa::float4>,
+    float)>;
 using ClassicRuntimeCutKernel = ClassicRuntimePrimitiveKernel;
 using ClassicRuntimeClumpKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::float4>,
@@ -24,7 +25,9 @@ using ClassicRuntimeClumpKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::float4>,
     luisa::compute::Buffer<luisa::float4>,
     luisa::compute::Buffer<luisa::uint>,
-    luisa::compute::Buffer<luisa::uint>)>;
+    luisa::compute::Buffer<float>,
+    luisa::compute::Buffer<luisa::uint>,
+    float)>;
 using ClassicRuntimeNoiseKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::float4>,
     luisa::compute::Buffer<luisa::float4>,
@@ -33,13 +36,15 @@ using ClassicRuntimeNoiseKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<float>,
     luisa::compute::Buffer<luisa::float3>,
     luisa::compute::Buffer<luisa::float3>,
-    luisa::compute::Buffer<luisa::float4>)>;
+    luisa::compute::Buffer<luisa::float4>,
+    float)>;
 using ClassicRuntimeWidthKernel = luisa::compute::Kernel1D<void(
     luisa::compute::Buffer<luisa::float4>,
     luisa::compute::ByteBuffer,
     luisa::compute::Buffer<luisa::uint>,
     luisa::compute::Buffer<float>,
-    luisa::compute::Buffer<luisa::float4>)>;
+    luisa::compute::Buffer<luisa::float4>,
+    float)>;
 
 struct ClassicFloatRuntimeLuisaContext {
     luisa::compute::Expr<luisa::uint> id;
@@ -49,6 +54,7 @@ struct ClassicFloatRuntimeLuisaContext {
     luisa::compute::Expr<float> c_length;
     luisa::compute::Expr<float> c_width;
     luisa::compute::Expr<float> t;
+    luisa::compute::Expr<float> frame;
     luisa::compute::Expr<luisa::uint> random_prefix;
     bool has_random_prefix{};
     const luisa::compute::BufferVar<float> *ptex_values{};
@@ -56,6 +62,7 @@ struct ClassicFloatRuntimeLuisaContext {
     std::uint32_t ptex_stride{};
     std::uint32_t custom_count{};
     std::uint32_t pref_noise_count{};
+    luisa::compute::Expr<float> stray_percentage{0.0f};
 };
 
 // Bind a Classic runtime expression directly to values in the surrounding
@@ -80,13 +87,15 @@ struct ClassicFloatRuntimeLuisaContext {
 
 // guide_axes stores the cutFromTip(0)-rebuilt
 // float4(position, sourceGuideCumulativeDistance) render guides, guide-major.
-// guide_frames stores three float4 records per guide as
+// guide_frames stores four float4 records per guide as
 // (normal.xyz, u), (tangent.xyz, v), and
 // (referencePosition.xyz, sourceSplineLength);
-// root-relative kernels require a fourth (worldGuideRoot.xyz, unused) record
+// the fourth is (worldGuideRoot.xyz, unused) and is ignored by
+// non-root-relative kernels.
 // and guide_axes then contains translation-free guide points.
-// guide_runtime stores uint2(faceId, exactSeExprPrefix); strand_guides stores
-// one guide index (or kInvalidIndex) per strand.
+// guide_runtime stores uint2(faceId, exactSeExprPrefix); guide_inputs stores
+// one dense Classic runtime-input row per guide; strand_guides stores one
+// guide index (or kInvalidIndex) per strand.
 [[nodiscard]] ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
     const ClassicFloatRuntimePlan &plan,
     const ClassicFloatClumpModule &clump,

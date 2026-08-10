@@ -412,7 +412,12 @@ build_xgen_classic_uniform_float_primvars(
     const std::filesystem::path &description_directory,
     std::string_view patch_name,
     const ClassicRootPlan &roots,
-    NanoXGenContext *context) {
+    NanoXGenContext *context,
+    float frame) {
+    if (!std::isfinite(frame)) {
+        throw std::invalid_argument(
+            "Classic custom float frame must be finite");
+    }
     validate_xgen_classic_uniform_primvar_declarations(description);
     constexpr std::string_view prefix{"custom_float_"};
     ClassicFloatRuntimePlan input_plan{};
@@ -436,7 +441,7 @@ build_xgen_classic_uniform_float_primvars(
                 input_plan.ptex_paths, input_plan.custom_inputs,
                 input_plan.pref_noise_inputs);
         for (const std::string &input : expression.program.inputs) {
-            if (input == "id" ||
+            if (input == "id" || input == "frame" ||
                 input.starts_with("__nxg_map_") ||
                 input.starts_with("__nxg_custom_") ||
                 input.starts_with("__nxg_pref_noise_")) {
@@ -485,6 +490,7 @@ build_xgen_classic_uniform_float_primvars(
                 0.0f,
                 0.0f,
                 0.0f,
+                frame,
                 roots.random_prefixes.at(strand),
                 true,
                 row.first(ptex_count),
@@ -505,6 +511,10 @@ build_xgen_classic_uniform_float_primvars(
                     if (input == "id") {
                         bound[index] =
                             static_cast<float>(runtime_context.id);
+                        continue;
+                    }
+                    if (input == "frame") {
+                        bound[index] = runtime_context.frame;
                         continue;
                     }
                     const auto parse_external =

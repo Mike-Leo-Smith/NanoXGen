@@ -112,6 +112,34 @@ void test_comments_operators_and_validation() {
 
     require_fails("map('${DESC}/paintmaps/mask')", "PTEX binding");
     require_fails("noise($u)", "unsupported function");
+    require_fails("stray(1)", "stray expects 0 argument");
+}
+
+void test_stray() {
+    const XgenExpressionProgram program =
+        compile_xgen_scalar_expression("stray() ? 2 : 1");
+    const double face_seed = xgen_face_seed(5u, "probePatch", 0u);
+    require_near(
+        evaluate_xgen_scalar_expression(
+            program, {{}, 0.03125, 0.0625, face_seed, 0.0, 15.0}),
+        1.0, "stray() false sample did not match Autodesk");
+    require_near(
+        evaluate_xgen_scalar_expression(
+            program, {{}, 0.65625, 0.9375, face_seed, 0.0, 15.0}),
+        2.0, "stray() true sample did not match Autodesk");
+
+    const XgenFloatExpressionProgram runtime =
+        make_xgen_float_expression_program(program);
+    const std::array<double, 3u> prefix_arguments{
+        0.65625, 0.9375, face_seed};
+    const std::uint32_t prefix =
+        xgen_seexpr_hash_prefix(prefix_arguments);
+    const float runtime_value = evaluate_xgen_scalar_expression_float(
+        runtime, {{}, 0.65625f, 0.9375f,
+                  static_cast<float>(face_seed), 0.0f,
+                  prefix, true, 15.0f});
+    require(runtime_value == 2.0f,
+            "float stray() sample did not match Autodesk");
 }
 
 void test_runtime_validation_and_limits() {
@@ -229,6 +257,7 @@ int main() try {
     test_hash_and_seeds();
     test_compile_and_evaluate();
     test_comments_operators_and_validation();
+    test_stray();
     test_runtime_validation_and_limits();
     test_float_runtime_ir();
     test_ramp_ui();

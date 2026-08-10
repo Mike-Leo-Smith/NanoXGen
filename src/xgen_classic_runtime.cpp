@@ -457,7 +457,8 @@ bool supported_runtime_input(std::string_view input) {
     // These are the variables whose fast-float binding is unambiguous without
     // retaining Autodesk patch/evaluation state. Patch u/v/face IDs and ri/rf
     // require the native root sampler and therefore remain fallbacks.
-    if (input == "id" || input == "cLength" || input == "cWidth") {
+    if (input == "id" || input == "cLength" || input == "cWidth" ||
+        input == "frame") {
         return true;
     }
     constexpr std::string_view map_prefix{"__nxg_map_"};
@@ -493,6 +494,32 @@ bool validate_inputs(const ClassicFloatRuntimeExpression &expression,
     return result;
 }
 
+bool parse_bool_attribute(
+    const ClassicAttribute *attribute, bool fallback,
+    std::string_view label, std::vector<std::string> &fallback_reasons) {
+    if (attribute == nullptr || attribute->value.empty()) { return fallback; }
+    if (attribute->value == "true" || attribute->value == "True" ||
+        attribute->value == "1") {
+        return true;
+    }
+    if (attribute->value == "false" || attribute->value == "False" ||
+        attribute->value == "0") {
+        return false;
+    }
+    fallback_reasons.push_back(
+        "SplinePrimitive " + std::string{label} +
+        " must be true or false");
+    return fallback;
+}
+
+bool uses_stray(const XgenFloatExpressionProgram &program) noexcept {
+    return std::any_of(
+        program.instructions.begin(), program.instructions.end(),
+        [](const XgenFloatScalarInstruction &instruction) {
+            return instruction.op == XgenScalarOp::stray;
+        });
+}
+
 void validate_optional_inputs(
     std::optional<ClassicFloatRuntimeExpression> &expression,
     std::vector<std::string> &fallback_reasons) {
@@ -506,6 +533,7 @@ float input_value(std::string_view name,
     if (name == "id") { return static_cast<float>(context.id); }
     if (name == "cLength") { return context.c_length; }
     if (name == "cWidth") { return context.c_width; }
+    if (name == "frame") { return context.frame; }
     constexpr std::string_view prefix{"__nxg_map_"};
     if (name.starts_with(prefix)) {
         name.remove_prefix(prefix.size());
@@ -569,7 +597,7 @@ float evaluate_runtime_expression(
         expression.program,
         {std::span{inputs}.first(expression.program.inputs.size()), context.u,
          context.v, context.face_seed, context.t, context.random_prefix,
-         context.has_random_prefix},
+         context.has_random_prefix, context.stray_percentage},
         scratch);
 }
 
@@ -1041,6 +1069,7 @@ void apply_noise(
 void build_clump_noise_axis(
     std::span<const Vec3> axis,
     std::span<const Vec3> distance_axis,
+    const ClassicFloatRuntimePlan &plan,
     const ClassicFloatClumpModule &clump,
     ClassicFloatRuntimeContext context,
     Vec3 domain_position,
@@ -1060,6 +1089,9 @@ void build_clump_noise_axis(
     const auto evaluate = [&](const ClassicFloatRuntimeExpression &expression) {
         return evaluate_runtime_expression(expression, context, scratch);
     };
+    if (plan.stray_percentage) {
+        context.stray_percentage = evaluate(*plan.stray_percentage);
+    }
     const float raw_noise = evaluate(clump.noise);
     if (!std::isfinite(raw_noise)) {
         throw std::runtime_error(
@@ -1208,6 +1240,24 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
     result.fx_cv_count = parse_uint_attribute(
         find_classic_attribute(primitive->attributes, "fxCVCount"), 0u,
         "fxCVCount");
+    result.use_guide_cache = parse_bool_attribute(
+        find_classic_attribute(primitive->attributes, "useCache"), false,
+        "useCache", result.fallback_reasons);
+    result.guide_cache_live_mode = parse_bool_attribute(
+        find_classic_attribute(primitive->attributes, "liveMode"), true,
+        "liveMode", result.fallback_reasons);
+    if (const ClassicAttribute *cache_file = find_classic_attribute(
+            primitive->attributes, "cacheFileName")) {
+        result.guide_cache_file = cache_file->value;
+    }
+    if (const ClassicAttribute *wire_names = find_classic_attribute(
+            primitive->attributes, "_wireNames")) {
+        result.guide_cache_wire_names = wire_names->value;
+    }
+    if (result.use_guide_cache && result.guide_cache_file.empty()) {
+        result.fallback_reasons.push_back(
+            "SplinePrimitive useCache is enabled but cacheFileName is empty");
+    }
     compile_optional(*primitive, "length", result.length,
                      result.fallback_reasons, result.ptex_paths,
                      palette_attributes, result.custom_inputs,
@@ -1407,6 +1457,112 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
                 error.what());
         }
     }
+    const auto expression_uses_stray = [](const auto &expression) {
+        return uses_stray(expression.program);
+    };
+    bool needs_stray = false;
+    const auto include_optional_stray = [&](const auto &expression) {
+        if (expression) {
+            needs_stray |= expression_uses_stray(*expression);
+        }
+    };
+    include_optional_stray(result.length);
+    include_optional_stray(result.width);
+    include_optional_stray(result.taper);
+    include_optional_stray(result.taper_start);
+    include_optional_stray(result.width_ramp);
+    for (const ClassicFloatCutModule &cut : result.cuts) {
+        needs_stray |= expression_uses_stray(cut.amount);
+    }
+    for (const ClassicFloatNoiseModule &noise : result.noises) {
+        const ClassicFloatRuntimeExpression *expressions[]{
+            &noise.mask, &noise.magnitude, &noise.magnitude_scale,
+            &noise.frequency, &noise.correlation, &noise.preserve_length};
+        for (const auto *expression : expressions) {
+            needs_stray |= expression_uses_stray(*expression);
+        }
+    }
+    for (const ClassicFloatClumpModule &clump : result.clumps) {
+        const ClassicFloatRuntimeExpression *expressions[]{
+            &clump.mask, &clump.clump, &clump.clump_scale, &clump.noise,
+            &clump.noise_scale, &clump.noise_frequency,
+            &clump.noise_correlation};
+        for (const auto *expression : expressions) {
+            needs_stray |= expression_uses_stray(*expression);
+        }
+    }
+    if (needs_stray) {
+        const ClassicAttribute *attribute = find_classic_attribute(
+            description.attributes, "strayPercentage");
+        if (attribute != nullptr && !attribute->value.empty()) {
+            const std::size_t map_count = result.ptex_paths.size();
+            const std::size_t custom_count = result.custom_inputs.size();
+            const std::size_t pref_noise_count = result.pref_noise_inputs.size();
+            try {
+                result.stray_percentage =
+                    compile_xgen_classic_uniform_float_expression(
+                        description, "Description", *attribute,
+                        palette_attributes, result.ptex_paths,
+                        result.custom_inputs, result.pref_noise_inputs);
+                if (uses_stray(result.stray_percentage->program)) {
+                    throw std::runtime_error(
+                        "recursive stray() is not supported");
+                }
+                if (!validate_inputs(
+                        *result.stray_percentage, result.fallback_reasons)) {
+                    result.ptex_paths.resize(map_count);
+                    result.custom_inputs.resize(custom_count);
+                    result.pref_noise_inputs.resize(pref_noise_count);
+                    result.stray_percentage.reset();
+                }
+            } catch (const std::exception &error) {
+                result.ptex_paths.resize(map_count);
+                result.custom_inputs.resize(custom_count);
+                result.pref_noise_inputs.resize(pref_noise_count);
+                result.stray_percentage.reset();
+                result.fallback_reasons.push_back(
+                    "Description.strayPercentage: " +
+                    std::string{error.what()});
+            }
+        }
+    }
+    const auto expression_uses_frame = [](const auto &expression) {
+        return std::find(
+                   expression.program.inputs.begin(),
+                   expression.program.inputs.end(), "frame") !=
+               expression.program.inputs.end();
+    };
+    const auto include_optional_frame = [&](const auto &expression) {
+        if (expression) {
+            result.frame_varying |= expression_uses_frame(*expression);
+        }
+    };
+    include_optional_frame(result.length);
+    include_optional_frame(result.width);
+    include_optional_frame(result.taper);
+    include_optional_frame(result.taper_start);
+    include_optional_frame(result.width_ramp);
+    include_optional_frame(result.stray_percentage);
+    for (const ClassicFloatCutModule &cut : result.cuts) {
+        result.frame_varying |= expression_uses_frame(cut.amount);
+    }
+    for (const ClassicFloatNoiseModule &noise : result.noises) {
+        const ClassicFloatRuntimeExpression *expressions[]{
+            &noise.mask, &noise.magnitude, &noise.magnitude_scale,
+            &noise.frequency, &noise.correlation, &noise.preserve_length};
+        for (const auto *expression : expressions) {
+            result.frame_varying |= expression_uses_frame(*expression);
+        }
+    }
+    for (const ClassicFloatClumpModule &clump : result.clumps) {
+        const ClassicFloatRuntimeExpression *expressions[]{
+            &clump.mask, &clump.clump, &clump.clump_scale, &clump.noise,
+            &clump.noise_scale, &clump.noise_frequency,
+            &clump.noise_correlation};
+        for (const auto *expression : expressions) {
+            result.frame_varying |= expression_uses_frame(*expression);
+        }
+    }
     return result;
 }
 
@@ -1445,7 +1601,8 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     std::span<const float> runtime_inputs,
     std::span<const Vec3> noise_domain_positions,
     bool root_relative,
-    NanoXGenContext *context) {
+    NanoXGenContext *context,
+    float frame) {
     if (curves.strand_count == 0u || curves.cvs_per_strand < 2u ||
         curves.point_counts.size() != curves.strand_count ||
         curves.roots.size() != curves.strand_count ||
@@ -1454,9 +1611,10 @@ void apply_xgen_classic_float_runtime_plan_cpu(
         throw std::invalid_argument(
             "Classic runtime needs a valid fixed-CV packed curve set");
     }
-    if (!std::isfinite(radius_scale) || radius_scale < 0.0f) {
+    if (!std::isfinite(radius_scale) || radius_scale < 0.0f ||
+        !std::isfinite(frame)) {
         throw std::invalid_argument(
-            "Classic runtime radius scale must be finite and non-negative");
+            "Classic runtime radius scale and frame must be finite");
     }
     if (!plan.noises.empty() &&
         surface_tangents.size() != curves.strand_count) {
@@ -1551,8 +1709,11 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             (!data.guide_spline_lengths.empty() &&
              data.guide_spline_lengths.size() != guide_count) ||
             (!data.guide_reference_positions.empty() &&
-             data.guide_reference_positions.size() !=
-                 data.guide_normals.size())) {
+            data.guide_reference_positions.size() !=
+                data.guide_normals.size()) ||
+            data.guide_runtime_input_stride != input_stride ||
+            data.guide_runtime_inputs.size() !=
+                guide_count * input_stride) {
             throw std::invalid_argument(
                 "Classic ClumpingFX geometry binding is inconsistent");
         }
@@ -1594,6 +1755,7 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                 scratch_size, expression->program.instructions.size());
         }
     };
+    include_scratch(plan.stray_percentage);
     include_scratch(plan.length);
     include_scratch(plan.width);
     include_scratch(plan.taper);
@@ -1652,6 +1814,7 @@ void apply_xgen_classic_float_runtime_plan_cpu(
             root.surface_face_id == kInvalidIndex
                 ? root.triangle_index
                 : root.surface_face_id);
+        context.frame = frame;
         context.random_prefix = random_prefixes.empty()
             ? 0u : random_prefixes[strand];
         context.has_random_prefix = !random_prefixes.empty();
@@ -1665,6 +1828,9 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                 ptex_count + custom_count, pref_noise_count);
         }
         context.c_length = curve_spline_length(points);
+        if (plan.stray_percentage) {
+            context.stray_percentage = evaluate(*plan.stray_percentage, context);
+        }
         if (plan.length) {
             const float length_scale = evaluate(*plan.length, context);
             if (!std::isfinite(length_scale) || length_scale < 0.0f) {
@@ -1753,8 +1919,21 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                     guide_context.face_seed = xgen_runtime_face_seed(
                         plan.description_id, plan.description_name,
                         data.guide_face_ids[guide_index]);
+                    if (input_stride != 0u) {
+                        const std::span<const float> guide_row{
+                            data.guide_runtime_inputs.data() +
+                                static_cast<std::size_t>(guide_index) *
+                                    input_stride,
+                            input_stride};
+                        guide_context.ptex_values =
+                            guide_row.first(ptex_count);
+                        guide_context.custom_values = guide_row.subspan(
+                            ptex_count, custom_count);
+                        guide_context.pref_noise_values = guide_row.subspan(
+                            ptex_count + custom_count, pref_noise_count);
+                    }
                     build_clump_noise_axis(
-                        render_axis, source_axis, clump, guide_context,
+                        render_axis, source_axis, plan, clump, guide_context,
                         data.guide_reference_positions.empty()
                             ? guide_root
                             : data.guide_reference_positions[guide_index],
@@ -1771,7 +1950,10 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                     cut_to_length_and_rebuild(
                         points, guide_length, cut_source, resampled);
                     context.c_length = curve_spline_length(points);
-                    const float raw_amount = evaluate(clump.clump, context);
+                    guide_context.c_length = guide_length;
+                    guide_context.t = 0.0f;
+                    const float raw_amount = evaluate(
+                        clump.clump, guide_context);
                     if (!std::isfinite(raw_amount)) {
                         throw std::runtime_error(
                             "Classic ClumpingFX amount is non-finite");

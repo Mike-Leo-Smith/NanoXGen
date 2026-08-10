@@ -135,6 +135,7 @@ Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
                              span<const Expr<float>> inputs,
                              Expr<float> u, Expr<float> v,
                              Expr<float> face_seed, Expr<float> t,
+                             Expr<float> stray_percentage,
                              Expr<uint> random_prefix,
                              bool has_random_prefix) noexcept {
     vector<Expr<float>> values;
@@ -218,6 +219,20 @@ Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
             }
             break;
         }
+        case XgenScalarOp::stray: {
+            Float random{0.0f};
+            if (has_random_prefix) {
+                const UInt state = random_prefix * 1664525u +
+                                   instruction.auxiliary + 1013904223u;
+                random = cast<float>(runtime_hash_finish(state)) * 0x1p-32f;
+            } else {
+                const std::array<Expr<float>, 4u> arguments{
+                    u, v, face_seed, instruction.immediate};
+                random = runtime_hash(arguments);
+            }
+            value = cast<float>(random * 100.0f < stray_percentage);
+            break;
+        }
         case XgenScalarOp::minimum: value = min(operand(0u), operand(1u)); break;
         case XgenScalarOp::maximum: value = max(operand(0u), operand(1u)); break;
         case XgenScalarOp::clamp:
@@ -265,7 +280,29 @@ Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
                              span<const Expr<float>> inputs,
                              Expr<float> u, Expr<float> v,
                              Expr<float> face_seed, Expr<float> t) noexcept {
-    return lower_expression(program, inputs, u, v, face_seed, t, 0u, false);
+    return lower_expression(
+        program, inputs, u, v, face_seed, t, 0.0f, 0u, false);
+}
+
+Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
+                             span<const Expr<float>> inputs,
+                             Expr<float> u, Expr<float> v,
+                             Expr<float> face_seed, Expr<float> t,
+                             Expr<float> stray_percentage) noexcept {
+    return lower_expression(
+        program, inputs, u, v, face_seed, t,
+        stray_percentage, 0u, false);
+}
+
+Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
+                             span<const Expr<float>> inputs,
+                             Expr<float> u, Expr<float> v,
+                             Expr<float> face_seed, Expr<float> t,
+                             Expr<uint> random_prefix,
+                             bool has_random_prefix) noexcept {
+    return lower_expression(
+        program, inputs, u, v, face_seed, t, 0.0f,
+        random_prefix, has_random_prefix);
 }
 
 Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
@@ -282,7 +319,7 @@ Expr<float> lower_expression(const XgenFloatExpressionProgram &program,
         program, values, contexts.read(index),
         contexts.read(index + count),
         contexts.read(index + count * 2u),
-        contexts.read(index + count * 3u));
+        contexts.read(index + count * 3u), 0.0f);
 }
 
 } // namespace nanoxgen::luisa_backend

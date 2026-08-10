@@ -84,6 +84,10 @@ struct ClassicClumpRuntimeData {
     std::vector<Vec2> guide_uvs;
     std::vector<std::uint32_t> guide_face_ids;
     std::vector<std::uint32_t> guide_random_prefixes;
+    // Dense runtime-expression inputs sampled at each guide root. The layout
+    // matches ClassicFloatRuntimePlan: PTEX, custom inputs, then Pref noise.
+    std::uint32_t guide_runtime_input_stride{};
+    std::vector<float> guide_runtime_inputs;
     std::vector<std::uint32_t> strand_guide_indices;
 };
 
@@ -119,6 +123,12 @@ struct ClassicFloatRuntimePlan {
     std::string description_name;
     std::uint32_t description_id{};
     std::uint32_t fx_cv_count{};
+    bool use_guide_cache{};
+    bool guide_cache_live_mode{true};
+    bool frame_varying{};
+    std::string guide_cache_file;
+    std::string guide_cache_wire_names;
+    std::optional<ClassicFloatRuntimeExpression> stray_percentage;
     std::optional<ClassicFloatRuntimeExpression> length;
     std::optional<ClassicFloatRuntimeExpression> width;
     std::optional<ClassicFloatRuntimeExpression> taper;
@@ -162,11 +172,13 @@ struct ClassicFloatRuntimeContext {
     float c_length{};
     float c_width{};
     float t{};
+    float frame{};
     std::uint32_t random_prefix{};
     bool has_random_prefix{};
     std::span<const float> ptex_values;
     std::span<const float> custom_values;
     std::span<const float> pref_noise_values;
+    float stray_percentage{};
 };
 
 [[nodiscard]] ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
@@ -214,7 +226,8 @@ void apply_xgen_classic_float_runtime_plan_cpu(
     // Clump guide goals are translated into the same local frame; noise
     // domains remain in authored reference space.
     bool root_relative = false,
-    NanoXGenContext *context = nullptr);
+    NanoXGenContext *context = nullptr,
+    float frame = 0.0f);
 
 // Match the Classic renderer cache convention by adding one extrapolated
 // endpoint before and after every fixed-CV spline. Call after all FX modules

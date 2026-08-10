@@ -240,6 +240,142 @@ BoundMapExpression bind_maps(
     return result;
 }
 
+std::uint32_t byte_channel(float value) {
+    if (!std::isfinite(value) || value < 0.0f || value > 1.0f) {
+        fail("PTEX region channel is out of range");
+    }
+    return static_cast<std::uint32_t>(std::lround(value * 255.0f));
+}
+
+std::uint32_t decode_rgb_id(
+    std::array<std::uint32_t, 3u> channels) noexcept {
+    if (channels[0] == 0u && channels[1] == 0u && channels[2] == 0u) {
+        return 0u;
+    }
+    std::uint32_t result{};
+    std::uint32_t channel = 2u;
+    for (std::uint32_t bit = 0u; bit < 24u; ++bit) {
+        result = result * 2u + ((~channels[channel]) & 1u);
+        channels[channel] >>= 1u;
+        channel = channel == 0u ? 2u : channel - 1u;
+    }
+    return result;
+}
+
+const ClassicObject *spline_primitive(
+    const ClassicDescription &description) noexcept {
+    const ClassicObject *result = nullptr;
+    for (const ClassicObject &object : description.objects) {
+        if (object.type != "SplinePrimitive") { continue; }
+        if (result) { return nullptr; }
+        result = &object;
+    }
+    return result;
+}
+
+class GuideRegionBinding {
+public:
+    GuideRegionBinding(
+        const ClassicDescription &description,
+        const std::filesystem::path &description_directory,
+        std::string_view patch_name, std::span<const GuideInput> guides)
+        : _description_id{description_id(description)},
+          _patch_name{patch_name} {
+        const ClassicObject *primitive = spline_primitive(description);
+        if (!primitive) { return; }
+        const ClassicAttribute *region_map = find_classic_attribute(
+            primitive->attributes, "regionMap");
+        if (!region_map || region_map->value.empty()) { return; }
+        if (!detail::classic_safe_component(patch_name)) {
+            fail("patch name is not a safe path component");
+        }
+        const std::filesystem::path path =
+            detail::resolve_classic_description_file(
+                region_map->value, description_directory,
+                std::string{patch_name} + ".ptx", ".ptx");
+        // The stock primitive writes ${DESC}/Region/ even when no map was
+        // authored. XGen treats that missing default as disabled.
+        if (!std::filesystem::is_regular_file(path)) { return; }
+        _region_map = std::make_unique<XgenPtexMap>(path);
+        if (_region_map->info().channel_count < 3u) {
+            fail("guide region map needs at least three channels");
+        }
+        const ClassicAttribute *region_mask = find_classic_attribute(
+            primitive->attributes, "regionMask");
+        _region_mask = bind_maps(
+            region_mask && !region_mask->value.empty()
+                ? std::string_view{region_mask->value}
+                : std::string_view{"0.0"},
+            description_directory, patch_name);
+        _guide_regions.reserve(guides.size());
+        for (const GuideInput &guide : guides) {
+            _guide_regions.push_back(sample_region(
+                guide.surface_face_id, guide.root_uv.x, guide.root_uv.y));
+        }
+        _paths.push_back(path);
+        _paths.insert(
+            _paths.end(), _region_mask.paths.begin(), _region_mask.paths.end());
+    }
+
+    [[nodiscard]] const std::vector<std::filesystem::path> &paths() const noexcept {
+        return _paths;
+    }
+
+    [[nodiscard]] float guide_scale(
+        std::uint32_t guide_index, std::uint32_t face,
+        float u, float v) const {
+        if (!_region_map || guide_index >= _guide_regions.size()) { return 1.0f; }
+        if (sample_region(face, u, v) == _guide_regions[guide_index]) {
+            return 1.0f;
+        }
+        std::vector<double> inputs(_region_mask.maps.size());
+        for (std::size_t index = 0u; index < _region_mask.maps.size(); ++index) {
+            const XgenPtexMap &map = *_region_mask.maps[index];
+            if (face >= map.info().face_count) {
+                fail("region mask PTEX has fewer faces than the patch");
+            }
+            // Painted region-mask PTEX stores the complement: white texels
+            // produce XGen's strict (zero) cross-region weight.
+            inputs[index] = 1.0 - static_cast<double>(
+                sample_xgen_generator_map(map, face, u, v));
+        }
+        std::vector<double> scratch(
+            _region_mask.exact_program.instructions.size());
+        const double value = evaluate_xgen_scalar_expression(
+            _region_mask.exact_program,
+            {inputs, u, v,
+             xgen_face_seed(_description_id, _patch_name, face), 0.0},
+            scratch);
+        if (!std::isfinite(value)) {
+            fail("region mask produced a non-finite value");
+        }
+        return static_cast<float>(std::clamp(value, 0.0, 1.0));
+    }
+
+private:
+    [[nodiscard]] std::uint32_t sample_region(
+        std::uint32_t face, float u, float v) const {
+        if (face >= _region_map->info().face_count) {
+            fail("region PTEX has fewer faces than the patch");
+        }
+        XgenPtexSampleOptions options{};
+        options.filter = XgenPtexFilter::Point;
+        std::array<std::uint32_t, 3u> channels{};
+        for (std::uint32_t channel = 0u; channel < channels.size(); ++channel) {
+            channels[channel] = byte_channel(
+                _region_map->sample(face, u, v, channel, options));
+        }
+        return decode_rgb_id(channels);
+    }
+
+    std::uint32_t _description_id{};
+    std::string _patch_name;
+    std::unique_ptr<XgenPtexMap> _region_map;
+    BoundMapExpression _region_mask;
+    std::vector<std::uint32_t> _guide_regions;
+    std::vector<std::filesystem::path> _paths;
+};
+
 XgenSample root_sequence(std::uint32_t description, std::uint32_t face,
                          std::string_view patch_name,
                          std::uint32_t candidate) noexcept {
@@ -275,8 +411,10 @@ struct GridCellHash {
 
 class GuideSupportIndex {
 public:
-    explicit GuideSupportIndex(const AssetBuildInput &asset)
-        : _guides{asset.guides} {
+    explicit GuideSupportIndex(
+        const AssetBuildInput &asset,
+        const GuideRegionBinding *regions = nullptr)
+        : _guides{asset.guides}, _regions{regions} {
         bool has_metadata = false;
         bool lacks_metadata = false;
         for (const GuideInput &guide : _guides) {
@@ -308,6 +446,7 @@ public:
 
     void gather(Vec3 position, Vec3 normal,
                 const ClassicAlembicAssetInput::SurfaceFace &face,
+                Vec2 uv,
                 std::vector<ClassicGuideInfluence> &result) const {
         result.clear();
         if (!_enabled) { return; }
@@ -340,8 +479,12 @@ public:
                                   face.reference_bounds_max.z + guide_radius)) {
                             continue;
                         }
-                        const float weight =
-                            guide_weight(guide, position, normal);
+                        const float weight = guide_weight(
+                            guide, position, normal) *
+                            (_regions
+                                 ? _regions->guide_scale(
+                                       index, face.face_id, uv.x, uv.y)
+                                 : 1.0f);
                         if (weight > 1.0e-5f) {
                             result.push_back({index, weight});
                         }
@@ -442,6 +585,7 @@ public:
     }
 
     std::span<const GuideInput> _guides;
+    const GuideRegionBinding *_regions{};
     float _cell_size{};
     bool _enabled{};
     std::unordered_map<GridCell, std::vector<std::uint32_t>, GridCellHash> _cells;
@@ -525,7 +669,12 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
         "rand()", rounding_options);
     std::vector<double> inputs(mask.maps.size());
     std::vector<double> scratch(mask.exact_program.instructions.size());
-    const GuideSupportIndex guide_support{surface.asset};
+    const GuideRegionBinding guide_regions{
+        description, description_directory, patch_name, surface.asset.guides};
+    const GuideSupportIndex guide_support{surface.asset, &guide_regions};
+    result.ptex_maps.insert(
+        result.ptex_maps.end(),
+        guide_regions.paths().begin(), guide_regions.paths().end());
     std::vector<ClassicGuideInfluence> guide_influences;
     if (guide_support.enabled()) {
         result.influence_offsets.push_back(0u);
@@ -722,7 +871,7 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
             }
             if (guide_support.enabled()) {
                 guide_support.gather(
-                    reference_position, reference_normal, face,
+                    reference_position, reference_normal, face, uv,
                     guide_influences);
                 if (guide_influences.empty()) {
                     ++result.guide_rejected_count;
@@ -760,15 +909,151 @@ ClassicRootPlan build_xgen_classic_random_root_plan(
     return result;
 }
 
+ClassicRootPlan build_xgen_classic_root_plan(
+    const ClassicDescription &description,
+    const ClassicAlembicAssetInput &surface,
+    const std::filesystem::path &description_directory,
+    const ClassicRootGenerationLimits &limits) {
+    const bool guide_generator = std::any_of(
+        description.bindings.begin(), description.bindings.end(),
+        [](const ClassicBinding &binding) {
+            return binding.role == "Active" &&
+                binding.object == "GuideGenerator";
+        });
+    if (!guide_generator) {
+        return build_xgen_classic_random_root_plan(
+            description, surface, description_directory, limits);
+    }
+    if (limits.max_candidates == 0u || limits.max_roots == 0u) {
+        fail("limits must be nonzero");
+    }
+    if (surface.asset.guides.size() > limits.max_candidates ||
+        surface.asset.guides.size() > limits.max_roots) {
+        fail("GuideGenerator root limit exceeded");
+    }
+
+    ClassicRootPlan result{};
+    const std::size_t count = surface.asset.guides.size();
+    result.roots.reserve(count);
+    result.patch_names.reserve(count);
+    result.reference_positions.reserve(count);
+    result.surface_tangents.reserve(count);
+    result.primitive_ids.reserve(count);
+    result.random_prefixes.reserve(count);
+    result.influence_offsets.reserve(count + 1u);
+    result.influences.reserve(count);
+    result.influence_offsets.push_back(0u);
+    result.candidate_count = count;
+    for (const auto &face : surface.surface_faces) {
+        result.face_stats.push_back({face.face_id, 0u, 0u, 0u});
+    }
+
+    std::size_t guide_index{};
+    const std::uint32_t id = description_id(description);
+    for (const ClassicPatch &patch : description.patches) {
+        for (const ClassicGuide &source_guide : patch.guides) {
+            if (guide_index >= surface.asset.guides.size()) {
+                fail("GuideGenerator imported guide count is inconsistent");
+            }
+            if (source_guide.id >
+                std::numeric_limits<std::uint32_t>::max()) {
+                fail("GuideGenerator guide ID exceeds uint32");
+            }
+            const GuideInput &guide = surface.asset.guides[guide_index];
+            if (guide.triangle_index >= surface.asset.triangles.size() ||
+                guide.surface_face_id != source_guide.face_id) {
+                fail("GuideGenerator guide binding is invalid");
+            }
+            const UInt3 triangle =
+                surface.asset.triangles[guide.triangle_index];
+            if (triangle.x >= surface.asset.positions.size() ||
+                triangle.y >= surface.asset.positions.size() ||
+                triangle.z >= surface.asset.positions.size()) {
+                fail("GuideGenerator guide triangle is invalid");
+            }
+            const Vec2 uv{static_cast<float>(source_guide.patch_u),
+                          static_cast<float>(source_guide.patch_v)};
+            Vec3 position{};
+            Vec3 normal{};
+            Vec3 tangent{};
+            Vec3 reference_position = guide.reference_root_position;
+            if (surface.reference_surface) {
+                const ClassicReferenceSurfaceSample current =
+                    surface.reference_surface->evaluate_current(
+                        patch.name, source_guide.face_id, uv.x, uv.y);
+                const ClassicReferenceSurfaceSample reference =
+                    surface.reference_surface->evaluate(
+                        patch.name, source_guide.face_id, uv.x, uv.y);
+                position = current.position;
+                normal = current.normal;
+                tangent = current.tangent;
+                reference_position = reference.position;
+            } else {
+                const float b0 = 1.0f - guide.barycentric.x -
+                    guide.barycentric.y;
+                position = surface.asset.positions[triangle.x] * b0 +
+                    surface.asset.positions[triangle.y] * guide.barycentric.x +
+                    surface.asset.positions[triangle.z] * guide.barycentric.y;
+                normal = guide.root_normal;
+                tangent = normalize(
+                    surface.asset.positions[triangle.y] -
+                    surface.asset.positions[triangle.x]);
+            }
+            if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+                !std::isfinite(position.z) || !std::isfinite(normal.x) ||
+                !std::isfinite(normal.y) || !std::isfinite(normal.z) ||
+                !std::isfinite(tangent.x) || !std::isfinite(tangent.y) ||
+                !std::isfinite(tangent.z)) {
+                fail("GuideGenerator root evaluation is non-finite");
+            }
+            result.roots.push_back({
+                position, normal, uv, guide.triangle_index,
+                guide.barycentric, source_guide.face_id});
+            result.patch_names.push_back(patch.name);
+            result.reference_positions.push_back(reference_position);
+            result.surface_tangents.push_back(tangent);
+            result.primitive_ids.push_back(
+                static_cast<std::uint32_t>(source_guide.id));
+            const std::array random_arguments{
+                source_guide.patch_u, source_guide.patch_v,
+                xgen_face_seed(id, patch.name, source_guide.face_id)};
+            result.random_prefixes.push_back(
+                xgen_seexpr_hash_prefix(random_arguments));
+            result.influences.push_back({
+                static_cast<std::uint32_t>(guide_index), 1.0f});
+            result.influence_offsets.push_back(
+                static_cast<std::uint32_t>(result.influences.size()));
+            const auto face = std::find_if(
+                result.face_stats.begin(), result.face_stats.end(),
+                [&](const ClassicRootFaceStats &entry) {
+                    return entry.face_id == source_guide.face_id;
+                });
+            if (face != result.face_stats.end()) {
+                ++face->candidate_count;
+                ++face->mask_accepted_count;
+                ++face->root_count;
+            }
+            ++guide_index;
+        }
+    }
+    if (guide_index != surface.asset.guides.size()) {
+        fail("GuideGenerator imported guide count is inconsistent");
+    }
+    return result;
+}
+
 ClassicRootPlan build_xgen_classic_explicit_root_plan(
     const ClassicDescription &description,
     const ClassicAlembicAssetInput &surface,
+    const std::filesystem::path &description_directory,
     std::string_view patch_name,
     std::span<const ClassicExplicitRoot> samples) {
     if (!surface.reference_surface) {
         fail("explicit roots require an imported subdivision surface");
     }
-    GuideSupportIndex guide_support{surface.asset};
+    const GuideRegionBinding guide_regions{
+        description, description_directory, patch_name, surface.asset.guides};
+    GuideSupportIndex guide_support{surface.asset, &guide_regions};
     if (!guide_support.enabled()) {
         fail("explicit roots require Classic guide support metadata");
     }
@@ -780,6 +1065,7 @@ ClassicRootPlan build_xgen_classic_explicit_root_plan(
     result.random_prefixes.reserve(samples.size());
     result.influence_offsets.reserve(samples.size() + 1u);
     result.influence_offsets.push_back(0u);
+    result.ptex_maps = guide_regions.paths();
     std::vector<ClassicGuideInfluence> influences;
     for (const ClassicExplicitRoot &sample : samples) {
         if (!std::isfinite(sample.uv.x) || !std::isfinite(sample.uv.y) ||
@@ -806,9 +1092,10 @@ ClassicRootPlan build_xgen_classic_explicit_root_plan(
             fail("explicit root face is not present in the imported surface");
         }
         guide_support.gather(
-            reference.position, reference.normal, *face, influences);
+            reference.position, reference.normal, *face, sample.uv,
+            influences);
         if (influences.empty()) {
-            fail("explicit root has no associated guide");
+            continue;
         }
         // XPD Location xyz records the surface position at the time the point
         // map was authored. Maya's SESubd evaluation and OpenSubdiv can differ

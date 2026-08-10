@@ -8,6 +8,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -16,11 +17,25 @@ void require(bool condition, const char *message) {
     if (!condition) { throw std::runtime_error(message); }
 }
 
-bool near(float lhs, float rhs) { return std::abs(lhs - rhs) <= 1.0e-6f; }
+bool near_value(float lhs, float rhs) {
+    return std::abs(lhs - rhs) <= 1.0e-6f;
+}
 
 struct TemporaryPtex {
     std::filesystem::path path;
+
+    explicit TemporaryPtex(std::filesystem::path value)
+        : path{std::move(value)} {}
+    TemporaryPtex(const TemporaryPtex &) = delete;
+    TemporaryPtex &operator=(const TemporaryPtex &) = delete;
+    TemporaryPtex(TemporaryPtex &&other) noexcept
+        : path{std::move(other.path)} {
+        other.path.clear();
+    }
+    TemporaryPtex &operator=(TemporaryPtex &&) = delete;
+
     ~TemporaryPtex() {
+        if (path.empty()) { return; }
         std::error_code error;
         std::filesystem::remove(path, error);
     }
@@ -33,8 +48,9 @@ TemporaryPtex write_ptex() {
         std::filesystem::temp_directory_path() /
         ("nanoxgen-ptex-" + std::to_string(stamp) + ".ptx")};
     Ptex::String error;
+    const std::string filename = result.path.string();
     Ptex::PtexPtr<Ptex::PtexWriter> writer{Ptex::PtexWriter::open(
-        result.path.c_str(), Ptex::mt_quad, Ptex::dt_float, 1, -1, 2, error,
+        filename.c_str(), Ptex::mt_quad, Ptex::dt_float, 1, -1, 2, error,
         false)};
     if (!writer) { throw std::runtime_error(error.c_str()); }
     const float pixels[]{0.0f, 1.0f, 2.0f, 3.0f};
@@ -69,11 +85,11 @@ void test_read_and_filter() {
     const std::vector<float> texels = map.read_face_channel(0u);
     require(texels == std::vector<float>({0.0f, 1.0f, 2.0f, 3.0f}),
             "face texel order mismatch");
-    require(near(map.sample(1u, 0.125f, 0.875f), 0.25f),
+    require(near_value(map.sample(1u, 0.125f, 0.875f), 0.25f),
             "constant sample mismatch");
     nanoxgen::XgenPtexSampleOptions point{};
     point.filter = nanoxgen::XgenPtexFilter::Point;
-    require(near(map.sample(0u, 0.25f, 0.25f, 0u, point), 0.0f),
+    require(near_value(map.sample(0u, 0.25f, 0.25f, 0u, point), 0.0f),
             "point sample mismatch");
 }
 

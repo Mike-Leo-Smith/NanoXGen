@@ -123,6 +123,15 @@ bool portable_path_prefix(
     return true;
 }
 
+std::filesystem::path resolve_guide_cache_path(
+    const ClassicFloatRuntimePlan &runtime,
+    const std::filesystem::path &description_directory) {
+    if (!runtime.use_guide_cache) { return {}; }
+    return detail::resolve_classic_description_file(
+        runtime.guide_cache_file, description_directory,
+        "guides.abc", ".abc");
+}
+
 } // namespace
 
 std::filesystem::path resolve_xgen_classic_descriptions_root(
@@ -346,16 +355,38 @@ build_xgen_classic_collection_execution_plan(
                 output.runtime.fallback_reasons.front());
         }
         const std::uint32_t cvs = output.runtime.fx_cv_count;
-        output.surface = build_xgen_classic_alembic_asset_input(
-            description, archive_path);
-        output.roots = build_xgen_classic_random_root_plan(
+        output.deformation_static =
+            xgen_classic_alembic_deformation_is_static(
+                description, archive_path);
+        output.surface = options.frame_sample
+            ? build_xgen_classic_alembic_asset_input(
+                  description, archive_path, *options.frame_sample)
+            : build_xgen_classic_alembic_asset_input(
+                  description, archive_path);
+        if (output.runtime.use_guide_cache) {
+            const std::filesystem::path cache_path =
+                resolve_guide_cache_path(
+                    output.runtime,
+                    resolved_descriptions_root / description.name);
+            output.deformation_static &=
+                xgen_classic_alembic_guide_cache_is_static(cache_path);
+            if (options.frame_sample) {
+                apply_xgen_classic_alembic_guide_cache(
+                    output.surface, cache_path, *options.frame_sample,
+                    output.runtime.guide_cache_wire_names);
+            } else {
+                apply_xgen_classic_alembic_guide_cache(
+                    output.surface, cache_path,
+                    output.runtime.guide_cache_wire_names);
+            }
+        }
+        output.roots = build_xgen_classic_root_plan(
             description, output.surface,
             resolved_descriptions_root / description.name);
-        if (output.roots.roots.empty() ||
-            output.roots.influence_offsets.empty()) {
+        if (output.roots.influence_offsets.empty()) {
             throw std::runtime_error(
                 "Classic collection description '" + description.name +
-                "' has no generated roots");
+                "' has invalid guide associations");
         }
         if (description.patches.empty()) {
             throw std::runtime_error(
@@ -463,6 +494,10 @@ build_xgen_classic_collection_motion_execution_plan(
                 "' has no patch");
         }
         const std::uint32_t cvs = output.runtime.fx_cv_count;
+        const std::filesystem::path guide_cache_path =
+            resolve_guide_cache_path(
+                output.runtime,
+                resolved_descriptions_root / description.name);
         output.samples.resize(sampling.lookup_offsets.size());
         for (std::size_t sample_index = 0u;
              sample_index < output.samples.size(); ++sample_index) {
@@ -471,10 +506,21 @@ build_xgen_classic_collection_motion_execution_plan(
             sample.placement = sampling.placements[sample_index];
             sample.deformation_source_index = sample_index;
         }
+        const bool shared_runtime_frame =
+            !output.runtime.frame_varying ||
+            std::all_of(
+                output.samples.begin() + 1u, output.samples.end(),
+                [&](const auto &sample) {
+                    return sample.lookup_offset ==
+                           output.samples.front().lookup_offset;
+                });
         const bool static_deformation =
-            output.samples.size() > 1u &&
+            output.samples.size() > 1u && shared_runtime_frame &&
             xgen_classic_alembic_deformation_is_static(
-                description, archive_path);
+                description, archive_path) &&
+            (!output.runtime.use_guide_cache ||
+             xgen_classic_alembic_guide_cache_is_static(
+                 guide_cache_path));
         const auto import_sample = [&](std::size_t sample_index) {
             auto &sample = output.samples[sample_index];
             sample.surface = build_xgen_classic_alembic_asset_input(
@@ -482,6 +528,14 @@ build_xgen_classic_collection_motion_execution_plan(
                 {sampling.frame, sample.lookup_offset,
                  sampling.frames_per_second,
                  sampling.interpolation});
+            if (output.runtime.use_guide_cache) {
+                apply_xgen_classic_alembic_guide_cache(
+                    sample.surface, guide_cache_path,
+                    {sampling.frame, sample.lookup_offset,
+                     sampling.frames_per_second,
+                     sampling.interpolation},
+                    output.runtime.guide_cache_wire_names);
+            }
         };
         const auto import_begin = HostPlanClock::now();
         if (static_deformation) {
@@ -498,18 +552,19 @@ build_xgen_classic_collection_motion_execution_plan(
 
         const auto roots_begin = HostPlanClock::now();
         ClassicRootPlan reference_roots =
-            build_xgen_classic_random_root_plan(
+            build_xgen_classic_root_plan(
                 description, output.samples.front().surface,
                 resolved_descriptions_root / description.name);
-        if (reference_roots.roots.empty() ||
-            reference_roots.influence_offsets.empty()) {
+        if (reference_roots.influence_offsets.empty()) {
             throw std::runtime_error(
                 "Classic collection description '" + description.name +
-                "' has no generated roots");
+                "' has invalid guide associations");
         }
         const ClassicRootDeformationTopology deformation_topology =
-            prepare_xgen_classic_root_deformation(
-                reference_roots, output.samples.front().surface);
+            reference_roots.roots.empty()
+            ? ClassicRootDeformationTopology{}
+            : prepare_xgen_classic_root_deformation(
+                  reference_roots, output.samples.front().surface);
         host_plan_profile(profile, description.name, "roots_reference",
                           roots_begin, profile_file);
         const auto runtime_inputs_begin = HostPlanClock::now();
@@ -521,7 +576,8 @@ build_xgen_classic_collection_motion_execution_plan(
 
         // Re-evaluation preserves reference identity and guide association;
         // no RandomGenerator/PTEX work is repeated for later samples.
-        if (!static_deformation && output.samples.size() > 1u) {
+        if (!reference_roots.roots.empty() && !static_deformation &&
+            output.samples.size() > 1u) {
             const auto deform_begin = HostPlanClock::now();
             executor.parallel_for(
                 output.samples.size() - 1u, [&](std::size_t relative_index) {
@@ -579,6 +635,8 @@ build_xgen_classic_collection_motion_execution_plan(
                     continue;
                 }
                 if (equal_bytes(sample.roots.roots, source.roots.roots) &&
+                    (!output.runtime.frame_varying ||
+                     sample.lookup_offset == source.lookup_offset) &&
                     equal_bytes(
                         sample.roots.surface_tangents,
                         source.roots.surface_tangents) &&

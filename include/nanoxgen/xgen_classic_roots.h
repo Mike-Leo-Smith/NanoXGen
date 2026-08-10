@@ -105,6 +105,15 @@ struct ClassicExplicitRoot {
     const std::filesystem::path &description_directory,
     const ClassicRootGenerationLimits &limits = {});
 
+// Select the root planner authored by the description's Active generator.
+// GuideGenerator emits one strand per authored guide; RandomGenerator uses
+// the density/mask path above.
+[[nodiscard]] ClassicRootPlan build_xgen_classic_root_plan(
+    const ClassicDescription &description,
+    const ClassicAlembicAssetInput &surface,
+    const std::filesystem::path &description_directory,
+    const ClassicRootGenerationLimits &limits = {});
+
 // Associate caller-provided patch locations with the description's authored
 // guides. XPD clump points retain face/u/v identity and face-local primitive
 // IDs; their cached authoring-position xyz is validated, while the evaluated
@@ -112,6 +121,7 @@ struct ClassicExplicitRoot {
 [[nodiscard]] ClassicRootPlan build_xgen_classic_explicit_root_plan(
     const ClassicDescription &description,
     const ClassicAlembicAssetInput &surface,
+    const std::filesystem::path &description_directory,
     std::string_view patch_name,
     std::span<const ClassicExplicitRoot> samples);
 

@@ -536,6 +536,15 @@ private:
             ++_program.random_call_count;
             return emit(XgenScalarOp::random, arguments, site_seed);
         }
+        if (name.text == "stray") {
+            arity(0u);
+            const std::array seed_arguments{
+                static_cast<double>(
+                    xgen_expression_seed("strayInternal", "Description")),
+                0.0};
+            return emit(
+                XgenScalarOp::stray, {}, xgen_seexpr_hash(seed_arguments));
+        }
         if (name.text == "min") { arity(2u); return emit(XgenScalarOp::minimum, arguments); }
         if (name.text == "max") { arity(2u); return emit(XgenScalarOp::maximum, arguments); }
         if (name.text == "clamp") { arity(3u); return emit(XgenScalarOp::clamp, arguments); }
@@ -791,7 +800,8 @@ XgenFloatExpressionProgram make_xgen_float_expression_program(
                 "XGen expression immediate cannot be represented as float");
         }
         const std::uint32_t auxiliary =
-            instruction.op == XgenScalarOp::random
+            instruction.op == XgenScalarOp::random ||
+                    instruction.op == XgenScalarOp::stray
                 ? xgen_seexpr_component(instruction.immediate)
                 : instruction.auxiliary;
         result.instructions.push_back({
@@ -913,6 +923,15 @@ double evaluate_xgen_scalar_expression(
             if (instruction.operand_count >= 2u) {
                 value = (operand(1u) - operand(0u)) * value + operand(0u);
             }
+            break;
+        }
+        case XgenScalarOp::stray: {
+            require_arity(0u);
+            const std::array arguments{
+                context.u, context.v, context.face_seed,
+                instruction.immediate};
+            value = xgen_seexpr_hash(arguments) * 100.0 <
+                    context.stray_percentage;
             break;
         }
         case XgenScalarOp::minimum: require_arity(2u); value = std::min(operand(0u), operand(1u)); break;
@@ -1085,6 +1104,23 @@ float evaluate_xgen_scalar_expression_float(
             if (instruction.operand_count >= 2u) {
                 value = (operand(1u) - operand(0u)) * value + operand(0u);
             }
+            break;
+        }
+        case XgenScalarOp::stray: {
+            require_arity(0u);
+            float random{};
+            if (context.has_random_prefix) {
+                const std::uint32_t state =
+                    context.random_prefix * 1664525u +
+                    instruction.auxiliary + 1013904223u;
+                random = xgen_seexpr_hash_finish_float(state);
+            } else {
+                const std::array arguments{
+                    context.u, context.v, context.face_seed,
+                    instruction.immediate};
+                random = xgen_runtime_hash(arguments);
+            }
+            value = random * 100.0f < context.stray_percentage;
             break;
         }
         case XgenScalarOp::minimum: require_arity(2u); value = std::min(operand(0u), operand(1u)); break;

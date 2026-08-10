@@ -27,6 +27,7 @@ int main(int argc, char **argv) try {
     bool face_counts = false;
     std::uint32_t dump_roots = 0u;
     std::optional<std::uint32_t> dump_face;
+    std::optional<std::uint32_t> dump_strand;
     std::optional<Identity> dump_identity;
     std::optional<std::filesystem::path> compare_path;
     std::filesystem::path path;
@@ -40,6 +41,9 @@ int main(int argc, char **argv) try {
         } else if (argument == "--dump-face") {
             if (++index >= argc) { throw std::runtime_error("missing face id"); }
             dump_face = static_cast<std::uint32_t>(std::stoul(argv[index]));
+        } else if (argument == "--dump-strand") {
+            if (++index >= argc) { throw std::runtime_error("missing strand id"); }
+            dump_strand = static_cast<std::uint32_t>(std::stoul(argv[index]));
         } else if (argument == "--dump-identity") {
             if (++index >= argc) {
                 throw std::runtime_error("missing face,u,v identity");
@@ -73,6 +77,7 @@ int main(int argc, char **argv) try {
         throw std::runtime_error(
             "usage: nanoxgen_curve_cache_inspect [--face-counts] "
             "[--dump-roots N] [--dump-face ID] "
+            "[--dump-strand ID] "
             "[--dump-identity FACE,U,V] [--compare CACHE.nxc] CACHE.nxc");
     }
     const nanoxgen::CurveCache cache = nanoxgen::load_curve_cache(path);
@@ -140,6 +145,127 @@ int main(int argc, char **argv) try {
                 }
             }
         }
+        std::uint64_t source_face_mismatches{};
+        float source_max_uv_error{};
+        float source_max_position_error{};
+        std::uint32_t source_max_position_strand{};
+        std::uint32_t source_max_position_cv{};
+        float source_max_radius_error{};
+        double source_position_squared_error{};
+        double source_radius_squared_error{};
+        double source_root_squared_error{};
+        double source_relative_squared_error{};
+        float source_max_root_error{};
+        float source_max_relative_error{};
+        std::uint64_t source_relative_points_over_1e3{};
+        std::uint64_t source_relative_points_over_1e2{};
+        std::uint64_t source_relative_points_over_1e1{};
+        std::uint64_t source_points_over_1e3{};
+        std::uint64_t source_points_over_1e2{};
+        std::uint64_t source_points_over_1e1{};
+        if (topology_matches) {
+            if (identity_comparison) {
+                for (std::uint32_t strand = 0u;
+                     strand < header.strand_count; ++strand) {
+                    source_face_mismatches +=
+                        view.face_ids()[strand] != other.face_ids()[strand];
+                    const nanoxgen::Vec2 a = view.face_uvs()[strand];
+                    const nanoxgen::Vec2 b = other.face_uvs()[strand];
+                    source_max_uv_error = std::max({
+                        source_max_uv_error, std::abs(a.x - b.x),
+                        std::abs(a.y - b.y)});
+                }
+            }
+            std::uint64_t point_offset{};
+            for (std::uint32_t strand = 0u;
+                 strand < header.strand_count; ++strand) {
+                const std::uint32_t count = view.point_counts()[strand];
+                const std::uint32_t root_cv = count > 2u ? 1u : 0u;
+                const nanoxgen::PackedCurvePoint root_a =
+                    view.points()[point_offset + root_cv];
+                const nanoxgen::PackedCurvePoint root_b =
+                    other.points()[point_offset + root_cv];
+                const float root_delta[]{root_a.x - root_b.x,
+                                         root_a.y - root_b.y,
+                                         root_a.z - root_b.z};
+                float root_error{};
+                for (const float error : root_delta) {
+                    source_root_squared_error +=
+                        static_cast<double>(error) * error;
+                    root_error = std::max(root_error, std::abs(error));
+                }
+                source_max_root_error = std::max(
+                    source_max_root_error, root_error);
+                for (std::uint32_t cv = 0u; cv < count; ++cv) {
+                    const std::uint64_t point = point_offset + cv;
+                    const nanoxgen::PackedCurvePoint a = view.points()[point];
+                    const nanoxgen::PackedCurvePoint b = other.points()[point];
+                    const float errors[]{std::abs(a.x - b.x),
+                                         std::abs(a.y - b.y),
+                                         std::abs(a.z - b.z)};
+                    const float point_error = std::max({
+                        errors[0], errors[1], errors[2]});
+                    float relative_error{};
+                    const float relative_delta[]{
+                        (a.x - root_a.x) - (b.x - root_b.x),
+                        (a.y - root_a.y) - (b.y - root_b.y),
+                        (a.z - root_a.z) - (b.z - root_b.z)};
+                    for (std::uint32_t axis = 0u; axis < 3u; ++axis) {
+                        const float error = errors[axis];
+                        source_position_squared_error +=
+                            static_cast<double>(error) * error;
+                        source_relative_squared_error +=
+                            static_cast<double>(relative_delta[axis]) *
+                            relative_delta[axis];
+                        relative_error = std::max(
+                            relative_error, std::abs(relative_delta[axis]));
+                    }
+                    source_max_position_error = std::max(
+                        source_max_position_error, point_error);
+                    if (point_error == source_max_position_error) {
+                        source_max_position_strand = strand;
+                        source_max_position_cv = cv;
+                    }
+                    source_max_relative_error = std::max(
+                        source_max_relative_error, relative_error);
+                    source_points_over_1e3 += point_error > 1.0e-3f;
+                    source_points_over_1e2 += point_error > 1.0e-2f;
+                    source_points_over_1e1 += point_error > 1.0e-1f;
+                    source_relative_points_over_1e3 +=
+                        relative_error > 1.0e-3f;
+                    source_relative_points_over_1e2 +=
+                        relative_error > 1.0e-2f;
+                    source_relative_points_over_1e1 +=
+                        relative_error > 1.0e-1f;
+                    const float radius_error = std::abs(a.radius - b.radius);
+                    source_radius_squared_error +=
+                        static_cast<double>(radius_error) * radius_error;
+                    source_max_radius_error = std::max(
+                        source_max_radius_error, radius_error);
+                }
+                point_offset += count;
+            }
+        }
+        const double source_position_rms = !topology_matches ||
+                header.point_count == 0u
+            ? 0.0
+            : std::sqrt(source_position_squared_error /
+                        (3.0 * static_cast<double>(header.point_count)));
+        const double source_radius_rms = !topology_matches ||
+                header.point_count == 0u
+            ? 0.0
+            : std::sqrt(source_radius_squared_error /
+                        static_cast<double>(header.point_count));
+        const double source_root_rms = !topology_matches ||
+                header.strand_count == 0u
+            ? 0.0
+            : std::sqrt(source_root_squared_error /
+                        (3.0 * static_cast<double>(header.strand_count)));
+        const double source_relative_rms = !topology_matches ||
+                header.point_count == 0u
+            ? 0.0
+            : std::sqrt(source_relative_squared_error /
+                        (3.0 * static_cast<double>(header.point_count)));
         if (!topology_matches || identity_comparison) {
             std::set<Identity> other_identities;
             using CurveRange = std::pair<std::uint64_t, std::uint32_t>;
@@ -295,6 +421,42 @@ int main(int argc, char **argv) try {
                       << (topology_matches ? "true" : "false")
                       << ",\"source_order_identity_matches\":"
                       << (source_order_identity_matches ? "true" : "false")
+                      << ",\"source_order_face_mismatches\":"
+                      << source_face_mismatches
+                      << ",\"source_order_max_uv_error\":"
+                      << source_max_uv_error
+                      << ",\"source_order_max_position_error\":"
+                      << source_max_position_error
+                      << ",\"source_order_max_position_strand\":"
+                      << source_max_position_strand
+                      << ",\"source_order_max_position_cv\":"
+                      << source_max_position_cv
+                      << ",\"source_order_position_rms_error\":"
+                      << source_position_rms
+                      << ",\"source_order_max_root_error\":"
+                      << source_max_root_error
+                      << ",\"source_order_root_rms_error\":"
+                      << source_root_rms
+                      << ",\"source_order_max_relative_position_error\":"
+                      << source_max_relative_error
+                      << ",\"source_order_relative_position_rms_error\":"
+                      << source_relative_rms
+                      << ",\"source_order_max_radius_error\":"
+                      << source_max_radius_error
+                      << ",\"source_order_radius_rms_error\":"
+                      << source_radius_rms
+                      << ",\"source_order_points_over_1e3\":"
+                      << source_points_over_1e3
+                      << ",\"source_order_points_over_1e2\":"
+                      << source_points_over_1e2
+                      << ",\"source_order_points_over_1e1\":"
+                      << source_points_over_1e1
+                      << ",\"source_order_relative_points_over_1e3\":"
+                      << source_relative_points_over_1e3
+                      << ",\"source_order_relative_points_over_1e2\":"
+                      << source_relative_points_over_1e2
+                      << ",\"source_order_relative_points_over_1e1\":"
+                      << source_relative_points_over_1e1
                       << ",\"comparison_order\":\""
                       << (identity_comparison
                               ? "canonical-face-uv" : "unmatched") << '"'
@@ -479,6 +641,25 @@ int main(int argc, char **argv) try {
         }
         if (!found) {
             throw std::runtime_error("curve identity was not found");
+        }
+    }
+    if (dump_strand) {
+        if (*dump_strand >= header.strand_count) {
+            throw std::runtime_error("strand id is out of range");
+        }
+        std::uint64_t point_offset{};
+        for (std::uint32_t strand = 0u; strand < *dump_strand; ++strand) {
+            point_offset += view.point_counts()[strand];
+        }
+        const std::uint32_t point_count = view.point_counts()[*dump_strand];
+        std::cout << "strand " << *dump_strand << " points "
+                  << point_count << '\n';
+        for (std::uint32_t cv = 0u; cv < point_count; ++cv) {
+            const nanoxgen::PackedCurvePoint point =
+                view.points()[point_offset + cv];
+            std::cout << "point " << cv << ' ' << point.x << ' '
+                      << point.y << ' ' << point.z << ' '
+                      << point.radius << '\n';
         }
     }
     return 0;

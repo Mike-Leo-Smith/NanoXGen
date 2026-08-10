@@ -44,7 +44,8 @@ XgenPtexDataType data_type(Ptex::DataType type) {
 struct XgenPtexMap::Impl {
     explicit Impl(const std::filesystem::path &path) {
         Ptex::String error;
-        texture = Ptex::PtexTexture::open(path.c_str(), error, false);
+        const std::string filename = path.string();
+        texture = Ptex::PtexTexture::open(filename.c_str(), error, false);
         if (!texture) {
             fail("cannot open '" + path.string() + "': " + error.c_str());
         }
@@ -115,11 +116,15 @@ float XgenPtexMap::sample(std::uint32_t face, float u, float v,
     const Ptex::PtexFilter::Options ptex_options{
         ptex_filter(options.filter), options.interpolate_mipmaps,
         options.sharpness, options.disable_edge_blending};
+    Ptex::PtexFilter *filter =
+        Ptex::PtexFilter::getFilter(_impl->texture, ptex_options);
+    if (!filter) { fail("cannot create texture filter"); }
     float result{};
-    Ptex::PtexFilter::eval(
-        _impl->texture, ptex_options, &result, static_cast<int>(channel), 1,
+    filter->eval(
+        &result, static_cast<int>(channel), 1,
         static_cast<int>(face), u, v, options.du, 0.0f, 0.0f, options.dv,
         options.width, options.blur);
+    filter->release();
     if (!std::isfinite(result)) { fail("filter produced a non-finite value"); }
     return result;
 }

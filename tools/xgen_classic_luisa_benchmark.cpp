@@ -224,10 +224,13 @@ Options parse_options(int argc, char **argv) {
             result.repeats = parse_u32(argv[index], "repeats");
         }
     }
-    if (result.description.empty() &&
-        (result.reference_nxc || result.output_nxc)) {
+    if (result.description.empty() && result.reference_nxc) {
         throw std::invalid_argument(
-            "collection mode does not accept a single reference/output cache");
+            "collection mode does not accept a single reference cache");
+    }
+    if (result.description.empty() && result.output_nxc && !result.motion) {
+        throw std::invalid_argument(
+            "collection output cache is only supported in motion mode");
     }
     if (result.motion) {
         if (!result.description.empty()) {
@@ -312,6 +315,7 @@ struct ClumpHostData {
     std::vector<luisa::float4> axes;
     std::vector<luisa::float4> frames;
     std::vector<std::uint32_t> runtime;
+    std::vector<float> guide_inputs;
     std::vector<std::uint32_t> strand_guides;
     std::uint32_t guide_count{};
 };
@@ -329,7 +333,10 @@ std::vector<ClumpHostData> prepare_clumps(
             binding.guide_local_axes.size() != binding.guide_axes.size() ||
             binding.guide_local_render_axes.size() !=
                 binding.guide_axes.size() ||
-            binding.guide_spline_lengths.size() != host.guide_count) {
+            binding.guide_spline_lengths.size() != host.guide_count ||
+            binding.guide_runtime_inputs.size() !=
+                static_cast<std::size_t>(host.guide_count) *
+                    binding.guide_runtime_input_stride) {
             throw std::runtime_error(
                 "Classic clump binding has no prepared local render guides");
         }
@@ -378,6 +385,8 @@ std::vector<ClumpHostData> prepare_clumps(
             host.runtime.push_back(binding.guide_face_ids[guide]);
             host.runtime.push_back(binding.guide_random_prefixes[guide]);
         }
+        host.guide_inputs = binding.guide_runtime_inputs;
+        if (host.guide_inputs.empty()) { host.guide_inputs.push_back(0.0f); }
         host.strand_guides = binding.strand_guide_indices;
         result.emplace_back(std::move(host));
     }
@@ -577,10 +586,12 @@ struct CollectionDeviceResources {
     std::vector<Buffer<luisa::float4>> clump_axes;
     std::vector<Buffer<luisa::float4>> clump_frames;
     std::vector<Buffer<std::uint32_t>> clump_runtime;
+    std::vector<Buffer<float>> clump_guide_inputs;
     std::vector<Buffer<std::uint32_t>> clump_strand_guides;
     std::vector<BufferView<luisa::float4>> clump_axis_views;
     std::vector<BufferView<luisa::float4>> clump_frame_views;
     std::vector<BufferView<std::uint32_t>> clump_runtime_views;
+    std::vector<BufferView<float>> clump_guide_input_views;
     std::vector<BufferView<std::uint32_t>> clump_strand_guide_views;
     std::vector<luisa::float4> raw_points;
     std::vector<luisa::float4> raw_states;
@@ -608,6 +619,7 @@ struct PreparedMotionDescription {
     std::vector<float> runtime_upload;
     std::vector<std::uint32_t> clump_guide_counts;
     std::vector<std::vector<std::uint32_t>> clump_runtime;
+    std::vector<std::vector<float>> clump_guide_inputs;
     std::vector<std::vector<std::uint32_t>> clump_strand_guides;
     std::vector<PreparedMotionSample> samples;
 };
@@ -686,10 +698,12 @@ PreparedMotionDescription prepare_motion_description(
         if (!have_clump_invariants) {
             result.clump_guide_counts.reserve(sample.clumps.size());
             result.clump_runtime.reserve(sample.clumps.size());
+            result.clump_guide_inputs.reserve(sample.clumps.size());
             result.clump_strand_guides.reserve(sample.clumps.size());
             for (const ClumpHostData &clump : sample.clumps) {
                 result.clump_guide_counts.push_back(clump.guide_count);
                 result.clump_runtime.push_back(clump.runtime);
+                result.clump_guide_inputs.push_back(clump.guide_inputs);
                 result.clump_strand_guides.push_back(
                     clump.strand_guides);
             }
@@ -706,6 +720,9 @@ PreparedMotionDescription prepare_motion_description(
                     !equal_vector_bytes(
                         sample.clumps[module].runtime,
                         result.clump_runtime[module]) ||
+                    !equal_vector_bytes(
+                        sample.clumps[module].guide_inputs,
+                        result.clump_guide_inputs[module]) ||
                     !equal_vector_bytes(
                         sample.clumps[module].strand_guides,
                         result.clump_strand_guides[module])) {
@@ -730,8 +747,10 @@ struct MotionInvariantDeviceResources {
     Buffer<luisa::float3> noise_domain_positions;
     Buffer<luisa::float4> shared_points_scratch;
     std::vector<Buffer<std::uint32_t>> clump_runtime;
+    std::vector<Buffer<float>> clump_guide_inputs;
     std::vector<Buffer<std::uint32_t>> clump_strand_guides;
     std::vector<BufferView<std::uint32_t>> clump_runtime_views;
+    std::vector<BufferView<float>> clump_guide_input_views;
     std::vector<BufferView<std::uint32_t>> clump_strand_guide_views;
 };
 
@@ -891,12 +910,18 @@ int run_collection_motion_mode(
             invariant.clump_runtime.emplace_back(
                 device.create_buffer<std::uint32_t>(
                     host.clump_runtime[module].size()));
+            invariant.clump_guide_inputs.emplace_back(
+                device.create_buffer<float>(
+                    host.clump_guide_inputs[module].size()));
             invariant.clump_strand_guides.emplace_back(
                 device.create_buffer<std::uint32_t>(
                     host.clump_strand_guides[module].size()));
         }
         for (const auto &buffer : invariant.clump_runtime) {
             invariant.clump_runtime_views.push_back(buffer.view());
+        }
+        for (const auto &buffer : invariant.clump_guide_inputs) {
+            invariant.clump_guide_input_views.push_back(buffer.view());
         }
         for (const auto &buffer : invariant.clump_strand_guides) {
             invariant.clump_strand_guide_views.push_back(buffer.view());
@@ -960,6 +985,8 @@ int run_collection_motion_mode(
              module < host.clump_runtime.size(); ++module) {
             stream << invariant.clump_runtime[module].copy_from(
                           host.clump_runtime[module].data())
+                   << invariant.clump_guide_inputs[module].copy_from(
+                          host.clump_guide_inputs[module].data())
                    << invariant.clump_strand_guides[module].copy_from(
                           host.clump_strand_guides[module].data());
         }
@@ -1014,7 +1041,11 @@ int run_collection_motion_mode(
                 sample_gpu.states.view(), sample_gpu.clump_axis_views,
                 sample_gpu.clump_frame_views,
                 gpu.invariant.clump_runtime_views,
-                gpu.invariant.clump_strand_guide_views});
+                gpu.invariant.clump_guide_input_views,
+                gpu.invariant.clump_strand_guide_views,
+                static_cast<float>(
+                    options.motion_sampling.frame +
+                    host.samples[sample_index].lookup_offset)});
         }
     }
 
@@ -1088,6 +1119,27 @@ int run_collection_motion_mode(
     }
     const Clock::time_point first_end = Clock::now();
 
+    if (options.output_nxc) {
+        if (prepared.empty() || outputs.empty() || outputs.front().empty()) {
+            throw std::runtime_error(
+                "Classic motion collection produced no output cache sample");
+        }
+        const auto &host = prepared.front();
+        const auto &gpu = *outputs.front().at(
+            host.samples.front().source_index);
+        std::vector<std::uint32_t> face_ids(gpu.strand_count);
+        std::vector<nanoxgen::Vec2> face_uvs(gpu.strand_count);
+        for (std::uint32_t strand = 0u; strand < gpu.strand_count; ++strand) {
+            face_ids[strand] = gpu.roots[strand].surface_face_id;
+            face_uvs[strand] = gpu.roots[strand].uv;
+        }
+        nanoxgen::save_curve_cache(
+            nanoxgen::build_curve_cache(
+                {gpu.point_counts, gpu.points, {}, {}, face_uvs, face_ids,
+                 {}, {}}),
+            *options.output_nxc);
+    }
+
     for (std::uint32_t repeat = 0u; repeat < options.warmup; ++repeat) {
         encode_collection();
         stream << synchronize();
@@ -1156,7 +1208,11 @@ int run_collection_motion_mode(
                             host.topology.primitive_ids,
                             sample.clump_data,
                             host.runtime_inputs.values,
-                            host.topology.reference_positions, true);
+                            host.topology.reference_positions, true,
+                            nullptr,
+                            static_cast<float>(
+                                options.motion_sampling.frame +
+                                sample.lookup_offset));
                     }
                     nanoxgen::make_xgen_classic_curves_world_space(cpu);
                     nanoxgen::add_xgen_classic_renderer_endpoints(cpu);
@@ -1366,6 +1422,8 @@ int run_collection_mode(
                 device.create_buffer<luisa::float4>(clump.frames.size()));
             gpu.clump_runtime.emplace_back(
                 device.create_buffer<std::uint32_t>(clump.runtime.size()));
+            gpu.clump_guide_inputs.emplace_back(
+                device.create_buffer<float>(clump.guide_inputs.size()));
             gpu.clump_strand_guides.emplace_back(
                 device.create_buffer<std::uint32_t>(
                     clump.strand_guides.size()));
@@ -1378,6 +1436,9 @@ int run_collection_mode(
         }
         for (const auto &buffer : gpu.clump_runtime) {
             gpu.clump_runtime_views.push_back(buffer.view());
+        }
+        for (const auto &buffer : gpu.clump_guide_inputs) {
+            gpu.clump_guide_input_views.push_back(buffer.view());
         }
         for (const auto &buffer : gpu.clump_strand_guides) {
             gpu.clump_strand_guide_views.push_back(buffer.view());
@@ -1408,6 +1469,8 @@ int run_collection_mode(
                           host.clumps[module].frames.data())
                    << gpu.clump_runtime[module].copy_from(
                           host.clumps[module].runtime.data())
+                   << gpu.clump_guide_inputs[module].copy_from(
+                          host.clumps[module].guide_inputs.data())
                    << gpu.clump_strand_guides[module].copy_from(
                           host.clumps[module].strand_guides.data());
         }
@@ -1428,6 +1491,7 @@ int run_collection_mode(
                     gpu.points_a.view(), gpu.points_b.view(),
                     gpu.states.view(), gpu.clump_axis_views,
                     gpu.clump_frame_views, gpu.clump_runtime_views,
+                    gpu.clump_guide_input_views,
                     gpu.clump_strand_guide_views};
             pipeline.encode(
                 stream, index, bindings,
@@ -1558,7 +1622,8 @@ int run_collection_mode(
 int main(int argc, char **argv) try {
     const Options options = parse_options(argc, argv);
     const Clock::time_point process_begin = Clock::now();
-    Context context{options.runtime_directory.c_str()};
+    const std::string runtime_directory = options.runtime_directory.string();
+    Context context{runtime_directory.c_str()};
     Device device = context.create_device(options.backend.c_str());
     if (device.backend_name() != options.backend) {
         throw std::runtime_error("Luisa loaded an unexpected backend");
@@ -1615,22 +1680,22 @@ int main(int argc, char **argv) try {
     using NoiseShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
         ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
         Buffer<luisa::float3>, Buffer<luisa::float3>,
-        Buffer<luisa::float4>>;
+        Buffer<luisa::float4>, float>;
     using CutShader = Shader1D<Buffer<luisa::float4>, Buffer<luisa::float4>,
         ByteBuffer, Buffer<std::uint32_t>, Buffer<float>,
-        Buffer<luisa::float4>>;
+        Buffer<luisa::float4>, float>;
     using ClumpShader = Shader1D<
         Buffer<luisa::float4>, Buffer<luisa::float4>, ByteBuffer,
         Buffer<std::uint32_t>, Buffer<float>, Buffer<luisa::float4>,
         Buffer<luisa::float4>, Buffer<luisa::float4>,
-        Buffer<std::uint32_t>, Buffer<std::uint32_t>>;
+        Buffer<std::uint32_t>, Buffer<float>, Buffer<std::uint32_t>, float>;
 
     const nanoxgen::ClassicAlembicAssetInput imported =
         nanoxgen::build_xgen_classic_alembic_asset_input(
             *description, options.archive);
     const Clock::time_point alembic_import_end = Clock::now();
     const nanoxgen::ClassicRootPlan root_plan =
-        nanoxgen::build_xgen_classic_random_root_plan(
+        nanoxgen::build_xgen_classic_root_plan(
             *description, imported,
             descriptions_root / description->name);
     const Clock::time_point root_plan_end = Clock::now();
@@ -1738,6 +1803,8 @@ int main(int argc, char **argv) try {
             host.runtime.push_back(binding.guide_face_ids[guide]);
             host.runtime.push_back(binding.guide_random_prefixes[guide]);
         }
+        host.guide_inputs = binding.guide_runtime_inputs;
+        if (host.guide_inputs.empty()) { host.guide_inputs.push_back(0.0f); }
         host.strand_guides = binding.strand_guide_indices;
         clump_host.emplace_back(std::move(host));
     }
@@ -1855,10 +1922,12 @@ int main(int argc, char **argv) try {
     std::vector<Buffer<luisa::float4>> clump_axes;
     std::vector<Buffer<luisa::float4>> clump_frames;
     std::vector<Buffer<std::uint32_t>> clump_runtime;
+    std::vector<Buffer<float>> clump_guide_inputs;
     std::vector<Buffer<std::uint32_t>> clump_strand_guides;
     clump_axes.reserve(clump_host.size());
     clump_frames.reserve(clump_host.size());
     clump_runtime.reserve(clump_host.size());
+    clump_guide_inputs.reserve(clump_host.size());
     clump_strand_guides.reserve(clump_host.size());
     for (const ClumpHostData &host : clump_host) {
         clump_axes.emplace_back(
@@ -1867,6 +1936,8 @@ int main(int argc, char **argv) try {
             device.create_buffer<luisa::float4>(host.frames.size()));
         clump_runtime.emplace_back(
             device.create_buffer<std::uint32_t>(host.runtime.size()));
+        clump_guide_inputs.emplace_back(
+            device.create_buffer<float>(host.guide_inputs.size()));
         clump_strand_guides.emplace_back(
             device.create_buffer<std::uint32_t>(host.strand_guides.size()));
     }
@@ -1933,6 +2004,8 @@ int main(int argc, char **argv) try {
                       clump_host[module].frames.data())
                << clump_runtime[module].copy_from(
                       clump_host[module].runtime.data())
+               << clump_guide_inputs[module].copy_from(
+                      clump_host[module].guide_inputs.data())
                << clump_strand_guides[module].copy_from(
                       clump_host[module].strand_guides.data());
     }
@@ -1944,7 +2017,8 @@ int main(int argc, char **argv) try {
         stream << base(roots, offsets, influences, guides, a)
                       .dispatch(static_cast<std::uint32_t>(strand_count));
         if (options.base_only) { return; }
-        stream << primitive(a, b, roots, runtime_data, ptex_buffer, states)
+        stream << primitive(
+                      a, b, roots, runtime_data, ptex_buffer, states, 0.0f)
                       .dispatch(static_cast<std::uint32_t>(strand_count));
         bool source_is_b = true;
         for (const nanoxgen::ClassicFloatEffect effect : runtime.effects) {
@@ -1955,32 +2029,38 @@ int main(int argc, char **argv) try {
                              clump_axes[effect.module_index],
                              clump_frames[effect.module_index],
                              clump_runtime[effect.module_index],
-                             clump_strand_guides[effect.module_index])
+                             clump_guide_inputs[effect.module_index],
+                             clump_strand_guides[effect.module_index], 0.0f)
                     : shader(a, b, roots, runtime_data, ptex_buffer, states,
                              clump_axes[effect.module_index],
                              clump_frames[effect.module_index],
                              clump_runtime[effect.module_index],
-                             clump_strand_guides[effect.module_index]))
+                             clump_guide_inputs[effect.module_index],
+                             clump_strand_guides[effect.module_index], 0.0f))
                     .dispatch(static_cast<std::uint32_t>(strand_count));
             } else if (effect.type == nanoxgen::ClassicFloatEffectType::Noise) {
                 auto &shader = noises.at(effect.module_index).value();
                 stream << (source_is_b
                     ? shader(b, a, roots, runtime_data, ptex_buffer,
-                             tangent_buffer, noise_domain_buffer, states)
+                             tangent_buffer, noise_domain_buffer, states,
+                             0.0f)
                     : shader(a, b, roots, runtime_data, ptex_buffer,
-                             tangent_buffer, noise_domain_buffer, states))
+                             tangent_buffer, noise_domain_buffer, states,
+                             0.0f))
                     .dispatch(static_cast<std::uint32_t>(strand_count));
             } else {
                 auto &shader = cuts.at(effect.module_index).value();
                 stream << (source_is_b
-                    ? shader(b, a, roots, runtime_data, ptex_buffer, states)
-                    : shader(a, b, roots, runtime_data, ptex_buffer, states))
+                    ? shader(
+                        b, a, roots, runtime_data, ptex_buffer, states, 0.0f)
+                    : shader(
+                        a, b, roots, runtime_data, ptex_buffer, states, 0.0f))
                     .dispatch(static_cast<std::uint32_t>(strand_count));
             }
             source_is_b = !source_is_b;
         }
         stream << width(final_is_a ? a : b, roots, runtime_data,
-                        ptex_buffer, states)
+                        ptex_buffer, states, 0.0f)
                       .dispatch(static_cast<std::uint32_t>(strand_count));
     };
 

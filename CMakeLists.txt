@@ -254,6 +254,13 @@ if(NANOXGEN_ENABLE_ALEMBIC)
   find_package(Alembic CONFIG REQUIRED)
   find_package(TBB CONFIG REQUIRED)
   find_package(OpenSubdiv CONFIG REQUIRED)
+  if(TARGET OpenSubdiv::osdCPU)
+    set(NANOXGEN_OPENSUBDIV_TARGET OpenSubdiv::osdCPU)
+  elseif(TARGET OpenSubdiv::osdCPU_static)
+    set(NANOXGEN_OPENSUBDIV_TARGET OpenSubdiv::osdCPU_static)
+  else()
+    message(FATAL_ERROR "No supported OpenSubdiv CPU target was found")
+  endif()
   add_library(nanoxgen_classic_alembic STATIC src/xgen_classic_alembic.cpp)
   add_library(NanoXGen::nanoxgen_classic_alembic ALIAS nanoxgen_classic_alembic)
   target_include_directories(
@@ -261,7 +268,7 @@ if(NANOXGEN_ENABLE_ALEMBIC)
   target_compile_features(nanoxgen_classic_alembic PUBLIC cxx_std_20)
   target_link_libraries(
     nanoxgen_classic_alembic
-    PUBLIC nanoxgen Alembic::Alembic OpenSubdiv::osdCPU)
+    PUBLIC nanoxgen Alembic::Alembic ${NANOXGEN_OPENSUBDIV_TARGET})
   target_link_libraries(
     nanoxgen_classic_alembic PRIVATE nanoxgen_build_options)
   if(MSVC)
@@ -287,13 +294,20 @@ endif()
 
 if(NANOXGEN_ENABLE_PTEX)
   find_package(Ptex CONFIG REQUIRED)
+  if(TARGET Ptex::Ptex_dynamic)
+    set(NANOXGEN_PTEX_TARGET Ptex::Ptex_dynamic)
+  elseif(TARGET Ptex::Ptex_static)
+    set(NANOXGEN_PTEX_TARGET Ptex::Ptex_static)
+  else()
+    message(FATAL_ERROR "No supported Ptex target was found")
+  endif()
   add_library(nanoxgen_ptex STATIC src/xgen_ptex.cpp)
   add_library(NanoXGen::nanoxgen_ptex ALIAS nanoxgen_ptex)
   target_include_directories(
     nanoxgen_ptex PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_compile_features(nanoxgen_ptex PUBLIC cxx_std_20)
   target_link_libraries(
-    nanoxgen_ptex PUBLIC nanoxgen Ptex::Ptex_dynamic)
+    nanoxgen_ptex PUBLIC nanoxgen ${NANOXGEN_PTEX_TARGET})
   target_link_libraries(nanoxgen_ptex PRIVATE nanoxgen_build_options)
   if(MSVC)
     target_compile_options(nanoxgen_ptex PRIVATE /W4)
@@ -310,7 +324,18 @@ if(NANOXGEN_ENABLE_PTEX)
 endif()
 
 if(NANOXGEN_ENABLE_ALEMBIC AND NANOXGEN_ENABLE_PTEX)
+  set(NANOXGEN_SEEXPR_SOURCES
+    src/xgen_color_expression.cpp
+    third_party/seexpr1/SeCurve.cpp
+    third_party/seexpr1/SeExprBuiltins.cpp
+    third_party/seexpr1/SeExpression.cpp
+    third_party/seexpr1/SeExprFunc.cpp
+    third_party/seexpr1/SeExprNode.cpp
+    third_party/seexpr1/SeNoise.cpp
+    third_party/seexpr1/generated/SeExprParser.cpp
+    third_party/seexpr1/generated/SeExprParserLex.cpp)
   add_library(nanoxgen_classic_native STATIC
+    ${NANOXGEN_SEEXPR_SOURCES}
     src/xgen_classic_collection.cpp
     src/xgen_classic_clump.cpp
     src/xgen_classic_ptex.cpp
@@ -318,8 +343,15 @@ if(NANOXGEN_ENABLE_ALEMBIC AND NANOXGEN_ENABLE_PTEX)
     src/xgen_samples.cpp)
   add_library(NanoXGen::nanoxgen_classic_native ALIAS nanoxgen_classic_native)
   target_include_directories(
-    nanoxgen_classic_native PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    nanoxgen_classic_native
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/seexpr1
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/seexpr1/generated)
   target_compile_features(nanoxgen_classic_native PUBLIC cxx_std_20)
+  target_compile_definitions(
+    nanoxgen_classic_native PRIVATE
+    $<$<PLATFORM_ID:Windows>:SEEXPR_WIN32>)
   target_link_libraries(nanoxgen_classic_native PUBLIC
     nanoxgen_classic_alembic nanoxgen_ptex)
   target_link_libraries(nanoxgen_classic_native PRIVATE nanoxgen_build_options)
@@ -340,6 +372,13 @@ if(NANOXGEN_ENABLE_ALEMBIC AND NANOXGEN_ENABLE_PTEX)
   target_link_libraries(
     nanoxgen_xgen_classic_motion PRIVATE nanoxgen_classic_native)
   if(NANOXGEN_BUILD_TESTS)
+    add_executable(
+      nanoxgen_color_expression_tests tests/color_expression_test.cpp)
+    target_link_libraries(
+      nanoxgen_color_expression_tests PRIVATE nanoxgen_classic_native)
+    add_test(
+      NAME nanoxgen_color_expression_tests
+      COMMAND nanoxgen_color_expression_tests)
     add_executable(nanoxgen_classic_root_tests tests/classic_root_test.cpp)
     target_link_libraries(
       nanoxgen_classic_root_tests PRIVATE nanoxgen_classic_native)
@@ -413,7 +452,7 @@ if(NANOXGEN_BUILD_AUTODESK_BRIDGES)
   target_link_libraries(nanoxgen_xgen_classic_typed PRIVATE nanoxgen XGen::XGen)
   target_compile_features(nanoxgen_xgen_classic_typed PRIVATE cxx_std_20)
   add_executable(nanoxgen_xgen_patch_oracle tools/xgen_patch_oracle.cpp)
-  target_link_libraries(nanoxgen_xgen_patch_oracle PRIVATE XGen::XGen)
+  target_link_libraries(nanoxgen_xgen_patch_oracle PRIVATE nanoxgen XGen::XGen)
   target_compile_features(nanoxgen_xgen_patch_oracle PRIVATE cxx_std_20)
   add_library(nanoxgen_maya_xgen_cache MODULE tools/maya_xgen_cache.cpp)
   target_link_libraries(
