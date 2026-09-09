@@ -828,9 +828,28 @@ ClassicRuntimeClumpKernel make_classic_runtime_clump_kernel(
                     (guide_world_root - strand_root)
                 : guide_axes.read(guide_first + cv).xyz();
             const Float3 rebuilt_cv = rebuilt.read(cv);
-            const Float3 blended = rebuilt_cv +
-                (goal - rebuilt_cv) *
-                    (mask * amount * (1.0f - 2.0f * scale));
+            const Float full_clump =
+                mask * amount * (1.0f - 2.0f * scale);
+            Float3 offset = rebuilt_cv - goal;
+            if (clump.volumize) {
+                const Float3 guide_point = root_relative
+                    ? goal + strand_root
+                    : goal;
+                const Float3 space_curve = cross(
+                    cross(guide_point, offset), guide_point);
+                const Float space_length_squared = dot(
+                    space_curve, space_curve);
+                const Float offset_length = sqrt(dot(offset, offset));
+                const Float3 round_offset = space_curve *
+                    (offset_length /
+                     sqrt(max(space_length_squared, 1.0e-20f)));
+                const Float blend = pow(abs(full_clump), 0.7f);
+                offset = ite(
+                    space_length_squared > 1.0e-20f,
+                    offset * (1.0f - blend) + round_offset * blend,
+                    offset);
+            }
+            const Float3 blended = goal + offset * (1.0f - full_clump);
             const Float3 clumped = blended + noise_displacements.read(cv);
             const Float3 current = source.read(first + cv).xyz();
             // XGen leaves the root CV fixed during ClumpingFX. Besides

@@ -498,8 +498,56 @@ void test_float_runtime_clump() {
                 plan.effects.size() == 1u &&
                 plan.effects[0].type == ClassicFloatEffectType::Clump,
             "basic ClumpingFX module did not lower");
+    require(!plan.clumps[0].volumize,
+            "disabled ClumpingFX volumize metadata mismatch");
     require(!plan.stray_percentage,
             "unused stray percentage was retained in the runtime plan");
+
+    ClassicDescription volumized_description = description;
+    for (ClassicAttribute &attribute :
+         volumized_description.objects.back().attributes) {
+        if (attribute.name == "clump") { attribute.value = "0.25"; }
+        if (attribute.name == "clumpVolumize") { attribute.value = "true"; }
+    }
+    const ClassicFloatRuntimePlan volumized_plan =
+        compile_xgen_classic_float_runtime_plan(volumized_description);
+    require(volumized_plan.lowering_complete() &&
+                volumized_plan.clumps.size() == 1u &&
+                volumized_plan.clumps[0].volumize,
+            "enabled ClumpingFX volumize did not lower");
+    PackedGeneratedCurves volumized_curves{};
+    volumized_curves.strand_count = 1u;
+    volumized_curves.cvs_per_strand = 3u;
+    volumized_curves.point_counts = {3u};
+    volumized_curves.roots.resize(1u);
+    volumized_curves.points = {{11.0f, 0.0f, 1.0f, 0.1f},
+                               {11.0f, 1.0f, 1.0f, 0.1f},
+                               {11.0f, 2.0f, 1.0f, 0.1f}};
+    ClassicClumpRuntimeData volumized_data{};
+    volumized_data.module_name = "Clumping1";
+    volumized_data.cvs_per_guide = 3u;
+    volumized_data.guide_axes = {{10.0f, 0.0f, 0.0f},
+                                  {10.0f, 2.0f, 0.0f},
+                                  {10.0f, 4.0f, 0.0f}};
+    volumized_data.guide_normals = {{0.0f, 1.0f, 0.0f}};
+    volumized_data.guide_tangents = {{1.0f, 0.0f, 0.0f}};
+    volumized_data.guide_uvs = {{0.0f, 0.0f}};
+    volumized_data.guide_face_ids = {0u};
+    volumized_data.guide_random_prefixes = {0u};
+    volumized_data.strand_guide_indices = {0u};
+    const std::array volumized_bindings{std::move(volumized_data)};
+    apply_xgen_classic_float_runtime_plan_cpu(
+        volumized_curves, volumized_plan, 1.0f, {}, {}, {},
+        volumized_bindings);
+    require(
+        std::abs(volumized_curves.points[1].x - 10.539364f) < 2.0e-5f &&
+            std::abs(volumized_curves.points[1].y - 1.166391f) < 2.0e-5f &&
+            std::abs(volumized_curves.points[1].z - 0.784568f) < 2.0e-5f &&
+            std::abs(volumized_curves.points[2].x - 10.701679f) < 2.0e-5f &&
+            std::abs(volumized_curves.points[2].y - 2.478703f) < 2.0e-5f &&
+            std::abs(volumized_curves.points[2].z - 0.750820f) < 2.0e-5f,
+        "ClumpingFX volumize geometry mismatch");
+
     description.attributes.push_back({"strayPercentage", "15", 21u});
     for (ClassicAttribute &attribute : description.objects.back().attributes) {
         if (attribute.name == "noise") {

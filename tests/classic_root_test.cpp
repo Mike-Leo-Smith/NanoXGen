@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -702,6 +703,36 @@ void test_description_root_resolution() {
         nanoxgen::resolve_xgen_classic_descriptions_root(
             collection, project / "rabbit.xgen", expected) == expected,
         "explicit description root was not preserved");
+
+    const std::filesystem::path scenes = project / "scenes";
+    std::filesystem::create_directories(scenes);
+    {
+        std::ofstream workspace{project / "workspace.mel"};
+        workspace << "workspace -fr \"scene\" \"scenes\";\n";
+        require(static_cast<bool>(workspace),
+                "cannot write Maya workspace marker fixture");
+    }
+    const std::filesystem::path shadow =
+        scenes / "xgen" / "collections" / "rabbit";
+    std::filesystem::create_directories(shadow / "body");
+    std::filesystem::create_directories(shadow / "eyelash");
+    collection.palette_attributes[0u].value = "rabbit";
+    require(
+        nanoxgen::resolve_xgen_classic_descriptions_root(
+            collection, scenes / "rabbit.xgen", scenes) == expected,
+        "${PROJECT} did not use the relocated Maya project root");
+
+    const std::filesystem::path override_project = project / "override";
+    const std::filesystem::path override_root =
+        override_project / "xgen" / "collections" / "rabbit";
+    std::filesystem::create_directories(override_root / "body");
+    std::filesystem::create_directories(override_root / "eyelash");
+    require(
+        nanoxgen::resolve_xgen_classic_descriptions_root(
+            collection, scenes / "rabbit.xgen", override_project) ==
+            override_root,
+        "explicit project root lost priority to Maya workspace discovery");
+    collection.palette_attributes[0u].value = "authored_palette";
 
     collection.palette_attributes[1u].value.clear();
     collection.palette_attributes[2u].value =

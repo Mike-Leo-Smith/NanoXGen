@@ -119,7 +119,8 @@ void validate_xgen_classic_motion_sampling(
 // Resolve either an explicit collection-data root or a project root to the
 // directory whose immediate children are Classic descriptions. Relocated
 // xgDataPath/xgProjectPath pairs and mixed Windows/Unix separators are
-// supported without a recursive filesystem scan.
+// supported without a recursive filesystem scan. When the supplied root is
+// the collection directory, the nearest Maya workspace.mel defines PROJECT.
 [[nodiscard]] std::filesystem::path
 resolve_xgen_classic_descriptions_root(
     const ClassicCollection &collection,

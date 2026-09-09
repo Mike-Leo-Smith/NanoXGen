@@ -507,8 +507,7 @@ bool parse_bool_attribute(
         return false;
     }
     fallback_reasons.push_back(
-        "SplinePrimitive " + std::string{label} +
-        " must be true or false");
+        std::string{label} + " must be true or false");
     return fallback;
 }
 
@@ -1242,10 +1241,10 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
         "fxCVCount");
     result.use_guide_cache = parse_bool_attribute(
         find_classic_attribute(primitive->attributes, "useCache"), false,
-        "useCache", result.fallback_reasons);
+        "SplinePrimitive useCache", result.fallback_reasons);
     result.guide_cache_live_mode = parse_bool_attribute(
         find_classic_attribute(primitive->attributes, "liveMode"), true,
-        "liveMode", result.fallback_reasons);
+        "SplinePrimitive liveMode", result.fallback_reasons);
     if (const ClassicAttribute *cache_file = find_classic_attribute(
             primitive->attributes, "cacheFileName")) {
         result.guide_cache_file = cache_file->value;
@@ -1362,13 +1361,10 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
                 throw std::runtime_error(
                     "ClumpingFXModule useControlMaps must be zero or one");
             }
-            const ClassicAttribute *volumize = find_classic_attribute(
-                object.attributes, "clumpVolumize");
-            if (volumize && volumize->value != "false" &&
-                volumize->value != "False" && volumize->value != "0") {
-                if (!unsupported.empty()) { unsupported += ", "; }
-                unsupported += "clumpVolumize";
-            }
+            const bool volumize = parse_bool_attribute(
+                find_classic_attribute(object.attributes, "clumpVolumize"),
+                false, "ClumpingFXModule clumpVolumize",
+                result.fallback_reasons);
             if (!unsupported.empty()) {
                 result.fallback_reasons.push_back(
                     "ClumpingFXModule " + name +
@@ -1392,6 +1388,7 @@ ClassicFloatRuntimePlan compile_xgen_classic_float_runtime_plan(
                         object, required_attribute(object, "noiseFrequency")),
                     compile_bound(
                         object, required_attribute(object, "noiseCorrelation")),
+                    volumize,
                     use_control_maps != 0u};
                 bool valid = true;
                 valid &= validate_inputs(clump.mask, result.fallback_reasons);
@@ -1975,8 +1972,29 @@ void apply_xgen_classic_float_runtime_plan_cpu(
                             : render_axis[cv] - coordinate_origin;
                         const Vec3 current{
                             points[cv].x, points[cv].y, points[cv].z};
-                        const Vec3 output = current + (goal - current) *
-                            (mask * amount * (1.0f - 2.0f * scale));
+                        const float full_clump =
+                            mask * amount * (1.0f - 2.0f * scale);
+                        Vec3 offset = current - goal;
+                        if (clump.volumize) {
+                            const Vec3 guide_point = goal + coordinate_origin;
+                            const Vec3 space_curve = cross(
+                                cross(guide_point, offset), guide_point);
+                            const float space_length_squared =
+                                length_squared(space_curve);
+                            if (space_length_squared > 1.0e-20f) {
+                                const float offset_length =
+                                    std::sqrt(length_squared(offset));
+                                const Vec3 round_offset = space_curve *
+                                    (offset_length /
+                                     std::sqrt(space_length_squared));
+                                const float blend = std::pow(
+                                    std::abs(full_clump), 0.7f);
+                                offset = offset * (1.0f - blend) +
+                                    round_offset * blend;
+                            }
+                        }
+                        const Vec3 output =
+                            goal + offset * (1.0f - full_clump);
                         points[cv].x = output.x;
                         points[cv].y = output.y;
                         points[cv].z = output.z;
