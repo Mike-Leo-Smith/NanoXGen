@@ -75,6 +75,23 @@ bool descriptions_exist(
     return !collection.descriptions.empty();
 }
 
+std::filesystem::path find_maya_project_root(
+    std::filesystem::path directory) {
+    std::error_code error;
+    directory = directory.lexically_normal();
+    while (!directory.empty()) {
+        error.clear();
+        if (std::filesystem::is_regular_file(
+                directory / "workspace.mel", error) && !error) {
+            return directory;
+        }
+        const std::filesystem::path parent = directory.parent_path();
+        if (parent == directory) { break; }
+        directory = parent;
+    }
+    return {};
+}
+
 std::string portable_path_string(std::string_view value) {
     std::string result{value};
     for (char &character : result) {
@@ -159,6 +176,14 @@ std::filesystem::path resolve_xgen_classic_descriptions_root(
         }
     };
     add(root_or_project);
+    const std::filesystem::path collection_directory =
+        collection_path.parent_path().lexically_normal();
+    const std::filesystem::path requested_root =
+        root_or_project.lexically_normal();
+    const std::filesystem::path maya_project =
+        find_maya_project_root(collection_directory);
+    const bool collection_root_requested =
+        requested_root == collection_directory;
 
     const ClassicAttribute *palette_name =
         find_classic_attribute(collection.palette_attributes, "name");
@@ -167,8 +192,14 @@ std::filesystem::path resolve_xgen_classic_descriptions_root(
         const auto relative =
             std::filesystem::path{"xgen"} / "collections" /
             detail::classic_path(palette_name->value);
+        if (collection_root_requested && !maya_project.empty()) {
+            add(maya_project / relative);
+        }
         add(root_or_project / relative);
         add(collection_path.parent_path() / relative);
+        if (!collection_root_requested && !maya_project.empty()) {
+            add(maya_project / relative);
+        }
     }
 
     const ClassicAttribute *data_path =
@@ -197,8 +228,16 @@ std::filesystem::path resolve_xgen_classic_descriptions_root(
             constexpr std::string_view project_token{"${PROJECT}"};
             if (value.starts_with(project_token)) {
                 value.remove_prefix(project_token.size());
-                add(root_or_project / detail::classic_path(
-                    detail::strip_classic_root_separators(value)));
+                const std::filesystem::path project_relative =
+                    detail::classic_path(
+                        detail::strip_classic_root_separators(value));
+                if (collection_root_requested && !maya_project.empty()) {
+                    add(maya_project / project_relative);
+                }
+                add(root_or_project / project_relative);
+                if (!collection_root_requested && !maya_project.empty()) {
+                    add(maya_project / project_relative);
+                }
             } else if (!value.empty()) {
                 if (detail::classic_windows_drive_relative(value) ||
                     detail::classic_windows_root_relative(value)) {

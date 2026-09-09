@@ -325,7 +325,7 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
         {"noiseFrequency", "1.7", 23u},
         {"noiseCorrelation", "20", 24u},
         {"useControlMaps", "0", 25u},
-        {"clumpVolumize", "false", 26u}}, 8u});
+        {"clumpVolumize", "true", 26u}}, 8u});
     description.objects.push_back({"NoiseFXModule", {
         {"active", "true", 27u}, {"name", "noise", 28u},
         {"mask", "0.8", 29u}, {"magnitude", "0.035", 30u},
@@ -343,6 +343,10 @@ float test_luisa_classic_effects(Device &device, Stream &stream) {
         plan.noises.size() != 1u || plan.cuts.size() != 1u ||
         plan.effects.size() != 3u) {
         throw std::runtime_error("Luisa Classic effects fixture did not lower");
+    }
+    if (!plan.clumps.front().volumize) {
+        throw std::runtime_error(
+            "Luisa Classic effects fixture lost volumize metadata");
     }
 
     nanoxgen::PackedGeneratedCurves reference{};

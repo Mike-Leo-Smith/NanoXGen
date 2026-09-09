@@ -48,6 +48,7 @@ struct ClassicFloatClumpModule {
     ClassicFloatRuntimeExpression noise_scale;
     ClassicFloatRuntimeExpression noise_frequency;
     ClassicFloatRuntimeExpression noise_correlation;
+    bool volumize{};
     // The point/ID maps consumed by the runtime already encode the authored
     // control-map grouping. Retain the flag for diagnostics and cache keys.
     bool use_control_maps{};
